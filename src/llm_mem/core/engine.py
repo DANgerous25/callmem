@@ -192,6 +192,61 @@ class MemoryEngine:
 
     # ── Search & entities ────────────────────────────────────────────
 
+    def search(
+        self,
+        query: str,
+        types: list[str] | None = None,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search memories using the retrieval engine."""
+        from llm_mem.core.retrieval import RetrievalEngine
+
+        engine = RetrievalEngine(self.repo, self.config)
+        results = engine.search(
+            self.project_id,
+            query,
+            types=types,
+            session_id=session_id,
+            limit=limit,
+        )
+        return [
+            {
+                "id": r.id,
+                "source_type": r.source_type,
+                "type": r.type,
+                "title": r.title,
+                "content": r.content,
+                "score": round(r.score, 4),
+                "timestamp": r.timestamp,
+                "session_id": r.session_id,
+            }
+            for r in results
+        ]
+
+    def get_briefing(
+        self,
+        max_tokens: int | None = None,
+        focus: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate a startup briefing for the current project."""
+        from llm_mem.core.briefing import BriefingGenerator
+
+        gen = BriefingGenerator(self.repo, self.config, self.ollama)
+        project_name = self.config.project.name or "default"
+        briefing = gen.generate(
+            self.project_id,
+            project_name=project_name,
+            max_tokens=max_tokens,
+            focus=focus,
+        )
+        return {
+            "project_name": briefing.project_name,
+            "content": briefing.content,
+            "token_count": briefing.token_count,
+            "components": briefing.components,
+        }
+
     def search_fts(
         self, query: str, limit: int = 20
     ) -> list[dict[str, Any]]:

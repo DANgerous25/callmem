@@ -102,6 +102,26 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mem_get_briefing",
+        "description": (
+            "Get a startup briefing summarizing active TODOs, "
+            "recent decisions, and project context."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "max_tokens": {
+                    "type": "integer",
+                    "description": "Maximum tokens for the briefing",
+                },
+                "focus": {
+                    "type": "string",
+                    "description": "Narrow briefing to a specific topic",
+                },
+            },
+        },
+    },
+    {
         "name": "mem_get_tasks",
         "description": "Get TODO entities from memory.",
         "inputSchema": {
@@ -218,8 +238,16 @@ def handle_ingest(engine: MemoryEngine, args: dict[str, Any]) -> list[TextConten
 def handle_search(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
     query = args.get("query", "")
     limit = args.get("limit", 20)
-    results = engine.search_fts(query, limit=limit)
+    results = engine.search(query, limit=limit)
     return _make_result({"results": results})
+
+
+def handle_get_briefing(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    briefing = engine.get_briefing(
+        max_tokens=args.get("max_tokens"),
+        focus=args.get("focus"),
+    )
+    return _make_result(briefing)
 
 
 def handle_get_tasks(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
@@ -243,6 +271,7 @@ _HANDLERS: dict[str, Any] = {
     "mem_session_end": handle_session_end,
     "mem_ingest": handle_ingest,
     "mem_search": handle_search,
+    "mem_get_briefing": handle_get_briefing,
     "mem_get_tasks": handle_get_tasks,
     "mem_pin": handle_pin,
 }
