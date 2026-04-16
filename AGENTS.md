@@ -3,6 +3,16 @@
 You are working on **llm-mem**, a persistent memory system for coding agents.
 Read this file completely before starting any task.
 
+## Quick Commands
+
+When the user says one of these phrases, execute the corresponding action:
+
+| Phrase | Action |
+|---|---|
+| **catch up** | Read `.llm-mem/SESSION.md`, `.llm-mem/DECISIONS.md`, and `.llm-mem/TODO.md`. Summarize the current project state and ask what to work on. |
+| **wrap up** | Run tests, update `.llm-mem/SESSION.md` with what happened, update `TODO.md` with current state, add any new decisions to `DECISIONS.md`, commit and push everything. |
+| **status** | Read `.llm-mem/TODO.md` and report current task progress. |
+
 ## Bootstrap Memory
 
 This project uses a simple file-based memory system until llm-mem itself is functional.
