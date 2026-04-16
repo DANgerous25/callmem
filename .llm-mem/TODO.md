@@ -17,7 +17,7 @@ Track work order progress and ad-hoc tasks here.
 | WO-08 | Summarization workers | **Complete** |
 | WO-09 | Memory compaction | **Complete** |
 | WO-10 | Web UI | **Complete** |
-| WO-11 | Background worker runner | Not started |
+| WO-11 | Background worker runner | **Complete** |
 | WO-12 | OpenCode adapter and AGENTS.md template | Not started |
 
 ## Ad-hoc Tasks

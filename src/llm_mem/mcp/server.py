@@ -16,7 +16,9 @@ from llm_mem.core.engine import MemoryEngine
 from llm_mem.mcp.tools import register_tools
 
 
-def create_server(project_path: Path) -> object:
+def create_server(
+    project_path: Path, no_workers: bool = False
+) -> object:
     """Create and configure the MCP server for a project."""
     from mcp.server import Server
 
@@ -36,16 +38,36 @@ def create_server(project_path: Path) -> object:
     db.initialize()
     engine = MemoryEngine(db, config)
 
+    if not no_workers and engine.ollama is not None:
+        from llm_mem.core.workers import WorkerRunner
+
+        worker = WorkerRunner(db, engine.ollama, config)
+        worker.start()
+    elif not no_workers:
+        from llm_mem.core.ollama import OllamaClient
+
+        ollama = OllamaClient(
+            endpoint=config.ollama.endpoint,
+            model=config.ollama.model,
+            timeout=config.ollama.timeout,
+        )
+        from llm_mem.core.workers import WorkerRunner
+
+        worker = WorkerRunner(db, ollama, config)
+        worker.start()
+
     server = Server("llm-mem")
     register_tools(server, engine)
     return server
 
 
-async def run_stdio(project_path: Path) -> None:
+async def run_stdio(
+    project_path: Path, no_workers: bool = False
+) -> None:
     """Run the MCP server on stdio transport."""
     from mcp.server.stdio import stdio_server
 
-    server = create_server(project_path)
+    server = create_server(project_path, no_workers=no_workers)
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
