@@ -37,6 +37,7 @@ class SensitiveDataConfig(BaseModel):
     enabled: bool = True
     pattern_scan: bool = True
     llm_scan: bool = True
+    llm_scan_confidence: float = 0.7
     vault_mode: str = "auto"
 
 

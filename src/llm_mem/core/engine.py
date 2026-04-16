@@ -44,9 +44,21 @@ class MemoryEngine:
 
         if config.sensitive_data.enabled:
             from llm_mem.core.redaction import PatternScanner
+
             self.pattern_scanner = PatternScanner()
         else:
             self.pattern_scanner = None
+
+        if config.sensitive_data.enabled and config.sensitive_data.llm_scan:
+            from llm_mem.core.ollama import OllamaClient
+
+            self.ollama = OllamaClient(
+                endpoint=config.ollama.endpoint,
+                model=config.ollama.model,
+                timeout=config.ollama.timeout,
+            )
+        else:
+            self.ollama = None
 
     @property
     def project_id(self) -> str:
@@ -211,6 +223,40 @@ class MemoryEngine:
         """Toggle the pinned status of an entity."""
         return self.repo.set_pinned(entity_id, pinned)
 
+    def mark_false_positive(self, vault_id: str) -> dict[str, Any]:
+        """Mark a vault entry as false positive and un-redact the event content."""
+        from llm_mem.core.crypto import VaultKeyManager
+
+        vault_entry = self.repo.get_vault_entry(vault_id)
+        if vault_entry is None:
+            msg = f"Vault entry not found: {vault_id}"
+            raise ValueError(msg)
+
+        if vault_entry["false_positive"]:
+            return vault_entry
+
+        event_id = vault_entry["event_id"]
+        if not event_id:
+            self.repo.mark_vault_false_positive(vault_id)
+            return self.repo.get_vault_entry(vault_id)
+
+        event = self.repo.get_event(event_id)
+        if event is None:
+            self.repo.mark_vault_false_positive(vault_id)
+            return self.repo.get_vault_entry(vault_id)
+
+        vault_dir = self.db.db_path.parent
+        crypto = VaultKeyManager(vault_dir)
+        original_value = crypto.decrypt(vault_entry["ciphertext"])
+        redaction_token = f"[REDACTED:{vault_entry['category']}:{vault_id}]"
+        unredacted = event.content.replace(redaction_token, original_value)
+        event.content = unredacted
+        self.repo.update_event_content(event.id, event.content)
+
+        self.repo.mark_vault_false_positive(vault_id)
+
+        return self.repo.get_vault_entry(vault_id)
+
     # ── Private helpers ──────────────────────────────────────────────
 
     def _ensure_active_session(self) -> Session:
@@ -231,10 +277,19 @@ class MemoryEngine:
         scan_status = "none"
 
         if self.pattern_scanner is not None:
-            from llm_mem.core.redaction import apply_redactions
+            from llm_mem.core.redaction import apply_redactions, merge_detections
 
             detections = self.pattern_scanner.scan(content)
             scan_status = "pattern_only"
+
+            if self.ollama is not None and self.ollama.is_available():
+                llm_detections = self.ollama.scan_sensitive(content)
+                confidence = self.config.sensitive_data.llm_scan_confidence
+                llm_detections = [
+                    d for d in llm_detections if d.confidence >= confidence
+                ]
+                detections = merge_detections(detections, llm_detections)
+                scan_status = "full"
 
             if detections:
                 content = apply_redactions(content, detections)

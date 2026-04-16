@@ -367,3 +367,37 @@ class Repository:
             conn.commit()
         finally:
             conn.close()
+
+    def get_vault_entry(self, vault_id: str) -> dict[str, Any] | None:
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM vault WHERE id = ?", (vault_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(row)
+        finally:
+            conn.close()
+
+    def mark_vault_false_positive(self, vault_id: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE vault SET false_positive = 1 WHERE id = ?",
+                (vault_id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def update_event_content(self, event_id: str, content: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE events SET content = ? WHERE id = ?",
+                (content, event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
