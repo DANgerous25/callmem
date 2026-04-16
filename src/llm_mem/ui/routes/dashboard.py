@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import APIRouter, Request
+
+if TYPE_CHECKING:
+    from fastapi.responses import HTMLResponse
 
 router = APIRouter()
 
 
 @router.get("/")
-async def dashboard(request: Request) -> str:
+async def dashboard(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
@@ -41,7 +46,7 @@ async def dashboard(request: Request) -> str:
 
 
 @router.get("/partials/dashboard")
-async def dashboard_partial(request: Request) -> str:
+async def dashboard_partial(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine

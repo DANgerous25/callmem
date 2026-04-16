@@ -11,7 +11,7 @@ router = APIRouter()
 @router.get("/entities/{entity_type}")
 async def entities_by_type(
     request: Request, entity_type: str
-) -> str:
+) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
