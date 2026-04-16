@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}llm-mem — Feed{% endblock %}
+{% block content %}
+<hgroup>
+    <h2>{{ project_name }}</h2>
+    <p>Events: {{ event_count }} &middot; Entities: {{ entity_count }} &middot; Sessions: {{ session_count }}</p>
+</hgroup>
+
+<div id="feed-content" hx-get="/partials/feed" hx-trigger="every 3s" hx-swap="innerHTML">
+{% include "feed_partial.html" %}
+</div>
+{% endblock %}

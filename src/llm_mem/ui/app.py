@@ -35,9 +35,11 @@ def create_app(engine: MemoryEngine) -> FastAPI:
     from llm_mem.ui.routes.briefing import router as briefing_router
     from llm_mem.ui.routes.dashboard import router as dashboard_router
     from llm_mem.ui.routes.entities import router as entities_router
+    from llm_mem.ui.routes.feed import router as feed_router
     from llm_mem.ui.routes.search import router as search_router
     from llm_mem.ui.routes.sessions import router as sessions_router
 
+    app.include_router(feed_router)
     app.include_router(dashboard_router)
     app.include_router(sessions_router)
     app.include_router(search_router)

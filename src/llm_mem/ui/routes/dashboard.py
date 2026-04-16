@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/stats")
 async def dashboard(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
