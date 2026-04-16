@@ -9,7 +9,7 @@ Track work order progress and ad-hoc tasks here.
 | WO-01 | Project setup and database initialization | **Complete** |
 | WO-02 | Data models and type system | **Complete** |
 | WO-03 | CLI skeleton and configuration loading | **Complete** |
-| WO-04 | Core engine — ingest and session management | Not started |
+| WO-04 | Core engine — ingest and session management | **Complete** |
 | WO-04b | Sensitive data detection and encrypted vault | Not started |
 | WO-05 | MCP server with core tools | Not started |
 | WO-06 | Ollama integration and entity extraction | Not started |
