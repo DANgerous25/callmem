@@ -7,7 +7,7 @@ Track work order progress and ad-hoc tasks here.
 | WO | Title | Status |
 |----|-------|--------|
 | WO-01 | Project setup and database initialization | **Complete** |
-| WO-02 | Data models and type system | Scaffolded (models exist, need completion + tests) |
+| WO-02 | Data models and type system | **Complete** |
 | WO-03 | CLI skeleton and configuration loading | Partial (CLI exists, config loading not implemented) |
 | WO-04 | Core engine — ingest and session management | Not started |
 | WO-04b | Sensitive data detection and encrypted vault | Not started |
