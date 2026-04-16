@@ -36,7 +36,7 @@ class TestToolDefinitions:
         names = {t["name"] for t in TOOL_DEFINITIONS}
         expected = {
             "mem_session_start", "mem_session_end", "mem_ingest",
-            "mem_search", "mem_get_tasks", "mem_pin",
+            "mem_search", "mem_get_briefing", "mem_get_tasks", "mem_pin",
         }
         assert names == expected
 
