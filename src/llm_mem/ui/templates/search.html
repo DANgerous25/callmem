@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}llm-mem — Search{% endblock %}
+{% block content %}
+<h2>Search Memories</h2>
+<form method="get" action="/search">
+    <input type="search" name="q" value="{{ query }}" placeholder="Search..." autofocus>
+</form>
+
+{% if results %}
+<table>
+    <thead><tr><th>Type</th><th>Content</th><th>Score</th><th>Date</th></tr></thead>
+    <tbody>
+    {% for r in results %}
+    <tr>
+        <td><mark>{{ r.type }}</mark></td>
+        <td>{{ (r.content or "")[:100] }}</td>
+        <td>{{ "%.4f"|format(r.score) }}</td>
+        <td>{{ (r.timestamp or "")[:10] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% elif query %}
+<p>No results for "{{ query }}".</p>
+{% endif %}
+{% endblock %}

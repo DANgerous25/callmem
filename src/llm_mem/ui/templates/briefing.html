@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}llm-mem — Briefing{% endblock %}
+{% block content %}
+<h2>Session Briefing</h2>
+
+<form method="get" action="/briefing">
+    <input type="text" name="focus" value="{{ focus }}" placeholder="Focus topic (optional)">
+    <button type="submit">Filter</button>
+</form>
+
+<article>
+    {{ briefing.content }}
+</article>
+
+<p><small>Token count: {{ briefing.token_count }}</small></p>
+{% endblock %}
