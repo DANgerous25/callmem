@@ -14,6 +14,7 @@ When the user says one of these phrases, execute the corresponding action:
 | **status** | Read `.llm-mem/TODO.md` and report current task progress. |
 | **dfn** (done for now) | Run tests, update all memory files with current state, commit and push. Note in SESSION.md that work may continue later or in another session. |
 | **dfd** (done for day) | Run tests, update all memory files with current state, commit and push. Write SESSION.md with extra detail — assume the next reader is a fresh agent in a new session tomorrow. Include specific next steps. |
+| **do WO-XX** | Open `docs/work-orders/WO-XX-*.md`, read it fully, implement everything specified. Run tests after each change. Commit after each file. When all acceptance criteria pass, update `.llm-mem/TODO.md` to mark it complete. |
 
 ## Bootstrap Memory
 
