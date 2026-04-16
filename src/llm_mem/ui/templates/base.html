@@ -1,11 +1,25 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}llm-mem{% endblock %}</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <script src="/static/htmx.min.js"></script>
+    <style>
+        :root[data-theme="dark"] {
+            --pico-primary: #7c9aff;
+            --pico-primary-hover: #97b0ff;
+        }
+        nav strong { letter-spacing: 0.05em; }
+        nav a[aria-current="page"] { font-weight: bold; }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+        .stat-card { padding: 1rem; border-radius: var(--pico-border-radius); background: var(--pico-card-background-color); text-align: center; }
+        .stat-card .label { font-size: 0.85rem; opacity: 0.7; }
+        .stat-card .value { font-size: 1.6rem; font-weight: 600; }
+        pre { font-size: 0.85rem; }
+        footer { margin-top: 3rem; padding: 1rem 0; text-align: center; font-size: 0.8rem; opacity: 0.5; }
+    </style>
 </head>
 <body>
     <nav class="container">
@@ -23,5 +37,6 @@
     <main class="container">
         {% block content %}{% endblock %}
     </main>
+    <footer class="container">llm-mem v{{ version | default("0.1.0") }}</footer>
 </body>
 </html>
