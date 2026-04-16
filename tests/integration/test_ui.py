@@ -98,6 +98,108 @@ class TestSessions:
         assert response.status_code == 200
 
 
+class TestDashboardPartial:
+    def test_partial_returns_fragment(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        response = client.get("/partials/dashboard")
+        assert response.status_code == 200
+        # Partial should NOT contain full HTML page structure
+        assert "<!DOCTYPE" not in response.text
+        assert "<html" not in response.text
+        # But should contain dashboard content
+        assert "Events:" in response.text
+
+    def test_partial_with_data(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/partials/dashboard")
+        assert response.status_code == 200
+        assert "Recent Sessions" in response.text
+
+
+class TestSessionsPartial:
+    def test_partial_returns_fragment(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        response = client.get("/partials/sessions")
+        assert response.status_code == 200
+        assert "<!DOCTYPE" not in response.text
+        assert "Sessions" in response.text
+
+    def test_partial_with_data(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/partials/sessions")
+        assert response.status_code == 200
+        assert "<table>" in response.text
+
+
+class TestSessionDetailPartial:
+    def test_partial_not_found(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        response = client.get("/partials/sessions/nonexistent")
+        assert response.status_code == 200
+        assert "not found" in response.text
+
+    def test_partial_with_session(self, memory_db: Database) -> None:
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        engine = MemoryEngine(memory_db, config)
+        session = engine.start_session()
+        engine.ingest_one("note", "test event for partial")
+        engine.end_session(session.id)
+
+        client = TestClient(create_app(engine))
+        response = client.get(f"/partials/sessions/{session.id}")
+        assert response.status_code == 200
+        assert "<!DOCTYPE" not in response.text
+        assert session.id[:8] in response.text
+
+
+def _get_html(response: object) -> str:
+    """Extract HTML from response, handling JSON-wrapped strings."""
+    ct = response.headers.get("content-type", "")
+    if ct.startswith("application/json"):
+        return response.json()
+    return response.text
+
+
+class TestHtmxPollingAttributes:
+    def test_dashboard_has_polling_div(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        html = _get_html(client.get("/"))
+        assert "hx-get" in html
+        assert "/partials/dashboard" in html
+        assert "every 3s" in html
+
+    def test_sessions_has_polling_div(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        html = _get_html(client.get("/sessions"))
+        assert "hx-get" in html
+        assert "/partials/sessions" in html
+        assert "every 3s" in html
+
+    def test_session_detail_has_polling_div(
+        self, memory_db: Database
+    ) -> None:
+        config = Config(
+            sensitive_data={"enabled": False, "llm_scan": False}
+        )
+        engine = MemoryEngine(memory_db, config)
+        session = engine.start_session()
+        engine.ingest_one("note", "test")
+        engine.end_session(session.id)
+
+        client = TestClient(create_app(engine))
+        html = _get_html(client.get(f"/sessions/{session.id}"))
+        assert "hx-get" in html
+        assert f"/partials/sessions/{session.id}" in html
+        assert "every 3s" in html
+
+    def test_session_not_found_no_polling(
+        self, memory_db: Database
+    ) -> None:
+        client = _make_client(memory_db)
+        html = _get_html(client.get("/sessions/nonexistent"))
+        assert "hx-get" not in html
+
+
 class TestSearch:
     def test_search_page_loads(self, memory_db: Database) -> None:
         client = _make_client(memory_db)

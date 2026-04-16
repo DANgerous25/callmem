@@ -226,5 +226,89 @@ def adapter(project: Path, opencode_url: str) -> None:
         click.echo("Adapter stopped.")
 
 
+@main.command("import")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option(
+    "--source",
+    type=click.Choice(["opencode"]),
+    required=True,
+    help="Source to import from.",
+)
+@click.option("--session-id", default=None, help="Import a specific session ID.")
+@click.option(
+    "--session-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override session directory.",
+)
+@click.option("--all", "import_all", is_flag=True, help="Import all sessions.")
+@click.option("--dry-run", is_flag=True, help="Show what would be imported.")
+def import_cmd(
+    project: Path,
+    source: str,
+    session_id: str | None,
+    session_dir: Path | None,
+    import_all: bool,
+    dry_run: bool,
+) -> None:
+    """Import session history from an external source."""
+    from llm_mem.adapters.opencode_import import (
+        DEFAULT_SESSION_DIR,
+        import_sessions,
+    )
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine
+
+    config = load_config(project)
+    db_path = project / ".llm-mem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No llm-mem database found at {db_path}")
+        click.echo("Run 'llm-mem init' first.")
+        return
+
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+
+    actual_dir = session_dir if session_dir is not None else DEFAULT_SESSION_DIR
+    click.echo(f"Scanning {actual_dir} for {source} sessions...")
+
+    results = import_sessions(
+        engine,
+        session_dir=actual_dir,
+        session_id=session_id,
+        import_all=import_all,
+        dry_run=dry_run,
+    )
+
+    if not results:
+        click.echo("No sessions found.")
+        return
+
+    imported = 0
+    total_events = 0
+    for r in results:
+        if r.get("dry_run"):
+            click.echo(
+                f"  [dry-run] {r['source_id']}: "
+                f"{r.get('title', '')} ({r.get('message_count', 0)} messages)"
+            )
+        else:
+            errors = r.get("errors", [])
+            status = "OK" if not errors else f"{len(errors)} errors"
+            click.echo(
+                f"  Imported {r['source_id']}: "
+                f"{r.get('event_count', 0)} events ({status})"
+            )
+            imported += 1
+            total_events += r.get("event_count", 0)
+
+    if dry_run or (not import_all and session_id is None):
+        click.echo(f"\nFound {len(results)} session(s). Use --all to import all.")
+    else:
+        click.echo(f"\nImported {imported} session(s), {total_events} events total.")
+
+
 if __name__ == "__main__":
     main()

@@ -1,8 +1,3 @@
-{% extends "base.html" %}
-{% block title %}llm-mem — Session{% endblock %}
-{% block content %}
-{% if session %}
-<div id="session-detail-content" hx-get="/partials/sessions/{{ session.id }}" hx-trigger="every 3s" hx-swap="innerHTML">
 <h2>Session {{ session.id[:8] }}...</h2>
 <p>
     Started: {{ session.started_at[:19] }} &middot;
@@ -46,8 +41,3 @@
     {% endfor %}
     </tbody>
 </table>
-</div>
-{% else %}
-<p>Session not found.</p>
-{% endif %}
-{% endblock %}
