@@ -116,6 +116,17 @@ class MemoryEngine:
         if note is not None:
             session.summary = note
         self.repo.update_session(session)
+
+        self.queue.enqueue(
+            "generate_summary",
+            {
+                "level": "session",
+                "project_id": session.project_id,
+                "session_id": session.id,
+            },
+        )
+        self._maybe_queue_cross_session_summary(session.project_id)
+
         return session
 
     def get_active_session(self) -> Session | None:
@@ -160,6 +171,7 @@ class MemoryEngine:
                     "session_id": session.id,
                 },
             )
+            self._maybe_queue_chunk_summary(session, stored)
 
         return stored
 
@@ -417,3 +429,70 @@ class MemoryEngine:
         """Increment the session's event_count and persist."""
         session.event_count += added
         self.repo.update_session(session)
+
+    def _maybe_queue_chunk_summary(
+        self, session: Session, new_events: list[Event]
+    ) -> None:
+        """Queue a chunk summary if the session event count hits the threshold."""
+        chunk_size = self.config.summarization.chunk_size
+        if chunk_size <= 0:
+            return
+
+        if session.event_count % chunk_size != 0:
+            return
+
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM events "
+                "WHERE session_id = ? ORDER BY timestamp ASC "
+                "LIMIT ? OFFSET ?",
+                (session.id, chunk_size, session.event_count - chunk_size),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        event_ids = [r["id"] for r in rows]
+        if not event_ids:
+            return
+
+        self.queue.enqueue(
+            "generate_summary",
+            {
+                "level": "chunk",
+                "event_ids": event_ids,
+                "project_id": session.project_id,
+                "session_id": session.id,
+            },
+        )
+
+    def _maybe_queue_cross_session_summary(
+        self, project_id: str
+    ) -> None:
+        """Queue a cross-session summary every N ended sessions."""
+        interval = self.config.summarization.cross_session_interval
+        if interval <= 0:
+            return
+
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM sessions "
+                "WHERE project_id = ? AND status = 'ended'",
+                (project_id,),
+            ).fetchone()
+            ended_count = row["c"]
+        finally:
+            conn.close()
+
+        if ended_count % interval != 0:
+            return
+
+        self.queue.enqueue(
+            "generate_summary",
+            {
+                "level": "cross_session",
+                "project_id": project_id,
+                "max_tokens": self.config.briefing.max_tokens,
+            },
+        )
