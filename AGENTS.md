@@ -12,6 +12,8 @@ When the user says one of these phrases, execute the corresponding action:
 | **catch up** | Read `.llm-mem/SESSION.md`, `.llm-mem/DECISIONS.md`, and `.llm-mem/TODO.md`. Summarize the current project state and ask what to work on. |
 | **wrap up** | Run tests, update `.llm-mem/SESSION.md` with what happened, update `TODO.md` with current state, add any new decisions to `DECISIONS.md`, commit and push everything. |
 | **status** | Read `.llm-mem/TODO.md` and report current task progress. |
+| **dfn** (done for now) | Run tests, update all memory files with current state, commit and push. Note in SESSION.md that work may continue later or in another session. |
+| **dfd** (done for day) | Run tests, update all memory files with current state, commit and push. Write SESSION.md with extra detail — assume the next reader is a fresh agent in a new session tomorrow. Include specific next steps. |
 
 ## Bootstrap Memory
 
