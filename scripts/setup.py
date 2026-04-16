@@ -21,7 +21,6 @@ import socket
 import sys
 from pathlib import Path
 
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
@@ -84,8 +83,15 @@ def check_openai_compat(endpoint: str, api_key: str, model: str) -> bool:
         import httpx
         resp = httpx.post(
             f"{endpoint}/chat/completions",
-            json={"model": model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "max_tokens": 5,
+            },
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
             timeout=10.0,
         )
         return resp.status_code == 200
@@ -110,6 +116,103 @@ def find_opencode_config(project: Path) -> Path | None:
         if p.exists():
             return p
     return None
+
+
+# ── Session import ───────────────────────────────────────────────────
+
+
+def _offer_session_import(project: Path, db_path: Path) -> None:
+    """Check for existing OpenCode sessions and offer to import them."""
+    try:
+        from llm_mem.adapters.opencode_import import (
+            DEFAULT_SESSION_DIR,
+            discover_session_files,
+            import_sessions,
+            read_session_file,
+        )
+    except ImportError:
+        return
+
+    session_dir = DEFAULT_SESSION_DIR
+    if not session_dir.is_dir():
+        return
+
+    files = discover_session_files(session_dir)
+    if not files:
+        return
+
+    # Filter to files that look like real sessions (have messages)
+    valid_files: list[tuple[Path, dict]] = []
+    for f in files:
+        data = read_session_file(f)
+        if data and data.get("messages"):
+            valid_files.append((f, data))
+
+    if not valid_files:
+        return
+
+    print()
+    print("── Existing session history ──")
+    print()
+    print(f"  Found {len(valid_files)} OpenCode session(s) in {session_dir}")
+    print()
+
+    # Show a preview of the sessions
+    for i, (path, data) in enumerate(valid_files[:10], 1):
+        sid = data.get("id", path.stem)
+        title = data.get("title", "untitled")[:50]
+        msg_count = len(data.get("messages", []))
+        print(f"    {i}) {sid[:12]}... — {title} ({msg_count} messages)")
+
+    if len(valid_files) > 10:
+        print(f"    ... and {len(valid_files) - 10} more")
+
+    print()
+    do_import = ask_bool(
+        "Import these sessions into llm-mem?",
+        default=True,
+    )
+
+    if not do_import:
+        print("  Skipped. You can import later with:")
+        print(f"    llm-mem import --source opencode --all --project {project}")
+        return
+
+    if not db_path.exists():
+        print("  Database not ready — skipping import.")
+        print(f"  Run: llm-mem import --source opencode --all --project {project}")
+        return
+
+    try:
+        from llm_mem.core.config import load_config
+        from llm_mem.core.database import Database
+        from llm_mem.core.engine import MemoryEngine
+
+        config = load_config(project)
+        db = Database(db_path)
+        db.initialize()
+        engine = MemoryEngine(db, config)
+
+        print()
+        print(f"  Importing {len(valid_files)} session(s)...")
+
+        results = import_sessions(
+            engine,
+            session_dir,
+            import_all=True,
+        )
+
+        imported = [r for r in results if not r.get("dry_run")]
+        total_events = sum(r.get("event_count", 0) for r in imported)
+        errors = sum(len(r.get("errors", [])) for r in imported)
+
+        print(f"  Imported {len(imported)} session(s), {total_events} events")
+        if errors:
+            print(f"  {errors} error(s) during import (non-fatal, events still stored)")
+
+    except Exception as exc:
+        print(f"  Import failed: {exc}")
+        print(f"  You can retry: llm-mem import --source opencode --all --project {project}")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -253,7 +356,10 @@ def main() -> None:
     print()
 
     sd = existing.get("sensitive_data", {})
-    sensitive_enabled = ask_bool("Enable sensitive data detection?", default=sd.get("enabled", True))
+    sensitive_enabled = ask_bool(
+        "Enable sensitive data detection?",
+        default=sd.get("enabled", True),
+    )
 
     vault_mode = sd.get("vault_mode", "auto")
     llm_scan = sd.get("llm_scan", backend != "none")
@@ -269,7 +375,10 @@ def main() -> None:
             default=vault_mode,
         )
         if backend != "none":
-            llm_scan = ask_bool("Enable LLM-based scanning (in addition to patterns)?", default=llm_scan)
+            llm_scan = ask_bool(
+                "Enable LLM-based scanning (in addition to patterns)?",
+                default=llm_scan,
+            )
         else:
             llm_scan = False
 
@@ -324,7 +433,7 @@ vault_mode = "{vault_mode}"
 """
 
     if config_path.exists():
-        backup = config_path.with_suffix(f".toml.bak")
+        backup = config_path.with_suffix(".toml.bak")
         shutil.copy2(config_path, backup)
         print(f"  Backed up existing config to {backup.name}")
 
@@ -359,6 +468,9 @@ vault_mode = "{vault_mode}"
             print(f"  Added {', '.join(missing)} to .gitignore")
     else:
         print("  No .gitignore — remember to exclude vault.key and vault.salt")
+
+    # ── Session import ───────────────────────────────────────────
+    _offer_session_import(project, db_path)
 
     # ── OpenCode MCP ──────────────────────────────────────────────
     print()
@@ -418,11 +530,11 @@ vault_mode = "{vault_mode}"
     print()
 
     if backend == "ollama" and not ollama_ok:
-        print(f"    Start Ollama and pull the model:")
+        print("    Start Ollama and pull the model:")
         print(f"      ollama pull {ollama_model}")
         print()
     elif backend == "openai_compat" and not oai_ok:
-        print(f"    Set your API key:")
+        print("    Set your API key:")
         print(f"      export {oai_key_env}=your-key-here")
         print()
 
@@ -433,6 +545,9 @@ vault_mode = "{vault_mode}"
         print("    Start background workers:")
         print(f"      llm-mem workers --project {project}")
         print()
+    print("    Import existing sessions (if not done above):")
+    print(f"      llm-mem import --source opencode --all --project {project}")
+    print()
     print("    Start coding with memory:")
     print(f"      cd {project} && opencode")
     print()
