@@ -86,7 +86,7 @@ git clone https://github.com/DANgerous25/llm-mem.git
 cd llm-mem
 
 # Install with uv (recommended)
-uv sync
+uv sync --extra dev
 
 # Or with pip
 pip install -e ".[dev]"
