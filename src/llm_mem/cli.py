@@ -39,6 +39,11 @@ def init(project: Path) -> None:
     if not config_path.exists():
         config_path.write_text(generate_default_config(project.name))
 
+    agents_template = Path(__file__).parent.parent.parent / "templates" / "AGENTS.md.template"
+    agents_path = project / "AGENTS.md"
+    if agents_template.exists() and not agents_path.exists():
+        agents_path.write_text(agents_template.read_text())
+
     click.echo(f"Initialized llm-mem in {llm_mem_dir}")
     click.echo(f"  Database: {db_path}")
     click.echo(f"  Config:   {config_path}")
@@ -166,6 +171,38 @@ def workers(project: Path, interval: int) -> None:
     stop_event.wait()
     runner.stop()
     click.echo("Workers stopped.")
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option(
+    "--opencode-url",
+    default="http://localhost:4096",
+    help="OpenCode server URL.",
+)
+def adapter(project: Path, opencode_url: str) -> None:
+    """Run the OpenCode SSE adapter."""
+    from llm_mem.adapters.opencode import OpenCodeAdapter
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine
+
+    config = load_config(project)
+    db_path = project / ".llm-mem" / "memory.db"
+    db = Database(db_path)
+    db.initialize()
+
+    engine = MemoryEngine(db, config)
+    oc_adapter = OpenCodeAdapter(engine, opencode_url=opencode_url)
+
+    click.echo(f"Starting OpenCode adapter (url={opencode_url})")
+    click.echo(f"Project: {project.resolve()}")
+
+    try:
+        oc_adapter.run()
+    except KeyboardInterrupt:
+        oc_adapter.stop()
+        click.echo("Adapter stopped.")
 
 
 if __name__ == "__main__":

@@ -1,26 +1,51 @@
 # Last Session Summary
 
 **Date:** 2026-04-16
-**Duration:** WO-01 through WO-07
+**Duration:** WO-01 through WO-12 — ALL COMPLETE
 
 ## What happened
 
-1. **WO-04b completed** — Sensitive data detection and encrypted vault
-2. **WO-06 completed** — Ollama integration, job queue, entity extraction
-3. **WO-07 completed** — Retrieval engine and startup briefing:
-   - `retrieval.py`: Multi-strategy `RetrievalEngine` — FTS5 search, entity lookup, recency weighting with exponential decay, deduplication by ID, composite scoring
-   - `briefing.py`: `BriefingGenerator` — assembles markdown briefing from TODOs, decisions, failures, pinned facts, last session summary. Respects token budget, supports focus parameter
-   - `engine.py`: Added `search()` (delegates to RetrievalEngine) and `get_briefing()` (delegates to BriefingGenerator)
-   - `mcp/tools.py`: Updated `mem_search` to use retrieval engine, added `mem_get_briefing` tool
-   - `test_retrieval.py`: 9 tests — FTS5, structured search, entity search, dedup, recency, get_recent
-   - `test_briefing.py`: 9 tests — todos, decisions, failures, session summary, new project, token budget, focus
+Completed all 12 work orders in a single session:
+
+1. **WO-01–05** — Project setup, data models, CLI, core engine, MCP server (pre-existing)
+2. **WO-04b** — Sensitive data detection (pattern + LLM), encrypted vault, false positive marking
+3. **WO-06** — Ollama integration, SQLite job queue, entity extraction
+4. **WO-07** — Multi-strategy retrieval engine, startup briefing generator
+5. **WO-08** — Chunk/session/cross-session summarization workers
+6. **WO-09** — Age-based memory compaction with protection rules
+7. **WO-10** — Web UI (FastAPI + htmx + Pico CSS) — dashboard, sessions, search, entities, briefing
+8. **WO-11** — Background worker runner with daemon thread
+9. **WO-12** — OpenCode SSE adapter, AGENTS.md template, opencode.json template
 
 ## Current state
 
-- WO-01 through WO-07 **complete**
-- 274 tests passing, ruff clean
+- **All 12 work orders COMPLETE**
+- 321 tests passing, ruff clean
 - All committed and pushed to main
+- Schema version: 3
 
-## Next step
+## Architecture summary
 
-WO-08 (Summarization workers)
+```
+src/llm_mem/
+├── core/           # Engine, DB, retrieval, workers, queue
+│   ├── engine.py           # Central coordinator
+│   ├── database.py         # SQLite with migrations
+│   ├── repository.py       # Data access layer
+│   ├── retrieval.py        # Multi-strategy search
+│   ├── briefing.py         # Startup briefing generator
+│   ├── redaction.py        # Two-layer sensitive data detection
+│   ├── crypto.py           # Fernet vault encryption
+│   ├── ollama.py           # Ollama HTTP client
+│   ├── extraction.py       # Entity extraction via LLM
+│   ├── summarization.py    # Chunk/session/cross-session summaries
+│   ├── compaction.py       # Age-based archival
+│   ├── workers.py          # Background worker runner
+│   ├── queue.py            # SQLite job queue
+│   ├── prompts.py          # LLM prompt templates
+│   └── migrations/         # Schema migrations (001, 002, 003)
+├── mcp/            # MCP server + tools
+├── ui/             # FastAPI web UI
+├── adapters/       # OpenCode SSE adapter
+└── models/         # Pydantic data models
+```
