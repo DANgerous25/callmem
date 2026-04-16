@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# llm-mem database and logs (but NOT the bootstrap memory .md files)
+.llm-mem/memory.db
+.llm-mem/memory.db-wal
+.llm-mem/memory.db-shm
+.llm-mem/llm-mem.log
+.llm-mem/vault.key
+.llm-mem/vault.salt
+.llm-mem/SESSION.*.md
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+uv.lock
