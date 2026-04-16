@@ -1,0 +1,38 @@
+{% if items %}
+{% for item in items %}
+<div class="feed-card{% if item.kind == 'session' %} feed-card-compact{% endif %}">
+  <div class="feed-card-header">
+    <span class="badge badge-{{ item.category }}">{{ item.category | upper }}</span>
+    {% if item.agent_name %}
+    <span class="badge badge-agent">{{ item.agent_name | upper }}</span>
+    {% endif %}
+    <span class="feed-project">{{ item.project_name }}</span>
+  </div>
+  <h4 class="feed-card-title">{{ item.title }}</h4>
+  {% if item.content %}
+  <p class="feed-card-body">{{ item.content[:300] }}{% if item.content | length > 300 %}&hellip;{% endif %}</p>
+  {% endif %}
+  <div class="feed-card-footer">
+    <span class="feed-card-id">
+      {% if item.kind == 'session' or item.kind == 'summary' %}
+      <a href="/sessions/{{ item.id }}">{{ item.id[:8] }}</a>
+      {% else %}
+      #{{ item.id[:8] }}
+      {% endif %}
+    </span>
+    <span class="feed-card-time">{{ item.timestamp[:19] | replace("T", " ") }}</span>
+    {% if item.status and item.kind == 'entity' %}
+    <span class="feed-card-status status-{{ item.status }}">{{ item.status }}</span>
+    {% endif %}
+    {% if item.priority %}
+    <span class="feed-card-priority priority-{{ item.priority }}">{{ item.priority }}</span>
+    {% endif %}
+    {% if item.pinned %}
+    <span class="feed-card-pinned">pinned</span>
+    {% endif %}
+  </div>
+</div>
+{% endfor %}
+{% else %}
+<p class="feed-empty">No memory items yet. Start a session to see entities appear here.</p>
+{% endif %}

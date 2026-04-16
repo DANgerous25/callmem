@@ -69,15 +69,86 @@ def _make_client_with_data(memory_db: Database) -> TestClient:
 class TestDashboard:
     def test_dashboard_loads(self, memory_db: Database) -> None:
         client = _make_client(memory_db)
-        response = client.get("/")
+        response = client.get("/stats")
         assert response.status_code == 200
         assert "llm-mem" in response.text
 
     def test_dashboard_shows_stats(self, memory_db: Database) -> None:
         client = _make_client_with_data(memory_db)
-        response = client.get("/")
+        response = client.get("/stats")
         assert response.status_code == 200
         assert "Events:" in response.text or "event_count" in response.text.lower()
+
+
+class TestFeed:
+    def test_feed_loads(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "llm-mem" in response.text
+
+    def test_feed_shows_stats(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "Events:" in response.text
+
+    def test_feed_shows_entity_cards(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "feed-card" in response.text
+        assert "TODO" in response.text
+        assert "Add pagination tests" in response.text
+
+    def test_feed_shows_session_cards(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "SESSION" in response.text
+        assert "ended" in response.text.lower()
+
+    def test_feed_has_polling_div(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        html = _get_html(client.get("/"))
+        assert "hx-get" in html
+        assert "/partials/feed" in html
+        assert "every 3s" in html
+
+    def test_feed_empty_state(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "No memory items yet" in response.text
+
+
+class TestFeedPartial:
+    def test_partial_returns_fragment(self, memory_db: Database) -> None:
+        client = _make_client(memory_db)
+        response = client.get("/partials/feed")
+        assert response.status_code == 200
+        assert "<!DOCTYPE" not in response.text
+        assert "<html" not in response.text
+
+    def test_partial_with_data(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/partials/feed")
+        assert response.status_code == 200
+        assert "feed-card" in response.text
+        assert "TODO" in response.text
+
+    def test_partial_shows_badges(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/partials/feed")
+        assert response.status_code == 200
+        assert "badge-todo" in response.text
+        assert "badge-session" in response.text
+
+    def test_partial_shows_status(self, memory_db: Database) -> None:
+        client = _make_client_with_data(memory_db)
+        response = client.get("/partials/feed")
+        assert response.status_code == 200
+        assert "status-open" in response.text
 
 
 class TestSessions:
@@ -163,7 +234,7 @@ def _get_html(response: object) -> str:
 class TestHtmxPollingAttributes:
     def test_dashboard_has_polling_div(self, memory_db: Database) -> None:
         client = _make_client(memory_db)
-        html = _get_html(client.get("/"))
+        html = _get_html(client.get("/stats"))
         assert "hx-get" in html
         assert "/partials/dashboard" in html
         assert "every 3s" in html
