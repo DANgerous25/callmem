@@ -63,6 +63,41 @@ def port_available(port: int, host: str = "0.0.0.0") -> bool:
         return False
 
 
+def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
+    """Scan other llm-mem projects for their configured UI ports.
+
+    Looks at sibling llm-mem service files to find their
+    WorkingDirectory, then reads the config.toml for the port.
+    Returns {port: project_name}.
+    """
+    used: dict[int, str] = {}
+    systemd_dir = Path.home() / ".config" / "systemd" / "user"
+    if not systemd_dir.is_dir():
+        return used
+
+    for unit in systemd_dir.glob("llm-mem-*.service"):
+        try:
+            content = unit.read_text()
+            for line in content.splitlines():
+                if line.startswith("WorkingDirectory="):
+                    proj_path = Path(line.split("=", 1)[1].strip())
+                    if proj_path.resolve() == current_project.resolve():
+                        continue
+                    cfg = proj_path / ".llm-mem" / "config.toml"
+                    if cfg.exists():
+                        other = load_existing_config(cfg)
+                        p = other.get("ui", {}).get("port")
+                        if p is not None:
+                            name = other.get(
+                                "project", {}
+                            ).get("name", proj_path.name)
+                            used[int(p)] = name
+                    break
+        except Exception:
+            continue
+    return used
+
+
 def check_ollama(endpoint: str) -> tuple[bool, list[str]]:
     try:
         import httpx
@@ -266,6 +301,27 @@ def _offer_systemd_service(
         # Fall back to uv run
         llm_mem_bin = f"{shutil.which('uv') or 'uv'} run llm-mem"
 
+    # Collect env vars the service needs
+    env_lines = [
+        f"Environment=PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}",
+    ]
+    # Pass through API key env vars if set
+    config_path = project / ".llm-mem" / "config.toml"
+    if config_path.exists():
+        cfg = load_existing_config(config_path)
+        key_env = cfg.get(
+            "openai_compat", {}
+        ).get("api_key_env", "LLM_MEM_API_KEY")
+        key_val = os.environ.get(key_env, "")
+        if key_val:
+            env_lines.append(f"Environment={key_env}={key_val}")
+    # Also pass HOME (needed for ~/.local/share/opencode)
+    env_lines.append(
+        f"Environment=HOME={Path.home()}"
+    )
+
+    env_block = "\n".join(env_lines)
+
     unit_content = f"""[Unit]
 Description=llm-mem daemon for {project.name}
 After=network.target
@@ -276,7 +332,7 @@ WorkingDirectory={project}
 ExecStart={llm_mem_bin} daemon --project {project}
 Restart=on-failure
 RestartSec=5
-Environment=PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}
+{env_block}
 
 [Install]
 WantedBy=default.target
@@ -468,14 +524,46 @@ def main() -> None:
     default_host = existing.get("ui", {}).get("host", "0.0.0.0")
     default_port = existing.get("ui", {}).get("port", 9090)
 
-    ui_host = ask("Bind address (0.0.0.0 for network, 127.0.0.1 for local only)", default_host)
+    # Check what ports other llm-mem projects are using
+    other_ports = _find_other_llm_mem_ports(project)
+    if other_ports:
+        print("  Ports used by other llm-mem projects:")
+        for p, name in sorted(other_ports.items()):
+            print(f"    {p} — {name}")
+        # Auto-suggest a free port if default conflicts
+        if default_port in other_ports and not is_rerun:
+            default_port = max(other_ports.keys()) + 1
+            print(f"  Suggesting {default_port} to avoid conflict.")
+        print()
+
+    ui_host = ask(
+        "Bind address (0.0.0.0 for network, 127.0.0.1 for local only)",
+        default_host,
+    )
     ui_port = int(ask("Port", str(default_port)))
+
+    # Warn if this port is claimed by another project
+    if ui_port in other_ports:
+        print(
+            f"  Warning: port {ui_port} is used by"
+            f" '{other_ports[ui_port]}'"
+        )
 
     if not port_available(ui_port, ui_host):
         print(f"  Port {ui_port} is in use on {ui_host}")
         while True:
             suggested = ui_port + 1
-            ui_port = int(ask("Choose a different port", str(suggested)))
+            while suggested in other_ports:
+                suggested += 1
+            ui_port = int(
+                ask("Choose a different port", str(suggested))
+            )
+            if ui_port in other_ports:
+                print(
+                    f"  Warning: port {ui_port} is used"
+                    f" by '{other_ports[ui_port]}'"
+                )
+                continue
             if port_available(ui_port, ui_host):
                 print(f"  Port {ui_port} is available.")
                 break
