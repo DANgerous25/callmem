@@ -127,6 +127,12 @@ class MemoryEngine:
         )
         self._maybe_queue_cross_session_summary(session.project_id)
 
+        if self.config.compaction.enabled:
+            self.queue.enqueue(
+                "compact",
+                {"project_id": session.project_id},
+            )
+
         return session
 
     def get_active_session(self) -> Session | None:

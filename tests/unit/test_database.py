@@ -36,7 +36,7 @@ def test_schema_version_set(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     version = db.get_schema_version()
-    assert version == 2
+    assert version == 3
 
 
 def test_wal_mode_enabled(tmp_path: Path) -> None:
@@ -54,7 +54,7 @@ def test_idempotent_init(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     db.initialize()  # Should not raise
-    assert db.get_schema_version() == 2
+    assert db.get_schema_version() == 3
 
 
 def test_foreign_keys_enabled(tmp_path: Path) -> None:
@@ -93,4 +93,4 @@ def test_in_memory_database() -> None:
     db.initialize()
     tables = db.list_tables()
     assert "events" in tables
-    assert db.get_schema_version() == 2
+    assert db.get_schema_version() == 3
