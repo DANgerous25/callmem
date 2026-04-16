@@ -74,28 +74,12 @@ class TestInit:
 
 
 class TestServe:
-    def test_serve_outputs_ready(self, tmp_path: Path) -> None:
+    def test_serve_help(self) -> None:
         runner = CliRunner()
-        runner.invoke(main, ["init", "--project", str(tmp_path)])
-        result = runner.invoke(main, ["serve", "--project", str(tmp_path)])
+        result = runner.invoke(main, ["serve", "--help"])
         assert result.exit_code == 0
-        assert "MCP server ready" in result.output
-
-    def test_serve_with_transport(self, tmp_path: Path) -> None:
-        runner = CliRunner()
-        runner.invoke(main, ["init", "--project", str(tmp_path)])
-        result = runner.invoke(
-            main, ["serve", "--project", str(tmp_path), "--transport", "sse"]
-        )
-        assert "transport=sse" in result.output
-
-    def test_serve_no_workers(self, tmp_path: Path) -> None:
-        runner = CliRunner()
-        runner.invoke(main, ["init", "--project", str(tmp_path)])
-        result = runner.invoke(
-            main, ["serve", "--project", str(tmp_path), "--no-workers"]
-        )
-        assert "workers=off" in result.output
+        assert "--project" in result.output
+        assert "--transport" in result.output
 
 
 class TestUI:

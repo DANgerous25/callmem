@@ -281,3 +281,64 @@ class Repository:
             return Event.from_row(dict(row))
         finally:
             conn.close()
+
+    # ── Entities ─────────────────────────────────────────────────────
+
+    def get_entities(
+        self,
+        project_id: str,
+        type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        from llm_mem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            clauses: list[str] = ["project_id = ?"]
+            params: list[Any] = [project_id]
+            if type is not None:
+                clauses.append("type = ?")
+                params.append(type)
+            if status is not None:
+                clauses.append("status = ?")
+                params.append(status)
+
+            where = " AND ".join(clauses)
+            params.append(limit)
+
+            rows = conn.execute(
+                f"SELECT * FROM entities WHERE {where} "
+                f"ORDER BY pinned DESC, updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(Entity.from_row(dict(r)).to_row()) for r in rows]
+        finally:
+            conn.close()
+
+    def set_pinned(self, entity_id: str, pinned: bool) -> dict[str, Any]:
+        from llm_mem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            entity_row = conn.execute(
+                "SELECT * FROM entities WHERE id = ?", (entity_id,)
+            ).fetchone()
+            if entity_row is None:
+                msg = f"Entity not found: {entity_id}"
+                raise ValueError(msg)
+
+            conn.execute(
+                "UPDATE entities SET pinned = ?, updated_at = datetime('now') "
+                "WHERE id = ?",
+                (1 if pinned else 0, entity_id),
+            )
+            conn.commit()
+
+            updated = conn.execute(
+                "SELECT * FROM entities WHERE id = ?", (entity_id,)
+            ).fetchone()
+            entity = Entity.from_row(dict(updated))
+            return dict(entity.to_row())
+        finally:
+            conn.close()

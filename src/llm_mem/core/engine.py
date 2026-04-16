@@ -160,6 +160,50 @@ class MemoryEngine:
         """Get a single event by ID."""
         return self.repo.get_event(event_id)
 
+    # ── Search & entities ────────────────────────────────────────────
+
+    def search_fts(
+        self, query: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search events using FTS5 full-text search."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.id, e.type, e.content, e.timestamp, e.session_id "
+                "FROM events_fts f "
+                "JOIN events e ON e.rowid = f.rowid "
+                "WHERE events_fts MATCH ? "
+                "ORDER BY rank LIMIT ?",
+                (query, limit),
+            ).fetchall()
+            return [
+                {
+                    "id": r["id"],
+                    "type": r["type"],
+                    "content": r["content"],
+                    "timestamp": r["timestamp"],
+                    "session_id": r["session_id"],
+                }
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def get_entities(
+        self,
+        type: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve entities, optionally filtered by type and status."""
+        return self.repo.get_entities(
+            self.project_id, type=type, status=status, limit=limit
+        )
+
+    def set_pinned(self, entity_id: str, pinned: bool = True) -> dict[str, Any]:
+        """Toggle the pinned status of an entity."""
+        return self.repo.set_pinned(entity_id, pinned)
+
     # ── Private helpers ──────────────────────────────────────────────
 
     def _ensure_active_session(self) -> Session:

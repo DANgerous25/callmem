@@ -50,17 +50,13 @@ def init(project: Path) -> None:
 @click.option("--no-workers", is_flag=True, help="Disable background workers.")
 def serve(project: Path, transport: str, no_workers: bool) -> None:
     """Start the MCP server."""
-    from llm_mem.core.config import load_config
+    import asyncio
 
-    config = load_config(project)
-    workers_status = "off" if no_workers else "on"
-    click.echo(
-        f"Starting llm-mem MCP server "
-        f"(transport={transport}, workers={workers_status})"
-    )
+    from llm_mem.mcp.server import run_stdio
+
+    click.echo(f"Starting llm-mem MCP server (transport={transport})")
     click.echo(f"Project: {project.resolve()}")
-    click.echo(f"Ollama model: {config.ollama.model}")
-    click.echo("MCP server ready.")
+    asyncio.run(run_stdio(project.resolve()))
 
 
 @main.command()
