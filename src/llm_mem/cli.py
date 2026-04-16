@@ -369,10 +369,15 @@ def daemon(
 )
 @click.option("--session-id", default=None, help="Import a specific session ID.")
 @click.option(
-    "--session-dir",
+    "--opencode-db",
     type=click.Path(path_type=Path),
     default=None,
-    help="Override session directory.",
+    help="Override path to OpenCode SQLite database.",
+)
+@click.option(
+    "--project-path",
+    default=None,
+    help="Only import sessions for this project worktree path.",
 )
 @click.option("--all", "import_all", is_flag=True, help="Import all sessions.")
 @click.option("--dry-run", is_flag=True, help="Show what would be imported.")
@@ -380,13 +385,14 @@ def import_cmd(
     project: Path,
     source: str,
     session_id: str | None,
-    session_dir: Path | None,
+    opencode_db: Path | None,
+    project_path: str | None,
     import_all: bool,
     dry_run: bool,
 ) -> None:
     """Import session history from an external source."""
     from llm_mem.adapters.opencode_import import (
-        DEFAULT_SESSION_DIR,
+        DEFAULT_DB_PATH,
         import_sessions,
     )
     from llm_mem.core.config import load_config
@@ -404,13 +410,14 @@ def import_cmd(
     db.initialize()
     engine = MemoryEngine(db, config)
 
-    actual_dir = session_dir if session_dir is not None else DEFAULT_SESSION_DIR
-    click.echo(f"Scanning {actual_dir} for {source} sessions...")
+    oc_db = opencode_db if opencode_db is not None else DEFAULT_DB_PATH
+    click.echo(f"Reading {source} sessions from {oc_db}...")
 
     results = import_sessions(
         engine,
-        session_dir=actual_dir,
+        db_path=oc_db,
         session_id=session_id,
+        project_path=project_path,
         import_all=import_all,
         dry_run=dry_run,
     )
@@ -423,9 +430,11 @@ def import_cmd(
     total_events = 0
     for r in results:
         if r.get("dry_run"):
+            proj = r.get("project_name", "")
+            proj_info = f" [{proj}]" if proj else ""
             click.echo(
                 f"  [dry-run] {r['source_id']}: "
-                f"{r.get('title', '')} ({r.get('message_count', 0)} messages)"
+                f"{r.get('title', '')} ({r.get('message_count', 0)} messages){proj_info}"
             )
         else:
             errors = r.get("errors", [])
