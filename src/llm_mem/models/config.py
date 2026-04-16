@@ -28,6 +28,11 @@ class CompactionConfig(BaseModel):
     max_events: int = 500
 
 
+class SummarizationConfig(BaseModel):
+    chunk_size: int = 20
+    cross_session_interval: int = 5
+
+
 class UIConfig(BaseModel):
     port: int = 9090
     host: str = "127.0.0.1"
@@ -46,6 +51,7 @@ class Config(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+    summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)
 

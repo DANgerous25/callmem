@@ -14,7 +14,7 @@ Track work order progress and ad-hoc tasks here.
 | WO-05 | MCP server with core tools | **Complete** |
 | WO-06 | Ollama integration and entity extraction | **Complete** |
 | WO-07 | Retrieval engine and startup briefing | **Complete** |
-| WO-08 | Summarization workers | Not started |
+| WO-08 | Summarization workers | **Complete** |
 | WO-09 | Memory compaction | Not started |
 | WO-10 | Web UI | Not started |
 | WO-11 | Background worker runner | Not started |
