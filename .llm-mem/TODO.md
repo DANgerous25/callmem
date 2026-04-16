@@ -12,7 +12,7 @@ Track work order progress and ad-hoc tasks here.
 | WO-04 | Core engine — ingest and session management | **Complete** |
 | WO-04b | Sensitive data detection and encrypted vault | **Complete** |
 | WO-05 | MCP server with core tools | **Complete** |
-| WO-06 | Ollama integration and entity extraction | Not started |
+| WO-06 | Ollama integration and entity extraction | **Complete** |
 | WO-07 | Retrieval engine and startup briefing | Not started |
 | WO-08 | Summarization workers | Not started |
 | WO-09 | Memory compaction | Not started |

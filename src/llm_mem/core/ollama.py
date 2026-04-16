@@ -58,6 +58,13 @@ class OllamaClient:
             logger.warning("Ollama generate failed: %s", exc)
             return None
 
+    def extract(self, prompt: str) -> str | None:
+        """Send an extraction prompt and return the raw response.
+
+        Public wrapper around _generate for use by extraction and other workers.
+        """
+        return self._generate(prompt)
+
     def scan_sensitive(self, content: str) -> list[Detection]:
         """Use the local LLM to detect sensitive data that patterns might miss.
 
