@@ -35,7 +35,7 @@ class SummarizationConfig(BaseModel):
 
 class UIConfig(BaseModel):
     port: int = 9090
-    host: str = "127.0.0.1"
+    host: str = "0.0.0.0"  # noqa: S104 — bind all interfaces for Tailscale/LAN access; restrict to 127.0.0.1 in config.toml if needed
 
 
 class SensitiveDataConfig(BaseModel):

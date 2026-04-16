@@ -90,7 +90,7 @@ class TestUI:
         runner.invoke(main, ["init", "--project", str(tmp_path)])
         with patch("uvicorn.run"):
             result = runner.invoke(main, ["ui", "--project", str(tmp_path)])
-        assert "http://127.0.0.1:9090" in result.output
+        assert "http://0.0.0.0:9090" in result.output
 
     def test_ui_custom_port(self, tmp_path: Path) -> None:
         from unittest.mock import patch

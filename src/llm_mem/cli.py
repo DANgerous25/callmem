@@ -68,14 +68,16 @@ def serve(project: Path, transport: str, no_workers: bool) -> None:
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--port", type=int, default=None, help="Override UI port.")
-def ui(project: Path, port: int | None) -> None:
-    """Start the local web UI."""
+@click.option("--host", type=str, default=None, help="Override bind address (default: 0.0.0.0).")
+def ui(project: Path, port: int | None, host: str | None) -> None:
+    """Start the web UI."""
     from llm_mem.core.config import load_config
     from llm_mem.core.database import Database
     from llm_mem.core.engine import MemoryEngine
 
     config = load_config(project)
     actual_port = port if port is not None else config.ui.port
+    actual_host = host if host is not None else config.ui.host
 
     db_path = project / ".llm-mem" / "memory.db"
     db = Database(db_path)
@@ -88,9 +90,9 @@ def ui(project: Path, port: int | None) -> None:
     from llm_mem.ui.app import create_app
 
     app = create_app(engine)
-    click.echo(f"Starting llm-mem UI on http://{config.ui.host}:{actual_port}")
+    click.echo(f"Starting llm-mem UI on http://{actual_host}:{actual_port}")
     click.echo(f"Project: {project.resolve()}")
-    uvicorn.run(app, host=config.ui.host, port=actual_port, log_level="info")
+    uvicorn.run(app, host=actual_host, port=actual_port, log_level="info")
 
 
 @main.command()
