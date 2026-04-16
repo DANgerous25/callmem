@@ -6,7 +6,7 @@ Track work order progress and ad-hoc tasks here.
 
 | WO | Title | Status |
 |----|-------|--------|
-| WO-01 | Project setup and database initialization | Mostly done (scaffold exists, verify acceptance criteria) |
+| WO-01 | Project setup and database initialization | **Complete** |
 | WO-02 | Data models and type system | Scaffolded (models exist, need completion + tests) |
 | WO-03 | CLI skeleton and configuration loading | Partial (CLI exists, config loading not implemented) |
 | WO-04 | Core engine — ingest and session management | Not started |
@@ -22,6 +22,6 @@ Track work order progress and ad-hoc tasks here.
 
 ## Ad-hoc Tasks
 
-- [ ] Verify WO-01 acceptance criteria are fully met before moving on
+- [x] Verify WO-01 acceptance criteria are fully met before moving on
 - [ ] Consider adding a `py.typed` marker for PEP 561
 - [ ] Set up `ruff` pre-commit hook
