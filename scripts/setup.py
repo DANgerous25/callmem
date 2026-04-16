@@ -215,6 +215,137 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
         print(f"  You can retry: llm-mem import --source opencode --all --project {project}")
 
 
+# ── Systemd service ───────────────────────────────────────────────
+
+
+def _service_name(project: Path) -> str:
+    """Derive a systemd service name from the project path."""
+    return f"llm-mem-{project.name}"
+
+
+def _offer_systemd_service(
+    project: Path, ui_host: str, ui_port: int
+) -> None:
+    """Offer to install a systemd user service for the daemon."""
+    # Only offer on Linux systems with systemd
+    if sys.platform != "linux":
+        return
+
+    systemd_dir = Path.home() / ".config" / "systemd" / "user"
+    if not systemd_dir.parent.exists():
+        # No systemd user directory structure
+        return
+
+    print()
+    print("── Autostart ──")
+    print()
+    print(
+        "  llm-mem can install a systemd user service so the"
+        " daemon"
+    )
+    print(
+        "  (UI + workers + adapter) starts automatically"
+        " on login."
+    )
+    print()
+
+    install = ask_bool(
+        "Install systemd user service?", default=True
+    )
+    if not install:
+        print("  Skipped. Start manually with:")
+        print(f"    llm-mem daemon --project {project}")
+        return
+
+    svc_name = _service_name(project)
+    unit_path = systemd_dir / f"{svc_name}.service"
+
+    # Find the llm-mem binary
+    llm_mem_bin = shutil.which("llm-mem")
+    if llm_mem_bin is None:
+        # Fall back to uv run
+        llm_mem_bin = f"{shutil.which('uv') or 'uv'} run llm-mem"
+
+    unit_content = f"""[Unit]
+Description=llm-mem daemon for {project.name}
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={project}
+ExecStart={llm_mem_bin} daemon --project {project}
+Restart=on-failure
+RestartSec=5
+Environment=PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}
+
+[Install]
+WantedBy=default.target
+"""
+
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+
+    if unit_path.exists():
+        print(f"  Updating existing service: {svc_name}")
+    else:
+        print(f"  Creating service: {svc_name}")
+
+    unit_path.write_text(unit_content)
+    print(f"  Wrote {unit_path}")
+
+    # Reload and enable
+    try:
+        import subprocess
+
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", svc_name],
+            check=True,
+            capture_output=True,
+        )
+
+        start_now = ask_bool("Start the service now?", default=True)
+        if start_now:
+            subprocess.run(
+                [
+                    "systemctl", "--user",
+                    "restart", svc_name,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            print(f"  Service {svc_name} started.")
+        else:
+            print("  Service enabled. Start with:")
+            print(
+                f"    systemctl --user start {svc_name}"
+            )
+
+        print()
+        print("  Useful commands:")
+        print(
+            f"    systemctl --user status {svc_name}"
+        )
+        print(
+            f"    journalctl --user -u {svc_name} -f"
+        )
+        print(
+            f"    systemctl --user restart {svc_name}"
+        )
+
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"  systemctl command failed: {exc}")
+        print("  Service file written but not enabled.")
+        print("  Enable manually:")
+        print(
+            f"    systemctl --user daemon-reload"
+            f" && systemctl --user enable --now {svc_name}"
+        )
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -506,6 +637,9 @@ vault_mode = "{vault_mode}"
         oc_config_path.write_text(json.dumps(oc_config, indent=2) + "\n")
         print(f"  Wrote MCP config to {oc_config_path.name}")
 
+    # ── Autostart ─────────────────────────────────────────────────
+    _offer_systemd_service(project, ui_host, ui_port)
+
     # ── Summary ───────────────────────────────────────────────────
     print()
     print("=" * 56)
@@ -538,15 +672,20 @@ vault_mode = "{vault_mode}"
         print(f"      export {oai_key_env}=your-key-here")
         print()
 
-    print("    Start the web UI:")
-    print(f"      llm-mem ui --project {project}")
+    print("    Start everything (UI + workers + adapter):")
+    print(f"      llm-mem daemon --project {project}")
     print()
+    print("    Or start individually:")
+    print(f"      llm-mem ui --project {project}")
     if backend != "none":
-        print("    Start background workers:")
         print(f"      llm-mem workers --project {project}")
-        print()
+    print(f"      llm-mem adapter --project {project}")
+    print()
     print("    Import existing sessions (if not done above):")
-    print(f"      llm-mem import --source opencode --all --project {project}")
+    print(
+        f"      llm-mem import --source opencode --all"
+        f" --project {project}"
+    )
     print()
     print("    Start coding with memory:")
     print(f"      cd {project} && opencode")

@@ -226,6 +226,139 @@ def adapter(project: Path, opencode_url: str) -> None:
         click.echo("Adapter stopped.")
 
 
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--port", type=int, default=None, help="Override UI port.")
+@click.option("--host", type=str, default=None, help="Override bind address.")
+@click.option(
+    "--opencode-url",
+    default="http://localhost:4096",
+    help="OpenCode server URL.",
+)
+@click.option(
+    "--no-adapter",
+    is_flag=True,
+    help="Skip the OpenCode SSE adapter.",
+)
+@click.option(
+    "--no-workers",
+    is_flag=True,
+    help="Skip background workers.",
+)
+def daemon(
+    project: Path,
+    port: int | None,
+    host: str | None,
+    opencode_url: str,
+    no_adapter: bool,
+    no_workers: bool,
+) -> None:
+    """Run UI + workers + adapter in a single process."""
+    import signal
+
+    import uvicorn
+
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine, _create_llm_client
+    from llm_mem.ui.app import create_app
+
+    config = load_config(project)
+    actual_port = port if port is not None else config.ui.port
+    actual_host = host if host is not None else config.ui.host
+
+    db_path = project / ".llm-mem" / "memory.db"
+    db = Database(db_path)
+    db.initialize()
+
+    engine = MemoryEngine(db, config)
+    app = create_app(engine)
+
+    stop_event = threading.Event()
+    threads: list[threading.Thread] = []
+
+    # Workers
+    worker_runner = None
+    if not no_workers:
+        llm_client = _create_llm_client(config)
+        if llm_client is not None:
+            from llm_mem.core.workers import WorkerRunner
+
+            worker_runner = WorkerRunner(db, llm_client, config)
+            worker_runner.start()
+            click.echo("  Workers:  started")
+        else:
+            click.echo(
+                "  Workers:  skipped (backend='none')"
+            )
+    else:
+        click.echo("  Workers:  disabled")
+
+    # Adapter
+    adapter_instance = None
+    if not no_adapter:
+        from llm_mem.adapters.opencode import OpenCodeAdapter
+
+        adapter_instance = OpenCodeAdapter(
+            engine, opencode_url=opencode_url
+        )
+
+        def _run_adapter() -> None:
+            try:
+                assert adapter_instance is not None
+                adapter_instance.run()
+            except Exception:
+                pass
+
+        t = threading.Thread(
+            target=_run_adapter, daemon=True, name="llm-mem-adapter"
+        )
+        t.start()
+        threads.append(t)
+        click.echo(f"  Adapter:  {opencode_url}")
+    else:
+        click.echo("  Adapter:  disabled")
+
+    click.echo(
+        f"  UI:       http://{actual_host}:{actual_port}"
+    )
+    click.echo()
+    click.echo(
+        f"llm-mem daemon running — {project.resolve()}"
+    )
+    click.echo("Press Ctrl+C to stop.")
+
+    def _shutdown(sig: int, frame: object) -> None:
+        click.echo("\nShutting down...")
+        stop_event.set()
+        if adapter_instance is not None:
+            adapter_instance.stop()
+        if worker_runner is not None:
+            worker_runner.stop()
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+
+    # UI runs on the main thread (uvicorn blocks)
+    try:
+        uvicorn.run(
+            app,
+            host=actual_host,
+            port=actual_port,
+            log_level="warning",
+        )
+    except SystemExit:
+        pass
+    finally:
+        stop_event.set()
+        if adapter_instance is not None:
+            adapter_instance.stop()
+        if worker_runner is not None:
+            worker_runner.stop()
+        for t in threads:
+            t.join(timeout=5)
+
+
 @main.command("import")
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option(
