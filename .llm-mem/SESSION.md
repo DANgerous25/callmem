@@ -1,33 +1,38 @@
 # Last Session Summary
 
 **Date:** 2026-04-16
-**Duration:** Extended session (architecture + scaffold + sensitive data + repo setup)
+**Duration:** WO-01 verification session
 
 ## What happened
 
-1. **Full project scaffold created** — README, AGENTS.md, pyproject.toml, .gitignore, 10 docs, 13 work orders (WO-01 through WO-12 + WO-04b), 3 prompt templates, complete Python package skeleton with working database, CLI, all 6 Pydantic models, migration SQL, 19 passing tests.
+1. **WO-01 acceptance criteria verified** — all 6 criteria confirmed:
+   - `uv sync` installs all dependencies (main + `--extra dev` for test/lint tools)
+   - `Database(':memory:').initialize()` creates all tables (10 regular + 3 FTS5)
+   - Schema version = 1 after initialization
+   - All 3 FTS5 virtual tables (events_fts, entities_fts, summaries_fts) created
+   - All 9 FTS5 sync triggers in place
+   - 20 tests passing (8 database + 12 models)
 
-2. **Bootstrap memory system established** — SESSION.md, DECISIONS.md, TODO.md in `.llm-mem/`, plus `scripts/session_save.py` and `scripts/session_load.py` helper scripts.
+2. **Added trigger test** — `test_triggers_created` in `tests/unit/test_database.py` to explicitly verify acceptance criteria #5
 
-3. **Sensitive data protection designed** — Two-layer inline detection (regex patterns + local Ollama LLM classification). Fernet-encrypted vault for secrets. Created `redaction.py`, `crypto.py` skeletons, `sensitive-data.md` doc, and WO-04b work order.
-
-4. **Coding norms defined** — AGENTS.md with git discipline, code quality norms, session workflow, architecture rules. `docs/coding-norms.md` with full rationale.
-
-5. **GitHub repo created** — `DANgerous25/llm-mem` (private). Initial commit pushed with all scaffold files.
-
-6. **Getting started guide** — `docs/getting-started.md` with concrete first-session walkthrough for OpenCode/GLM.
+3. **Fixed all lint errors** — ruff now passes clean across `src/` and `tests/`:
+   - Line length fixes in cli.py, redaction.py (regex patterns)
+   - TC003 fixes (Path imports moved to TYPE_CHECKING blocks)
+   - Unused import cleanup (pytest, typing.Any)
+   - Import sorting (I001 fixes)
+   - UP017 fixes (timezone.utc → datetime.UTC)
+   - Removed stale commented-out interface sketch from engine.py
 
 ## Design decisions made
 
-- 009: Two-layer inline sensitive data detection (pattern + LLM, both at ingest time, not async)
+- None new this session
 
 ## Current state
 
-- All scaffold files committed and pushed to GitHub
-- 19 tests passing (database + models)
-- WO-01 is mostly done (verify acceptance criteria)
+- WO-01 is **complete** — all acceptance criteria met
+- 20 tests passing, ruff clean, all committed and pushed
 - WO-02 through WO-12 not started
 
 ## Next step
 
-Open OpenCode, read AGENTS.md and memory files, start verifying WO-01 acceptance criteria, then proceed to WO-02.
+Begin WO-02: Data models and type system (models exist as scaffold, need completion + tests)
