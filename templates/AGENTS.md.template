@@ -1,0 +1,28 @@
+# Project Memory — llm-mem
+
+This project uses llm-mem for persistent memory across coding sessions.
+
+## Session workflow
+
+**Start of session:**
+1. Call `mem_session_start` to register this session
+2. The returned briefing contains important context from previous sessions
+3. Read the briefing carefully before starting work
+
+**During the session:**
+- When you make an important decision, call `mem_ingest` with type "decision"
+- When you identify a TODO, call `mem_ingest` with type "todo"
+- When you discover something notable, call `mem_ingest` with type "discovery"
+- When something fails unexpectedly, call `mem_ingest` with type "failure"
+- To recall past context about a topic, call `mem_search`
+- To see open tasks, call `mem_get_tasks`
+
+**End of session:**
+- Call `mem_session_end` to trigger summary generation
+
+## Memory guidelines
+- Be specific in memory content (include file paths, function names, error messages)
+- Set priority on TODOs: high, medium, or low
+- Mark failures as resolved when you fix them
+- You don't need to memorize everything — the system captures raw events automatically
+- Focus on recording decisions (the "why") and TODOs (what's next)

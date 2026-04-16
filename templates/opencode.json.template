@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "llm-mem": {
+      "command": "llm-mem",
+      "args": ["serve", "--project", "."]
+    }
+  }
+}
