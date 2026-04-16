@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from fastapi import APIRouter, Request
+
+if TYPE_CHECKING:
+    from fastapi.responses import HTMLResponse
 
 router = APIRouter()
 
 
 @router.get("/briefing")
-async def briefing(request: Request) -> str:
+async def briefing(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
@@ -32,7 +37,7 @@ async def briefing(request: Request) -> str:
 
 
 @router.post("/briefing/regenerate")
-async def regenerate_briefing(request: Request) -> str:
+async def regenerate_briefing(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine

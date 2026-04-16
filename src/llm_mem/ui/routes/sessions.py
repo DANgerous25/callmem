@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
 
 router = APIRouter()
 
 
 @router.get("/sessions")
-async def sessions_list(request: Request) -> str:
+async def sessions_list(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
@@ -19,7 +20,7 @@ async def sessions_list(request: Request) -> str:
 
 
 @router.get("/sessions/{session_id}")
-async def session_detail(request: Request, session_id: str) -> str:
+async def session_detail(request: Request, session_id: str) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
@@ -48,7 +49,7 @@ async def session_detail(request: Request, session_id: str) -> str:
 
 
 @router.get("/partials/sessions")
-async def sessions_partial(request: Request) -> str:
+async def sessions_partial(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
@@ -59,13 +60,13 @@ async def sessions_partial(request: Request) -> str:
 
 
 @router.get("/partials/sessions/{session_id}")
-async def session_detail_partial(request: Request, session_id: str) -> str:
+async def session_detail_partial(request: Request, session_id: str) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
     session = engine.get_session(session_id)
     if session is None:
-        return "<p>Session not found.</p>"
+        return HTMLResponse("<p>Session not found.</p>")
 
     events = engine.get_events(session_id=session_id, limit=100)
     entities = engine.get_entities(limit=50)

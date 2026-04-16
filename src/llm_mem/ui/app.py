@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
@@ -48,8 +49,8 @@ def create_app(engine: MemoryEngine) -> FastAPI:
 
 def render_template(
     app: FastAPI, name: str, **context: object
-) -> str:
+) -> HTMLResponse:
     """Render a Jinja2 template with the given context."""
     env: Environment = app.state.templates
     template = env.get_template(name)
-    return template.render(**context)
+    return HTMLResponse(template.render(**context))
