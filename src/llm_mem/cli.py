@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import click
@@ -56,7 +57,7 @@ def serve(project: Path, transport: str, no_workers: bool) -> None:
 
     click.echo(f"Starting llm-mem MCP server (transport={transport})")
     click.echo(f"Project: {project.resolve()}")
-    asyncio.run(run_stdio(project.resolve()))
+    asyncio.run(run_stdio(project.resolve(), no_workers=no_workers))
 
 
 @main.command()
@@ -122,6 +123,49 @@ def status(project: Path) -> None:
         click.echo(f"  Last session: {last}")
     finally:
         conn.close()
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--interval", type=int, default=5, help="Poll interval in seconds.")
+def workers(project: Path, interval: int) -> None:
+    """Run the background worker loop standalone."""
+    import signal
+
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.ollama import OllamaClient
+    from llm_mem.core.workers import WorkerRunner
+
+    config = load_config(project)
+    db_path = project / ".llm-mem" / "memory.db"
+    db = Database(db_path)
+    db.initialize()
+
+    ollama = OllamaClient(
+        endpoint=config.ollama.endpoint,
+        model=config.ollama.model,
+        timeout=config.ollama.timeout,
+    )
+
+    runner = WorkerRunner(db, ollama, config, poll_interval=interval)
+
+    stop_event = threading.Event()
+
+    def _signal_handler(sig: int, frame: object) -> None:
+        stop_event.set()
+
+
+    signal.signal(signal.SIGINT, _signal_handler)
+    signal.signal(signal.SIGTERM, _signal_handler)
+
+    click.echo(f"Starting llm-mem workers (interval={interval}s)")
+    click.echo(f"Project: {project.resolve()}")
+    runner.start()
+
+    stop_event.wait()
+    runner.stop()
+    click.echo("Workers stopped.")
 
 
 if __name__ == "__main__":
