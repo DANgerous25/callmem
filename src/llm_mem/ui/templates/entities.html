@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}llm-mem — {{ entity_type|capitalize }}s{% endblock %}
+{% block content %}
+<h2>{{ entity_type|capitalize }}s</h2>
+
+<nav>
+    <ul>
+        <li><a href="/entities/todo">TODOs</a></li>
+        <li><a href="/entities/decision">Decisions</a></li>
+        <li><a href="/entities/fact">Facts</a></li>
+        <li><a href="/entities/failure">Failures</a></li>
+        <li><a href="/entities/discovery">Discoveries</a></li>
+    </ul>
+</nav>
+
+{% if entities %}
+<table>
+    <thead><tr><th>Title</th><th>Content</th><th>Status</th><th>Priority</th><th>Pinned</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for e in entities %}
+    <tr id="entity-{{ e.id }}">
+        <td>{{ e.title }}</td>
+        <td>{{ (e.content or "")[:60] }}</td>
+        <td>{{ e.status or "-" }}</td>
+        <td>{{ e.priority or "-" }}</td>
+        <td>{% if e.pinned %}Pinned{% endif %}</td>
+        <td>
+            {% if not e.pinned %}
+            <button hx-post="/entities/{{ e.id }}/pin"
+                    hx-target="#entity-{{ e.id }} td:last-child"
+                    hx-swap="innerHTML">Pin</button>
+            {% else %}
+            <button hx-post="/entities/{{ e.id }}/unpin"
+                    hx-target="#entity-{{ e.id }} td:last-child"
+                    hx-swap="innerHTML">Unpin</button>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No {{ entity_type }}s found.</p>
+{% endif %}
+{% endblock %}

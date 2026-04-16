@@ -84,17 +84,23 @@ class TestServe:
 
 class TestUI:
     def test_ui_outputs_url(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
         runner = CliRunner()
         runner.invoke(main, ["init", "--project", str(tmp_path)])
-        result = runner.invoke(main, ["ui", "--project", str(tmp_path)])
+        with patch("uvicorn.run"):
+            result = runner.invoke(main, ["ui", "--project", str(tmp_path)])
         assert "http://127.0.0.1:9090" in result.output
 
     def test_ui_custom_port(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
         runner = CliRunner()
         runner.invoke(main, ["init", "--project", str(tmp_path)])
-        result = runner.invoke(
-            main, ["ui", "--project", str(tmp_path), "--port", "8080"]
-        )
+        with patch("uvicorn.run"):
+            result = runner.invoke(
+                main, ["ui", "--project", str(tmp_path), "--port", "8080"]
+            )
         assert "8080" in result.output
 
 

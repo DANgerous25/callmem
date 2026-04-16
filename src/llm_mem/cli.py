@@ -65,11 +65,26 @@ def serve(project: Path, transport: str, no_workers: bool) -> None:
 def ui(project: Path, port: int | None) -> None:
     """Start the local web UI."""
     from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine
 
     config = load_config(project)
     actual_port = port if port is not None else config.ui.port
+
+    db_path = project / ".llm-mem" / "memory.db"
+    db = Database(db_path)
+    db.initialize()
+
+    engine = MemoryEngine(db, config)
+
+    import uvicorn
+
+    from llm_mem.ui.app import create_app
+
+    app = create_app(engine)
     click.echo(f"Starting llm-mem UI on http://{config.ui.host}:{actual_port}")
     click.echo(f"Project: {project.resolve()}")
+    uvicorn.run(app, host=config.ui.host, port=actual_port, log_level="info")
 
 
 @main.command()

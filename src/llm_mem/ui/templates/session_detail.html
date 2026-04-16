@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}llm-mem — Session{% endblock %}
+{% block content %}
+{% if session %}
+<h2>Session {{ session.id[:8] }}...</h2>
+<p>
+    Started: {{ session.started_at[:19] }} &middot;
+    Status: {{ session.status }} &middot;
+    Events: {{ session.event_count }}
+</p>
+
+{% if session.summary %}
+<article>
+    <header><strong>Summary</strong></header>
+    {{ session.summary }}
+</article>
+{% endif %}
+
+{% if entities %}
+<h3>Extracted Entities</h3>
+<table>
+    <thead><tr><th>Type</th><th>Title</th><th>Content</th></tr></thead>
+    <tbody>
+    {% for e in entities %}
+    <tr>
+        <td>{{ e.type }}</td>
+        <td>{{ e.title }}</td>
+        <td>{{ (e.content or "")[:60] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<h3>Events</h3>
+<table>
+    <thead><tr><th>Time</th><th>Type</th><th>Content</th></tr></thead>
+    <tbody>
+    {% for ev in events %}
+    <tr>
+        <td>{{ ev.timestamp[:16] }}</td>
+        <td>{{ ev.type }}</td>
+        <td>{{ ev.content[:100] }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>Session not found.</p>
+{% endif %}
+{% endblock %}
