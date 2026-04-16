@@ -130,6 +130,8 @@ schedule = "on_session_end"
 
 [ui]
 port = 9090
+# host = "0.0.0.0"    # default — accessible from Tailscale/LAN
+# host = "127.0.0.1"  # restrict to localhost only
 
 [sensitive_data]
 enabled = true

@@ -27,7 +27,7 @@ class TestConfigDefaults:
         assert config.ollama.timeout == 120
         assert config.briefing.max_tokens == 2000
         assert config.ui.port == 9090
-        assert config.ui.host == "127.0.0.1"
+        assert config.ui.host == "0.0.0.0"
         assert config.compaction.enabled is True
         assert config.compaction.schedule == "on_session_end"
         assert config.sensitive_data.enabled is True
