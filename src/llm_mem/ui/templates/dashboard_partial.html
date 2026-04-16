@@ -1,7 +1,3 @@
-{% extends "base.html" %}
-{% block title %}llm-mem — Dashboard{% endblock %}
-{% block content %}
-<div id="dashboard-content" hx-get="/partials/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">
 <hgroup>
     <h2>{{ project_name }}</h2>
     <p>Events: {{ event_count }} &middot; Entities: {{ entity_count }} &middot; Sessions: {{ session_count }}</p>
@@ -45,5 +41,3 @@
     </tbody>
 </table>
 {% endif %}
-</div>
-{% endblock %}
