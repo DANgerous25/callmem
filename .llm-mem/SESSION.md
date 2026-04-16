@@ -1,27 +1,22 @@
 # Last Session Summary
 
 **Date:** 2026-04-16
-**Duration:** WO-01 verification session
+**Duration:** WO-01 verification + WO-02 completion
 
 ## What happened
 
-1. **WO-01 acceptance criteria verified** — all 6 criteria confirmed:
-   - `uv sync` installs all dependencies (main + `--extra dev` for test/lint tools)
-   - `Database(':memory:').initialize()` creates all tables (10 regular + 3 FTS5)
-   - Schema version = 1 after initialization
-   - All 3 FTS5 virtual tables (events_fts, entities_fts, summaries_fts) created
-   - All 9 FTS5 sync triggers in place
-   - 20 tests passing (8 database + 12 models)
+1. **WO-01 verified and completed** — all 6 acceptance criteria confirmed, added trigger test, fixed all lint errors (ruff clean), 20 tests passing.
 
-2. **Added trigger test** — `test_triggers_created` in `tests/unit/test_database.py` to explicitly verify acceptance criteria #5
+2. **WO-02 completed** — Data models were already scaffolded from initial session. All 7 acceptance criteria verified by expanding tests from 12 to 47:
+   - AC1: All models instantiate with valid data (Event, EventInput, Session, Entity, Project, Summary, MemoryEdge)
+   - AC2: All models reject invalid data (wrong literal values, missing required fields)
+   - AC3: `to_row()` produces SQLite-compatible dicts (metadata → JSON string, pinned → int)
+   - AC4: `from_row()` reconstructs models with full equality (`reconstructed == original`)
+   - AC5: ULID IDs auto-generated (verified unique across instances, length == 26)
+   - AC6: Timestamps default to current time (verified "T" present in ISO strings)
+   - AC7: All tests pass
 
-3. **Fixed all lint errors** — ruff now passes clean across `src/` and `tests/`:
-   - Line length fixes in cli.py, redaction.py (regex patterns)
-   - TC003 fixes (Path imports moved to TYPE_CHECKING blocks)
-   - Unused import cleanup (pytest, typing.Any)
-   - Import sorting (I001 fixes)
-   - UP017 fixes (timezone.utc → datetime.UTC)
-   - Removed stale commented-out interface sketch from engine.py
+3. **Test coverage expanded** — added full round-trip equality tests, all-literal-value tests for every Literal type, JSON serialization tests for metadata on all models, missing-required-field tests for all models.
 
 ## Design decisions made
 
@@ -29,10 +24,10 @@
 
 ## Current state
 
-- WO-01 is **complete** — all acceptance criteria met
-- 20 tests passing, ruff clean, all committed and pushed
-- WO-02 through WO-12 not started
+- WO-01 **complete**, WO-02 **complete**
+- 55 tests passing (8 database + 47 models), ruff clean
+- All committed and pushed to main
 
 ## Next step
 
-Begin WO-02: Data models and type system (models exist as scaffold, need completion + tests)
+Begin WO-03: CLI skeleton and configuration loading
