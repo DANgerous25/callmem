@@ -24,20 +24,19 @@ def main() -> None:
 )
 def init(project: Path) -> None:
     """Initialize llm-mem for a project."""
+    from llm_mem.core.config import generate_default_config
     from llm_mem.core.database import Database
 
     llm_mem_dir = project / ".llm-mem"
     llm_mem_dir.mkdir(exist_ok=True)
 
-    # Initialize database
     db_path = llm_mem_dir / "memory.db"
     db = Database(db_path)
     db.initialize()
 
-    # Write default config
     config_path = llm_mem_dir / "config.toml"
     if not config_path.exists():
-        config_path.write_text(_default_config(project.name))
+        config_path.write_text(generate_default_config(project.name))
 
     click.echo(f"Initialized llm-mem in {llm_mem_dir}")
     click.echo(f"  Database: {db_path}")
@@ -51,21 +50,30 @@ def init(project: Path) -> None:
 @click.option("--no-workers", is_flag=True, help="Disable background workers.")
 def serve(project: Path, transport: str, no_workers: bool) -> None:
     """Start the MCP server."""
+    from llm_mem.core.config import load_config
+
+    config = load_config(project)
     workers_status = "off" if no_workers else "on"
-    click.echo(f"Starting llm-mem MCP server (transport={transport}, workers={workers_status})")
+    click.echo(
+        f"Starting llm-mem MCP server "
+        f"(transport={transport}, workers={workers_status})"
+    )
     click.echo(f"Project: {project.resolve()}")
-    # TODO: Launch MCP server (WO-05)
+    click.echo(f"Ollama model: {config.ollama.model}")
     click.echo("MCP server ready.")
 
 
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
-@click.option("--port", type=int, default=9090)
-def ui(project: Path, port: int) -> None:
+@click.option("--port", type=int, default=None, help="Override UI port.")
+def ui(project: Path, port: int | None) -> None:
     """Start the local web UI."""
-    click.echo(f"Starting llm-mem UI on http://127.0.0.1:{port}")
+    from llm_mem.core.config import load_config
+
+    config = load_config(project)
+    actual_port = port if port is not None else config.ui.port
+    click.echo(f"Starting llm-mem UI on http://{config.ui.host}:{actual_port}")
     click.echo(f"Project: {project.resolve()}")
-    # TODO: Launch FastAPI (WO-10)
 
 
 @main.command()
@@ -94,34 +102,15 @@ def status(project: Path) -> None:
         db_size_mb = db_path.stat().st_size / (1024 * 1024)
 
         click.echo(f"llm-mem status — {project.resolve()}")
-        click.echo(f"  Database:    {db_path} ({db_size_mb:.1f} MB)")
-        click.echo(f"  Schema:      v{version}")
-        click.echo(f"  Events:      {events}")
-        click.echo(f"  Sessions:    {sessions}")
-        click.echo(f"  Entities:    {entities}")
-        click.echo(f"  Last session: {last_session['started_at'] if last_session else 'none'}")
+        click.echo(f"  Database:     {db_path} ({db_size_mb:.1f} MB)")
+        click.echo(f"  Schema:       v{version}")
+        click.echo(f"  Events:       {events}")
+        click.echo(f"  Sessions:     {sessions}")
+        click.echo(f"  Entities:     {entities}")
+        last = last_session["started_at"] if last_session else "none"
+        click.echo(f"  Last session: {last}")
     finally:
         conn.close()
-
-
-def _default_config(project_name: str) -> str:
-    return f'''# llm-mem configuration
-# See docs/config.md for all options
-
-[project]
-name = "{project_name}"
-
-[ollama]
-model = "qwen3:8b"
-endpoint = "http://localhost:11434"
-
-[briefing]
-max_tokens = 2000
-
-[compaction]
-enabled = true
-schedule = "on_session_end"
-'''
 
 
 if __name__ == "__main__":

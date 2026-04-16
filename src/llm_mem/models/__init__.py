@@ -1,5 +1,6 @@
 """Data models for llm-mem."""
 
+from llm_mem.models.config import Config
 from llm_mem.models.edges import EdgeRelation, MemoryEdge
 from llm_mem.models.entities import Entity, EntityStatus, EntityType, Priority
 from llm_mem.models.events import Event, EventInput, EventType
@@ -8,6 +9,7 @@ from llm_mem.models.sessions import Session, SessionStatus
 from llm_mem.models.summaries import Summary, SummaryLevel
 
 __all__ = [
+    "Config",
     "Event",
     "EventInput",
     "EventType",
