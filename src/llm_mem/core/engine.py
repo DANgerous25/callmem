@@ -14,6 +14,7 @@ from llm_mem.models.sessions import Session
 
 if TYPE_CHECKING:
     from llm_mem.core.database import Database
+    from llm_mem.core.redaction import Detection
     from llm_mem.models.config import Config
 
 TRUNCATION_MARKER = "\n\n[... truncated at {max_chars} chars]"
@@ -40,6 +41,12 @@ class MemoryEngine:
         self.config = config
         self.repo = Repository(db)
         self._project_id: str | None = None
+
+        if config.sensitive_data.enabled:
+            from llm_mem.core.redaction import PatternScanner
+            self.pattern_scanner = PatternScanner()
+        else:
+            self.pattern_scanner = None
 
     @property
     def project_id(self) -> str:
@@ -214,20 +221,53 @@ class MemoryEngine:
         return self.start_session()
 
     def _create_event(self, session: Session, inp: EventInput) -> Event | None:
-        """Create and store a single event, applying dedup and truncation."""
+        """Create and store a single event, applying dedup, redaction, and truncation."""
         content = self._truncate_content(inp.content)
 
         if self._is_duplicate(session.project_id, inp.type, content):
             return None
+
+        detections: list[Detection] = []
+        scan_status = "none"
+
+        if self.pattern_scanner is not None:
+            from llm_mem.core.redaction import apply_redactions
+
+            detections = self.pattern_scanner.scan(content)
+            scan_status = "pattern_only"
+
+            if detections:
+                content = apply_redactions(content, detections)
+
+        metadata = dict(inp.metadata) if inp.metadata else {}
+        metadata["scan_status"] = scan_status
 
         event = Event(
             session_id=session.id,
             project_id=session.project_id,
             type=inp.type,
             content=content,
-            metadata=inp.metadata,
+            metadata=metadata,
         )
         self.repo.insert_event(event)
+
+        if detections:
+            from llm_mem.core.crypto import VaultKeyManager
+
+            vault_dir = self.db.db_path.parent
+            crypto = VaultKeyManager(vault_dir)
+            for d in detections:
+                ciphertext = crypto.encrypt(d.original_value)
+                self.repo.insert_vault_entry(
+                    id=d.vault_id,
+                    project_id=session.project_id,
+                    category=d.category,
+                    detector=d.detector,
+                    pattern_name=d.pattern_name,
+                    ciphertext=ciphertext,
+                    event_id=event.id,
+                )
+
         return event
 
     def _truncate_content(self, content: str) -> str:

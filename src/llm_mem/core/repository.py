@@ -342,3 +342,28 @@ class Repository:
             return dict(entity.to_row())
         finally:
             conn.close()
+
+    # ── Vault ─────────────────────────────────────────────────────────
+
+    def insert_vault_entry(
+        self,
+        id: str,
+        project_id: str,
+        category: str,
+        detector: str,
+        pattern_name: str | None,
+        ciphertext: bytes,
+        event_id: str,
+    ) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO vault "
+                "(id, project_id, category, detector, pattern_name, "
+                "ciphertext, created_at, event_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)",
+                (id, project_id, category, detector, pattern_name, ciphertext, event_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()

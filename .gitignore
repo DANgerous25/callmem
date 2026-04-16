@@ -25,6 +25,8 @@ env/
 .llm-mem/llm-mem.log
 .llm-mem/vault.key
 .llm-mem/vault.salt
+vault.key
+vault.salt
 .llm-mem/SESSION.*.md
 
 # Testing
