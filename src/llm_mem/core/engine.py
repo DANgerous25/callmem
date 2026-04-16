@@ -60,6 +60,10 @@ class MemoryEngine:
         else:
             self.ollama = None
 
+        from llm_mem.core.queue import JobQueue
+
+        self.queue = JobQueue(db)
+
     @property
     def project_id(self) -> str:
         """Lazily resolve or create the project for this engine."""
@@ -149,6 +153,13 @@ class MemoryEngine:
 
         if stored:
             self._update_session_event_count(session, len(stored))
+            self.queue.enqueue(
+                "extract_entities",
+                {
+                    "event_ids": [e.id for e in stored],
+                    "session_id": session.id,
+                },
+            )
 
         return stored
 
