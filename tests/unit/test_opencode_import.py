@@ -1,19 +1,19 @@
-"""Tests for OpenCode session history importer."""
+"""Tests for OpenCode session history importer (SQLite-based)."""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from typing import TYPE_CHECKING
 
 import pytest
 
 from llm_mem.adapters.opencode_import import (
-    _extract_content,
     _map_message,
-    discover_session_files,
+    _parse_json,
+    discover_sessions,
     import_session,
     import_sessions,
-    read_session_file,
 )
 
 if TYPE_CHECKING:
@@ -32,63 +32,171 @@ def engine_no_sensitive(memory_db: Database) -> MemoryEngine:
     return MemoryEngine(memory_db, config)
 
 
-class TestDiscoverSessionFiles:
-    def test_empty_dir(self, tmp_path: Path) -> None:
-        assert discover_session_files(tmp_path) == []
+def _create_opencode_db(db_path: Path) -> sqlite3.Connection:
+    """Create a minimal OpenCode-style SQLite database for testing."""
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE project (
+            id TEXT PRIMARY KEY,
+            worktree TEXT NOT NULL,
+            name TEXT,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            sandboxes TEXT NOT NULL DEFAULT '[]'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE session (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL REFERENCES project(id),
+            slug TEXT NOT NULL DEFAULT '',
+            directory TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            version TEXT NOT NULL DEFAULT '1',
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE message (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES session(id),
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE part (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL REFERENCES message(id),
+            session_id TEXT NOT NULL,
+            time_created INTEGER NOT NULL,
+            time_updated INTEGER NOT NULL,
+            data TEXT NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
 
-    def test_nonexistent_dir(self, tmp_path: Path) -> None:
-        assert discover_session_files(tmp_path / "nope") == []
 
-    def test_finds_json_files(self, tmp_path: Path) -> None:
-        (tmp_path / "sess1.json").write_text("{}")
-        (tmp_path / "sess2.json").write_text("{}")
-        (tmp_path / "readme.txt").write_text("ignore")
-        files = discover_session_files(tmp_path)
-        assert len(files) == 2
-        assert all(f.suffix == ".json" for f in files)
-
-    def test_finds_nested_files(self, tmp_path: Path) -> None:
-        subdir = tmp_path / "project"
-        subdir.mkdir()
-        (subdir / "sess.json").write_text("{}")
-        files = discover_session_files(tmp_path)
-        assert len(files) == 1
+def _add_project(conn: sqlite3.Connection, pid: str, worktree: str, name: str) -> None:
+    conn.execute(
+        "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)"
+        " VALUES (?, ?, ?, 1000, 1000, '[]')",
+        (pid, worktree, name),
+    )
+    conn.commit()
 
 
-class TestReadSessionFile:
-    def test_valid_json(self, tmp_path: Path) -> None:
-        p = tmp_path / "s.json"
-        p.write_text('{"id": "abc", "messages": []}')
-        data = read_session_file(p)
-        assert data is not None
-        assert data["id"] == "abc"
-
-    def test_invalid_json(self, tmp_path: Path) -> None:
-        p = tmp_path / "bad.json"
-        p.write_text("not json")
-        assert read_session_file(p) is None
-
-    def test_array_json(self, tmp_path: Path) -> None:
-        p = tmp_path / "arr.json"
-        p.write_text("[1, 2, 3]")
-        assert read_session_file(p) is None
+def _add_session(
+    conn: sqlite3.Connection, sid: str, project_id: str, title: str, ts: int = 2000,
+) -> None:
+    conn.execute(
+        "INSERT INTO session (id, project_id, title, time_created, time_updated)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (sid, project_id, title, ts, ts),
+    )
+    conn.commit()
 
 
-class TestExtractContent:
-    def test_string_content(self) -> None:
-        assert _extract_content({"content": "hello"}) == "hello"
+def _add_message(
+    conn: sqlite3.Connection,
+    mid: str,
+    session_id: str,
+    role: str,
+    ts: int = 3000,
+) -> None:
+    data = json.dumps({"role": role})
+    conn.execute(
+        "INSERT INTO message (id, session_id, time_created, time_updated, data)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (mid, session_id, ts, ts, data),
+    )
+    conn.commit()
 
-    def test_list_content(self) -> None:
-        msg = {"content": [{"text": "part1"}, {"text": "part2"}]}
-        result = _extract_content(msg)
-        assert "part1" in result
-        assert "part2" in result
 
-    def test_empty_content(self) -> None:
-        assert _extract_content({}) == ""
+def _add_part(
+    conn: sqlite3.Connection,
+    part_id: str,
+    message_id: str,
+    session_id: str,
+    part_data: dict,
+    ts: int = 3000,
+) -> None:
+    conn.execute(
+        "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (part_id, message_id, session_id, ts, ts, json.dumps(part_data)),
+    )
+    conn.commit()
 
-    def test_none_content(self) -> None:
-        assert _extract_content({"content": None}) == ""
+
+class TestParseJson:
+    def test_valid(self) -> None:
+        assert _parse_json('{"a": 1}') == {"a": 1}
+
+    def test_invalid(self) -> None:
+        assert _parse_json("not json") == {}
+
+    def test_none(self) -> None:
+        assert _parse_json(None) == {}
+
+    def test_array(self) -> None:
+        assert _parse_json("[1,2]") == {}
+
+
+class TestDiscoverSessions:
+    def test_no_db(self, tmp_path: Path) -> None:
+        result = discover_sessions(db_path=tmp_path / "nonexistent.db")
+        assert result == []
+
+    def test_empty_db(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "opencode.db"
+        _create_opencode_db(db_path)
+        result = discover_sessions(db_path=db_path)
+        assert result == []
+
+    def test_finds_sessions(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/home/user/myproject", "myproject")
+        _add_session(conn, "s1", "p1", "First Session")
+        _add_session(conn, "s2", "p1", "Second Session")
+        conn.close()
+
+        result = discover_sessions(db_path=db_path)
+        assert len(result) == 2
+        assert result[0]["id"] == "s1"
+        assert result[0]["project_name"] == "myproject"
+        assert result[0]["project_worktree"] == "/home/user/myproject"
+
+    def test_filter_by_project_path(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/home/user/projectA", "projA")
+        _add_project(conn, "p2", "/home/user/projectB", "projB")
+        _add_session(conn, "s1", "p1", "Session A")
+        _add_session(conn, "s2", "p2", "Session B")
+        conn.close()
+
+        result = discover_sessions(
+            db_path=db_path, project_path="/home/user/projectA"
+        )
+        assert len(result) == 1
+        assert result[0]["project_name"] == "projA"
+
+    def test_message_count(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session")
+        _add_message(conn, "m1", "s1", "user", ts=3000)
+        _add_message(conn, "m2", "s1", "assistant", ts=4000)
+        conn.close()
+
+        result = discover_sessions(db_path=db_path)
+        assert result[0]["message_count"] == 2
 
 
 class TestMapMessage:
@@ -108,7 +216,7 @@ class TestMapMessage:
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"function": {"name": "read_file", "arguments": '{"path": "foo.py"}'}},
+                {"name": "read_file", "args": '{"path": "foo.py"}'},
             ],
         }
         events = _map_message(msg)
@@ -116,12 +224,12 @@ class TestMapMessage:
         tc = [e for e in events if e.type == "tool_call"][0]
         assert "read_file" in tc.content
 
-    def test_file_changes_in_parts(self) -> None:
+    def test_file_changes(self) -> None:
         msg = {
             "role": "assistant",
             "content": "updated",
-            "parts": [
-                {"type": "file_change", "path": "src/main.py", "change": "modified"},
+            "file_changes": [
+                {"path": "src/main.py", "change": "modified"},
             ],
         }
         events = _map_message(msg)
@@ -136,43 +244,59 @@ class TestMapMessage:
 
 class TestImportSession:
     def test_basic_import(self, engine_no_sensitive: MemoryEngine) -> None:
-        data = {
-            "id": "test-sess-1",
-            "title": "Test Session",
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "hi there"},
-            ],
-        }
-        result = import_session(engine_no_sensitive, data)
+        session_data = {"id": "test-sess-1", "title": "Test Session"}
+        messages = [
+            {"role": "user", "content": "hello", "tool_calls": [], "file_changes": []},
+            {"role": "assistant", "content": "hi there", "tool_calls": [], "file_changes": []},
+        ]
+        result = import_session(engine_no_sensitive, session_data, messages)
         assert result["event_count"] == 2
         assert result["source_id"] == "test-sess-1"
         assert result["errors"] == []
 
     def test_empty_messages(self, engine_no_sensitive: MemoryEngine) -> None:
-        data = {"id": "empty", "title": "Empty", "messages": []}
-        result = import_session(engine_no_sensitive, data)
+        session_data = {"id": "empty", "title": "Empty"}
+        result = import_session(engine_no_sensitive, session_data, [])
         assert result["event_count"] == 0
 
 
 class TestImportSessions:
-    def _write_session(self, d: Path, sid: str, msgs: list) -> None:
-        data = {"id": sid, "title": f"Session {sid}", "messages": msgs}
-        (d / f"{sid}.json").write_text(json.dumps(data))
+    def test_no_db(self, tmp_path: Path, engine_no_sensitive: MemoryEngine) -> None:
+        results = import_sessions(
+            engine_no_sensitive,
+            db_path=tmp_path / "nonexistent.db",
+        )
+        assert results == []
 
     def test_dry_run(self, tmp_path: Path, engine_no_sensitive: MemoryEngine) -> None:
-        self._write_session(tmp_path, "s1", [{"role": "user", "content": "hi"}])
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1")
+        _add_message(conn, "m1", "s1", "user")
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        conn.close()
+
         results = import_sessions(
-            engine_no_sensitive, tmp_path, dry_run=True, import_all=True
+            engine_no_sensitive, db_path=db_path, dry_run=True, import_all=True
         )
         assert len(results) == 1
         assert results[0]["dry_run"] is True
 
     def test_import_all(self, tmp_path: Path, engine_no_sensitive: MemoryEngine) -> None:
-        self._write_session(tmp_path, "s1", [{"role": "user", "content": "hi"}])
-        self._write_session(tmp_path, "s2", [{"role": "user", "content": "bye"}])
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        _add_session(conn, "s2", "p1", "Session 2", ts=3000)
+        _add_message(conn, "m2", "s2", "user", ts=4000)
+        _add_part(conn, "pt2", "m2", "s2", {"type": "text", "text": "bye"})
+        conn.close()
+
         results = import_sessions(
-            engine_no_sensitive, tmp_path, import_all=True
+            engine_no_sensitive, db_path=db_path, import_all=True
         )
         assert len(results) == 2
         assert all("session_id" in r for r in results)
@@ -180,20 +304,67 @@ class TestImportSessions:
     def test_import_specific_session(
         self, tmp_path: Path, engine_no_sensitive: MemoryEngine
     ) -> None:
-        self._write_session(tmp_path, "s1", [{"role": "user", "content": "hi"}])
-        self._write_session(tmp_path, "s2", [{"role": "user", "content": "bye"}])
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1")
+        _add_session(conn, "s2", "p1", "Session 2")
+        conn.close()
+
         results = import_sessions(
-            engine_no_sensitive, tmp_path, session_id="s2", import_all=True
+            engine_no_sensitive, db_path=db_path, session_id="s2", import_all=True
         )
         assert len(results) == 1
         assert results[0]["source_id"] == "s2"
 
     def test_list_mode(self, tmp_path: Path, engine_no_sensitive: MemoryEngine) -> None:
-        self._write_session(tmp_path, "s1", [{"role": "user", "content": "hi"}])
-        results = import_sessions(engine_no_sensitive, tmp_path)
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1")
+        conn.close()
+
+        results = import_sessions(engine_no_sensitive, db_path=db_path)
         assert len(results) == 1
         assert results[0].get("dry_run") is True
 
-    def test_no_files(self, tmp_path: Path, engine_no_sensitive: MemoryEngine) -> None:
-        results = import_sessions(engine_no_sensitive, tmp_path)
-        assert results == []
+    def test_filter_by_project_path(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/home/user/projA", "projA")
+        _add_project(conn, "p2", "/home/user/projB", "projB")
+        _add_session(conn, "s1", "p1", "Session A")
+        _add_session(conn, "s2", "p2", "Session B")
+        conn.close()
+
+        results = import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            project_path="/home/user/projA",
+            import_all=True,
+        )
+        assert len(results) == 1
+        assert results[0]["source_id"] == "s1"
+
+    def test_tool_calls_imported(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Tool Session")
+        _add_message(conn, "m1", "s1", "assistant", ts=3000)
+        _add_part(conn, "pt1", "m1", "s1", {
+            "type": "tool-invocation",
+            "toolName": "read_file",
+            "args": {"path": "foo.py"},
+        })
+        conn.close()
+
+        results = import_sessions(
+            engine_no_sensitive, db_path=db_path, import_all=True
+        )
+        assert len(results) == 1
+        assert results[0]["event_count"] == 1

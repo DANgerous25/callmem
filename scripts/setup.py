@@ -160,47 +160,42 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
     """Check for existing OpenCode sessions and offer to import them."""
     try:
         from llm_mem.adapters.opencode_import import (
-            DEFAULT_SESSION_DIR,
-            discover_session_files,
+            DEFAULT_DB_PATH,
+            discover_sessions,
             import_sessions,
-            read_session_file,
         )
     except ImportError:
         return
 
-    session_dir = DEFAULT_SESSION_DIR
-    if not session_dir.is_dir():
+    oc_db = DEFAULT_DB_PATH
+    if not oc_db.is_file():
         return
 
-    files = discover_session_files(session_dir)
-    if not files:
+    # Query the OpenCode DB for sessions
+    all_sessions = discover_sessions(db_path=oc_db)
+    if not all_sessions:
         return
 
-    # Filter to files that look like real sessions (have messages)
-    valid_files: list[tuple[Path, dict]] = []
-    for f in files:
-        data = read_session_file(f)
-        if data and data.get("messages"):
-            valid_files.append((f, data))
-
-    if not valid_files:
-        return
+    # Group by project
+    projects: dict[str, list[dict]] = {}
+    for s in all_sessions:
+        key = s.get("project_worktree", "unknown")
+        projects.setdefault(key, []).append(s)
 
     print()
     print("── Existing session history ──")
     print()
-    print(f"  Found {len(valid_files)} OpenCode session(s) in {session_dir}")
+    print(f"  Found {len(all_sessions)} OpenCode session(s) across {len(projects)} project(s)")
     print()
 
-    # Show a preview of the sessions
-    for i, (path, data) in enumerate(valid_files[:10], 1):
-        sid = data.get("id", path.stem)
-        title = data.get("title", "untitled")[:50]
-        msg_count = len(data.get("messages", []))
-        print(f"    {i}) {sid[:12]}... — {title} ({msg_count} messages)")
-
-    if len(valid_files) > 10:
-        print(f"    ... and {len(valid_files) - 10} more")
+    for worktree, sessions in projects.items():
+        name = sessions[0].get("project_name", Path(worktree).name if worktree else "unknown")
+        print(f"  {name} ({worktree}): {len(sessions)} session(s)")
+        for s in sessions[:5]:
+            title = (s.get("title") or "untitled")[:50]
+            print(f"    - {s['id'][:12]}... — {title} ({s['message_count']} messages)")
+        if len(sessions) > 5:
+            print(f"    ... and {len(sessions) - 5} more")
 
     print()
     do_import = ask_bool(
@@ -229,11 +224,11 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
         engine = MemoryEngine(db, config)
 
         print()
-        print(f"  Importing {len(valid_files)} session(s)...")
+        print(f"  Importing {len(all_sessions)} session(s)...")
 
         results = import_sessions(
             engine,
-            session_dir,
+            db_path=oc_db,
             import_all=True,
         )
 
