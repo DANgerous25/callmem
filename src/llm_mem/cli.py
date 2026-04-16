@@ -17,6 +17,24 @@ def main() -> None:
 
 
 @main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def setup(project: Path) -> None:
+    """Interactive setup wizard for a new or existing project."""
+    import subprocess
+    import sys
+
+    script = Path(__file__).parent.parent.parent / "scripts" / "setup.py"
+    if not script.exists():
+        # Fallback: try relative to the project
+        script = project / "scripts" / "setup.py"
+
+    if script.exists():
+        subprocess.run([sys.executable, str(script)], check=False)
+    else:
+        click.echo("Setup script not found. Run: python scripts/setup.py")
+
+
+@main.command()
 @click.option(
     "--project", "-p",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
