@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field
@@ -27,10 +27,10 @@ class Entity(BaseModel):
     priority: Priority | None = None
     pinned: bool = False
     created_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     updated_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     resolved_at: str | None = None
     metadata: dict[str, Any] | None = None

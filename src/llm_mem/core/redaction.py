@@ -16,7 +16,6 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any
 
 from ulid import ULID
 
@@ -43,21 +42,40 @@ PATTERNS: dict[str, tuple[str, str]] = {
     "sendgrid_key":     (r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}", "secret"),
 
     # Generic secrets
-    "private_key":      (r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ED25519 )?PRIVATE KEY-----", "secret"),
-    "jwt":              (r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", "secret"),
-    "bearer_token":     (r"(?i)(?:bearer|token)\s+[A-Za-z0-9_\-.~+/]{20,}", "credential"),
+    "private_key": (
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ED25519 )?PRIVATE KEY-----",
+        "secret",
+    ),
+    "jwt": (
+        r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+        "secret",
+    ),
+    "bearer_token": (
+        r"(?i)(?:bearer|token)\s+[A-Za-z0-9_\-.~+/]{20,}",
+        "credential",
+    ),
     "basic_auth":       (r"(?i)basic\s+[A-Za-z0-9+/=]{20,}", "credential"),
 
     # Connection strings
-    "db_connection":    (r"(?i)(?:postgres|mysql|mongodb|redis|amqp)://[^\s]+:[^\s]+@[^\s]+", "credential"),
+    "db_connection": (
+        r"(?i)(?:postgres|mysql|mongodb|redis|amqp)://[^\s]+:[^\s]+@[^\s]+",
+        "credential",
+    ),
     "url_with_creds":   (r"https?://[^\s:]+:[^\s@]+@[^\s]+", "credential"),
 
     # Financial
-    "credit_card":      (r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\b", "financial"),
+    "credit_card": (
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\b",
+        "financial",
+    ),
 
     # PII (basic)
     "email":            (r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", "pii"),
-    "ipv4_address":     (r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b", "infra"),
+    "ipv4_address": (
+        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}"
+        r"(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b",
+        "infra",
+    ),
 }
 
 # Default allowlist — never redact these

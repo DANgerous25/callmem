@@ -51,7 +51,8 @@ def init(project: Path) -> None:
 @click.option("--no-workers", is_flag=True, help="Disable background workers.")
 def serve(project: Path, transport: str, no_workers: bool) -> None:
     """Start the MCP server."""
-    click.echo(f"Starting llm-mem MCP server (transport={transport}, workers={'off' if no_workers else 'on'})")
+    workers_status = "off" if no_workers else "on"
+    click.echo(f"Starting llm-mem MCP server (transport={transport}, workers={workers_status})")
     click.echo(f"Project: {project.resolve()}")
     # TODO: Launch MCP server (WO-05)
     click.echo("MCP server ready.")
