@@ -1,4 +1,4 @@
-.PHONY: test dev lint typecheck session-save session-load clean
+.PHONY: test dev setup lint typecheck session-save session-load clean
 
 # Run the full test suite
 test:
@@ -7,6 +7,10 @@ test:
 # Install all dependencies including dev extras
 dev:
 	uv sync --extra dev
+
+# Interactive setup wizard
+setup:
+	uv run python scripts/setup.py
 
 # Save session memory from recent git history
 session-save:
