@@ -17,6 +17,7 @@ def test_database_creates_all_tables(tmp_path: Path) -> None:
     expected = [
         "projects", "sessions", "events", "entities", "summaries",
         "memory_edges", "compaction_log", "config", "schema_version", "jobs",
+        "vault",
     ]
     for table in expected:
         assert table in tables, f"Missing table: {table}"
@@ -35,7 +36,7 @@ def test_schema_version_set(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     version = db.get_schema_version()
-    assert version == 1
+    assert version == 2
 
 
 def test_wal_mode_enabled(tmp_path: Path) -> None:
@@ -53,7 +54,7 @@ def test_idempotent_init(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     db.initialize()  # Should not raise
-    assert db.get_schema_version() == 1
+    assert db.get_schema_version() == 2
 
 
 def test_foreign_keys_enabled(tmp_path: Path) -> None:
@@ -92,4 +93,4 @@ def test_in_memory_database() -> None:
     db.initialize()
     tables = db.list_tables()
     assert "events" in tables
-    assert db.get_schema_version() == 1
+    assert db.get_schema_version() == 2

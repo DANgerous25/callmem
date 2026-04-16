@@ -34,7 +34,7 @@ PATTERNS: dict[str, tuple[str, str]] = {
     "gitlab_token":     (r"glpat-[A-Za-z0-9\-]{20,}", "secret"),
 
     # LLM providers
-    "openai_key":       (r"sk-[A-Za-z0-9]{20,}", "secret"),
+    "openai_key":       (r"sk-[A-Za-z0-9\-]{20,}", "secret"),
     "anthropic_key":    (r"sk-ant-[A-Za-z0-9\-]{90,}", "secret"),
 
     # Payment / SaaS
@@ -170,6 +170,9 @@ class PatternScanner:
                 if span in seen_ranges:
                     continue
                 seen_ranges.add(span)
+                # Validate credit cards with Luhn
+                if name == "credit_card" and not luhn_check(value):
+                    continue
                 detections.append(Detection(
                     vault_id=str(ULID()),
                     category=category,
@@ -226,3 +229,34 @@ def apply_redactions(content: str, detections: list[Detection]) -> str:
         token = f"[REDACTED:{d.category}:{d.vault_id}]"
         result = result[:d.start] + token + result[d.end:]
     return result
+
+
+def merge_detections(
+    pattern_hits: list[Detection], llm_hits: list[Detection]
+) -> list[Detection]:
+    """Merge detections from both layers, preferring longer matches for overlaps."""
+    all_detections = pattern_hits + llm_hits
+    all_detections.sort(key=lambda d: (d.start, -(d.end - d.start)))
+
+    merged: list[Detection] = []
+    last_end = -1
+    for d in all_detections:
+        if d.start >= last_end:
+            merged.append(d)
+            last_end = d.end
+    return merged
+
+
+def luhn_check(number: str) -> bool:
+    """Validate a number string using the Luhn algorithm."""
+    digits = [int(c) for c in number if c.isdigit()]
+    if len(digits) < 13:
+        return False
+    checksum = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        checksum += d
+    return checksum % 10 == 0

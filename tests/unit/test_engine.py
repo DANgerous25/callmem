@@ -107,7 +107,9 @@ class TestIngest:
             "tool_call", "ran pytest", metadata={"tool": "pytest"}
         )
         assert event is not None
-        assert event.metadata == {"tool": "pytest"}
+        assert event.metadata is not None
+        assert event.metadata["tool"] == "pytest"
+        assert "scan_status" in event.metadata
 
 
 class TestAutoSession:

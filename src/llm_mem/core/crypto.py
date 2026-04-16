@@ -47,9 +47,10 @@ class VaultKeyManager:
         if key_path.exists():
             key = key_path.read_bytes().strip()
         else:
+            self.llm_mem_dir.mkdir(parents=True, exist_ok=True)
             key = Fernet.generate_key()
             key_path.write_bytes(key)
-            key_path.chmod(0o600)  # Owner read/write only
+            key_path.chmod(0o600)
         return Fernet(key)
 
     def _from_passphrase(self) -> Fernet:

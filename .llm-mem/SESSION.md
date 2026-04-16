@@ -1,27 +1,20 @@
 # Last Session Summary
 
 **Date:** 2026-04-16
-**Duration:** WO-01 through WO-05
+**Duration:** WO-01 through WO-05 + WO-04b stabilization
 
 ## What happened
 
-1. **WO-01 completed** — Verified all 6 acceptance criteria, added trigger test, fixed lint.
+1. **WO-01 through WO-05 completed** (previous session) — all acceptance criteria met.
 
-2. **WO-02 completed** — Expanded model tests from 12 to 47 covering all 7 acceptance criteria.
-
-3. **WO-03 completed** — CLI skeleton and configuration loading system.
-
-4. **WO-04 completed** — Core engine and repository (ingest, sessions, dedup, truncation, FTS5).
-
-5. **WO-05 completed** — MCP server with core tools:
-   - `mcp/server.py` — MCP server using `mcp` SDK, stdio transport, auto-initializes DB, `python -m llm_mem.mcp.server --project .`
-   - `mcp/tools.py` — 6 tools: `mem_session_start`, `mem_session_end`, `mem_ingest`, `mem_search` (FTS5), `mem_get_tasks`, `mem_pin`. All return JSON TextContent. Errors caught and returned as error objects, never unhandled exceptions.
-   - `mcp/resources.py` — Stub (empty list for now).
-   - Added `search_fts()`, `get_entities()`, `set_pinned()` to engine and repository.
-   - CLI `serve` command now launches the MCP server via asyncio.
-   - `tests/unit/test_mcp_tools.py` — 16 unit tests for all tool handlers.
-   - `tests/integration/test_mcp_server.py` — 8 integration tests using MCP SDK's in-memory transport: list tools, call each tool, verify error handling.
-   - CLI serve test updated to just check help (MCP server takes over stdio, incompatible with CliRunner).
+2. **WO-04b stabilization** — Fixed 13 failing tests that resulted from partially-integrated WO-04b code:
+   - **crypto.py**: Added `mkdir(parents=True, exist_ok=True)` before writing `vault.key` to fix `FileNotFoundError` when parent directory doesn't exist.
+   - **002_vault.sql**: Added missing `ALTER TABLE events ADD COLUMN scan_status TEXT DEFAULT NULL` migration step.
+   - **engine.py**: Fixed critical FK constraint failure — vault entries were being inserted with `event_id=""` before the event existed. Refactored `_create_event()` to insert event first, then vault entries with valid `event_id`. Removed the broken `UPDATE vault SET event_id=?` workaround.
+   - **test_database.py**: Updated schema version assertions from 1 to 2. Added `vault` to expected tables list.
+   - **test_cli.py**: Updated schema version assertions from `v1` to `v2`.
+   - **test_engine.py**: Updated metadata test to account for injected `scan_status` key.
+   - **Lint fixes**: Fixed unused imports, sorted imports, line-length violations.
 
 ## Design decisions made
 
@@ -30,9 +23,13 @@
 ## Current state
 
 - WO-01 through WO-05 **complete**
-- 173 tests passing (8 database + 47 models + 28 config + 14 CLI + 21 repo + 30 engine + 16 MCP tools + 8 integration + 1 resources stub), ruff clean
+- WO-04b **pattern scanning layer complete** (redaction, crypto, vault, integration wired into ingest pipeline)
+- WO-04b **LLM scanning layer not yet implemented** (Ollama `scan_sensitive()` method and `SENSITIVE_SCAN_PROMPT` still needed)
+- 218 tests passing, ruff clean
 - All committed and pushed to main
 
 ## Next step
 
-WO-04b (sensitive data detection) or WO-06 (Ollama integration and entity extraction)
+- Complete WO-04b acceptance criteria #5-6: Implement `ollama.scan_sensitive()` and `SENSITIVE_SCAN_PROMPT` for Layer 2 LLM scanning
+- Implement acceptance criteria #12: False positive marking and un-redaction
+- Or move to WO-06 (Ollama integration and entity extraction) which may overlap with LLM scanning
