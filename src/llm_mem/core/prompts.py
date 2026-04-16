@@ -71,6 +71,30 @@ Produce a concise project status covering:
 Keep it under {max_tokens} tokens."""
 
 
+SENSITIVE_SCAN_PROMPT = (
+    """Scan the following text for sensitive data \
+that should not be stored in plain text.
+
+Look for:
+- Passwords or passphrases (e.g., "the password is hunter2", "passwd: abc123")
+- API keys or tokens not in standard format (e.g., inline secrets, custom key formats)
+- Database credentials embedded in prose (e.g., "connect with user admin and password xyz")
+- Private keys or certificates mentioned in passing
+- Personal identifiable information (SSN, phone, address)
+- Any other secrets that regex patterns might miss
+
+For each finding, respond with a JSON object containing:
+- "value": the exact sensitive string to redact
+- "category": one of "secret", "credential", "pii", "financial", "infra"
+- "confidence": your confidence level from 0.0 to 1.0
+
+Respond with a JSON array of findings. If nothing sensitive is found, respond with [].
+
+Text to scan:
+{text}"""
+)
+
+
 BRIEFING_COMPRESSION_PROMPT = """Compress this session briefing to fit within {max_tokens} tokens.
 Preserve all active TODOs, unresolved failures, and recent decisions.
 Remove or shorten lower-priority context.

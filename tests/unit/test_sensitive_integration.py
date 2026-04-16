@@ -106,3 +106,36 @@ class TestIngestWithRedaction:
         assert "AKIA" not in event.content
         assert "ghp_" not in event.content
         assert event.content.count("[REDACTED:") >= 2
+
+    def test_false_positive_unredacts_event(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("note", "key = AKIAIOSFODNN7EXAMPLE")
+        assert event is not None
+        assert "AKIA" not in event.content
+
+        conn = memory_db.connect()
+        try:
+            vault_row = conn.execute(
+                "SELECT * FROM vault LIMIT 1"
+            ).fetchone()
+            vault_id = vault_row["id"]
+        finally:
+            conn.close()
+
+        result = engine.mark_false_positive(vault_id)
+        assert result["false_positive"] == 1
+
+        refreshed = engine.get_event(event.id)
+        assert refreshed is not None
+        assert "AKIAIOSFODNN7EXAMPLE" in refreshed.content
+
+    def test_false_positive_nonexistent_vault_raises(
+        self, memory_db: Database
+    ) -> None:
+        engine = _make_engine(memory_db)
+        engine.start_session()
+        import pytest
+
+        with pytest.raises(ValueError, match="Vault entry not found"):
+            engine.mark_false_positive("nonexistent_id")
