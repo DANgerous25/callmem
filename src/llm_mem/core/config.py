@@ -117,9 +117,19 @@ def generate_default_config(project_name: str) -> str:
 [project]
 name = "{project_name}"
 
+# LLM backend for memory maintenance (entity extraction, summarization, sensitive scan)
+# Options: "ollama", "openai_compat", "none"
+[llm]
+backend = "ollama"
+
 [ollama]
 model = "qwen3:8b"
 endpoint = "http://localhost:11434"
+
+# [openai_compat]
+# endpoint = "https://open.bigmodel.cn/api/paas/v4"
+# model = "glm-4-flash"
+# api_key_env = "LLM_MEM_API_KEY"  # name of env var holding the key
 
 [briefing]
 max_tokens = 2000
