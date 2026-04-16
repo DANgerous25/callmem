@@ -22,6 +22,40 @@ DEFAULT_MAX_EVENT_SIZE = 100_000
 DEFAULT_DEDUP_WINDOW_S = 60
 
 
+def _create_llm_client(config: Config) -> Any:
+    """Create the appropriate LLM client based on config.
+
+    Returns an object with is_available(), extract(), and scan_sensitive() methods,
+    or None if backend is 'none'.
+    """
+    backend = config.llm.backend
+
+    if backend == "ollama":
+        from llm_mem.core.ollama import OllamaClient
+
+        return OllamaClient(
+            endpoint=config.ollama.endpoint,
+            model=config.ollama.model,
+            timeout=config.ollama.timeout,
+        )
+
+    if backend == "openai_compat":
+        import os
+
+        from llm_mem.core.openai_compat import OpenAICompatClient
+
+        api_key = os.environ.get(config.openai_compat.api_key_env, "")
+        return OpenAICompatClient(
+            endpoint=config.openai_compat.endpoint,
+            model=config.openai_compat.model,
+            api_key=api_key,
+            timeout=config.openai_compat.timeout,
+        )
+
+    # backend == "none"
+    return None
+
+
 class MemoryEngine:
     """Central coordinator for all memory operations.
 
@@ -49,16 +83,9 @@ class MemoryEngine:
         else:
             self.pattern_scanner = None
 
-        if config.sensitive_data.enabled and config.sensitive_data.llm_scan:
-            from llm_mem.core.ollama import OllamaClient
-
-            self.ollama = OllamaClient(
-                endpoint=config.ollama.endpoint,
-                model=config.ollama.model,
-                timeout=config.ollama.timeout,
-            )
-        else:
-            self.ollama = None
+        self.llm_client = _create_llm_client(config)
+        # Backwards compat — workers and briefing reference self.ollama
+        self.ollama = self.llm_client
 
         from llm_mem.core.queue import JobQueue
 
@@ -366,8 +393,8 @@ class MemoryEngine:
             detections = self.pattern_scanner.scan(content)
             scan_status = "pattern_only"
 
-            if self.ollama is not None and self.ollama.is_available():
-                llm_detections = self.ollama.scan_sensitive(content)
+            if self.llm_client is not None and self.llm_client.is_available():
+                llm_detections = self.llm_client.scan_sensitive(content)
                 confidence = self.config.sensitive_data.llm_scan_confidence
                 llm_detections = [
                     d for d in llm_detections if d.confidence >= confidence

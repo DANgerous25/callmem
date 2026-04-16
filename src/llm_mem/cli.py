@@ -159,7 +159,6 @@ def workers(project: Path, interval: int) -> None:
 
     from llm_mem.core.config import load_config
     from llm_mem.core.database import Database
-    from llm_mem.core.ollama import OllamaClient
     from llm_mem.core.workers import WorkerRunner
 
     config = load_config(project)
@@ -167,13 +166,15 @@ def workers(project: Path, interval: int) -> None:
     db = Database(db_path)
     db.initialize()
 
-    ollama = OllamaClient(
-        endpoint=config.ollama.endpoint,
-        model=config.ollama.model,
-        timeout=config.ollama.timeout,
-    )
+    from llm_mem.core.engine import _create_llm_client
 
-    runner = WorkerRunner(db, ollama, config, poll_interval=interval)
+    llm_client = _create_llm_client(config)
+    if llm_client is None:
+        click.echo("LLM backend is 'none' — workers have nothing to process.")
+        click.echo("Set [llm] backend = 'ollama' or 'openai_compat' in config.toml.")
+        return
+
+    runner = WorkerRunner(db, llm_client, config, poll_interval=interval)
 
     stop_event = threading.Event()
 

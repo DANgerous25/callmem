@@ -11,9 +11,27 @@ class ProjectConfig(BaseModel):
     name: str | None = None
 
 
+class LLMBackendConfig(BaseModel):
+    """Which LLM to use for memory maintenance.
+
+    backend options:
+      - "ollama"        — local Ollama instance
+      - "openai_compat" — any OpenAI-compatible API (Z.ai/GLM, OpenAI, Groq, etc.)
+      - "none"          — pattern matching only, no LLM features
+    """
+    backend: str = "ollama"
+
+
 class OllamaConfig(BaseModel):
     model: str = "qwen3:8b"
     endpoint: str = "http://localhost:11434"
+    timeout: int = 120
+
+
+class OpenAICompatConfig(BaseModel):
+    endpoint: str = "https://open.bigmodel.cn/api/paas/v4"
+    model: str = "glm-4-flash"
+    api_key_env: str = "LLM_MEM_API_KEY"
     timeout: int = 120
 
 
@@ -48,7 +66,9 @@ class SensitiveDataConfig(BaseModel):
 
 class Config(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
+    llm: LLMBackendConfig = Field(default_factory=LLMBackendConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
@@ -56,7 +76,7 @@ class Config(BaseModel):
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)
 
     @model_validator(mode="after")
-    def _validate_vault_mode(self) -> Config:
+    def _validate_config(self) -> Config:
         valid_modes = {"auto", "passphrase", "disabled"}
         if self.sensitive_data.vault_mode not in valid_modes:
             msg = (
@@ -64,6 +84,15 @@ class Config(BaseModel):
                 f"Must be one of: {', '.join(sorted(valid_modes))}"
             )
             raise ValueError(msg)
+
+        valid_backends = {"ollama", "openai_compat", "none"}
+        if self.llm.backend not in valid_backends:
+            msg = (
+                f"Invalid llm backend '{self.llm.backend}'. "
+                f"Must be one of: {', '.join(sorted(valid_backends))}"
+            )
+            raise ValueError(msg)
+
         return self
 
     @classmethod
