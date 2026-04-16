@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field
@@ -18,7 +18,7 @@ class Session(BaseModel):
     id: str = Field(default_factory=lambda: str(ULID()))
     project_id: str
     started_at: str = Field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     ended_at: str | None = None
     status: SessionStatus = "active"
