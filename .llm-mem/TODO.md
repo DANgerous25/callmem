@@ -19,6 +19,8 @@ Track work order progress and ad-hoc tasks here.
 | WO-10 | Web UI | **Complete** |
 | WO-11 | Background worker runner | **Complete** |
 | WO-12 | OpenCode adapter and AGENTS.md template | **Complete** |
+| WO-13 | Feed card UI improvements | **Complete** |
+| WO-14 | Startup briefing context injection | **Complete** |
 
 ## Ad-hoc Tasks
 
