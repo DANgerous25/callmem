@@ -1,0 +1,6 @@
+{% if briefing.content %}
+<pre style="background:#0f172a;padding:1rem;border-radius:0.5rem;overflow-x:auto;font-size:0.8rem;white-space:pre-wrap;word-break:break-word;line-height:1.5;">{{ briefing.content }}</pre>
+<p><small>Token count: {{ briefing.token_count }}</small></p>
+{% else %}
+<p>No briefing data available.</p>
+{% endif %}
