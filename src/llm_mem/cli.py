@@ -452,5 +452,163 @@ def import_cmd(
         click.echo(f"\nImported {imported} session(s), {total_events} events total.")
 
 
+# ── Corpus commands ──────────────────────────────────────────────────
+
+
+@main.group()
+def corpus() -> None:
+    """Manage knowledge corpora."""
+
+
+@corpus.command("build")
+@click.argument("name")
+@click.option("--types", "-t", help="Comma-separated entity types")
+@click.option("--since", help="Start date YYYY-MM-DD")
+@click.option("--until", help="End date YYYY-MM-DD")
+@click.option("--query", "-q", help="Search filter")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def corpus_build(
+    name: str,
+    types: str | None,
+    since: str | None,
+    until: str | None,
+    query: str | None,
+    project: Path,
+) -> None:
+    """Build a corpus from filtered entities."""
+    from llm_mem.core.knowledge import KnowledgeAgent
+    from llm_mem.core.ollama import OllamaClient
+
+    db, config = _get_db_and_config(project)
+    ollama = OllamaClient()
+    agent = KnowledgeAgent(db, ollama)
+    project_id = _resolve_project_id(db, config)
+
+    type_list = types.split(",") if types else None
+    result = agent.build_corpus(
+        name=name,
+        project_id=project_id,
+        types=type_list,
+        date_start=since,
+        date_end=until,
+        query=query,
+    )
+    click.echo(
+        f"Built corpus '{name}': "
+        f"{result['entity_count']} entities, "
+        f"{result['token_count']} tokens"
+    )
+    if result.get("warning"):
+        click.echo(f"  Warning: {result['warning']}")
+
+
+@corpus.command("list")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def corpus_list(project: Path) -> None:
+    """List all corpora."""
+    from llm_mem.core.knowledge import KnowledgeAgent
+    from llm_mem.core.ollama import OllamaClient
+
+    db, config = _get_db_and_config(project)
+    ollama = OllamaClient()
+    agent = KnowledgeAgent(db, ollama)
+    corpora = agent.list_corpora()
+    if not corpora:
+        click.echo("No corpora found.")
+        return
+    for c in corpora:
+        click.echo(
+            f"  {c['name']}: {c['entity_count']} entities, "
+            f"{c['token_count']} tokens "
+            f"(updated {c['updated_at'][:10]})"
+        )
+
+
+@corpus.command("query")
+@click.argument("name")
+@click.argument("question")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def corpus_query(name: str, question: str, project: Path) -> None:
+    """Ask a question against a corpus."""
+    from llm_mem.core.knowledge import KnowledgeAgent
+    from llm_mem.core.ollama import OllamaClient
+
+    db, config = _get_db_and_config(project)
+    ollama = OllamaClient()
+    agent = KnowledgeAgent(db, ollama)
+    answer = agent.query_corpus(name, question)
+    click.echo(answer)
+
+
+@corpus.command("rebuild")
+@click.argument("name")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def corpus_rebuild(name: str, project: Path) -> None:
+    """Rebuild a corpus with latest entities."""
+    from llm_mem.core.knowledge import KnowledgeAgent
+    from llm_mem.core.ollama import OllamaClient
+
+    db, config = _get_db_and_config(project)
+    ollama = OllamaClient()
+    agent = KnowledgeAgent(db, ollama)
+    result = agent.rebuild_corpus(name)
+    click.echo(
+        f"Rebuilt corpus '{name}': "
+        f"{result['entity_count']} entities, "
+        f"{result['token_count']} tokens"
+    )
+
+
+@corpus.command("delete")
+@click.argument("name")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def corpus_delete(name: str, project: Path) -> None:
+    """Delete a corpus."""
+    from llm_mem.core.knowledge import KnowledgeAgent
+    from llm_mem.core.ollama import OllamaClient
+
+    db, config = _get_db_and_config(project)
+    ollama = OllamaClient()
+    agent = KnowledgeAgent(db, ollama)
+    agent.delete_corpus(name)
+    click.echo(f"Deleted corpus '{name}'.")
+
+
+def _get_db_and_config(project: Path) -> tuple:
+    from llm_mem.core.database import Database
+    from llm_mem.models.config import Config
+
+    db_path = project / ".llm-mem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No llm-mem database found at {db_path}", err=True)
+        raise SystemExit(1)
+    db = Database(db_path)
+    db.initialize()
+    config_path = project / ".llm-mem" / "config.toml"
+    config = Config()
+    if config_path.exists():
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+        data = tomllib.loads(config_path.read_text())
+        config = Config.from_dict(data)
+    return db, config
+
+
+def _resolve_project_id(db, config):
+    project_name = config.project.name or "default"
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM projects WHERE name = ?", (project_name,)
+        ).fetchone()
+        if row:
+            return row["id"]
+    finally:
+        conn.close()
+    return None
+
+
 if __name__ == "__main__":
     main()

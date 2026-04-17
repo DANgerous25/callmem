@@ -54,7 +54,7 @@ class TestInit:
     def test_database_initialized(self, tmp_path: Path) -> None:
         runner = CliRunner()
         result = runner.invoke(main, ["init", "--project", str(tmp_path)])
-        assert "Schema:   v5" in result.output
+        assert "Schema:   v6" in result.output
 
     def test_idempotent(self, tmp_path: Path) -> None:
         runner = CliRunner()
@@ -111,7 +111,7 @@ class TestStatus:
         result = runner.invoke(main, ["status", "--project", str(tmp_path)])
         assert result.exit_code == 0
         assert "Events:       0" in result.output
-        assert "Schema:       v5" in result.output
+        assert "Schema:       v6" in result.output
 
     def test_status_no_database(self, tmp_path: Path) -> None:
         runner = CliRunner()
