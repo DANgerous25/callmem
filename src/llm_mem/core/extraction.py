@@ -174,12 +174,26 @@ class EntityExtractor:
             )
         return "\n".join(parts)
 
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Strip markdown code fences from LLM responses."""
+        text = text.strip()
+        if text.startswith("```"):
+            # Remove opening fence (```json, ```, etc.)
+            first_newline = text.find("\n")
+            if first_newline != -1:
+                text = text[first_newline + 1 :]
+        if text.endswith("```"):
+            text = text[: -3]
+        return text.strip()
+
     def _parse_extraction(
         self, response: str
     ) -> dict[str, list[dict[str, str]]]:
         """Parse the LLM extraction response into categorized items."""
+        cleaned = self._strip_code_fences(response)
         try:
-            raw = json.loads(response)
+            raw = json.loads(cleaned)
         except json.JSONDecodeError:
             logger.warning(
                 "Extraction returned invalid JSON: %s", response[:200]
