@@ -12,10 +12,12 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from ulid import ULID
+
+from llm_mem.compat import UTC
 
 if TYPE_CHECKING:
     from llm_mem.core.database import Database

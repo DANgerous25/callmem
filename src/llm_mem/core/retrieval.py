@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
+
+from llm_mem.compat import UTC
 
 if TYPE_CHECKING:
     from llm_mem.core.repository import Repository

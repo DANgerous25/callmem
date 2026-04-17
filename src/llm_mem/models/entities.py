@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any, Literal, Self
 
 from pydantic import BaseModel, Field
 from ulid import ULID
+
+from llm_mem.compat import UTC
 
 EntityType = Literal[
     "decision", "todo", "fact", "failure", "discovery",
