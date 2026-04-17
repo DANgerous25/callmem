@@ -12,6 +12,7 @@ import logging
 import httpx
 from ulid import ULID
 
+from llm_mem.core.json_utils import parse_json
 from llm_mem.core.prompts import SENSITIVE_SCAN_PROMPT
 from llm_mem.core.redaction import Detection
 
@@ -87,7 +88,7 @@ class OllamaClient:
         value, category, confidence.
         """
         try:
-            raw = json.loads(response)
+            raw = parse_json(response)
         except json.JSONDecodeError:
             logger.warning("LLM scan returned invalid JSON: %s", response[:200])
             return []
