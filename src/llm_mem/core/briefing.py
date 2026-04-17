@@ -1,7 +1,7 @@
 """Startup briefing generator.
 
 Assembles a compact context block from recent memories,
-active TODOs, decisions, and summaries.
+active TODOs, decisions, and summaries with rich visual formatting.
 """
 
 from __future__ import annotations
@@ -13,15 +13,33 @@ from typing import TYPE_CHECKING, Any
 from llm_mem.core.retrieval import _estimate_tokens
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from llm_mem.core.ollama import OllamaClient
     from llm_mem.core.repository import Repository
     from llm_mem.models.config import Config
 
 
+CATEGORY_EMOJI: dict[str, str] = {
+    "feature": "\U0001f7e2",
+    "bugfix": "\U0001f534",
+    "discovery": "\U0001f535",
+    "decision": "\u2696\ufe0f",
+    "todo": "\U0001f4cb",
+    "failure": "\u274c",
+    "research": "\U0001f52c",
+    "change": "\U0001f504",
+    "fact": "\U0001f4dd",
+}
+
+LEGEND_ORDER = [
+    "feature", "bugfix", "discovery", "decision",
+    "todo", "failure", "research", "change", "fact",
+]
+
+
 @dataclass
 class Briefing:
-    """A formatted startup briefing."""
-
     project_name: str
     content: str
     token_count: int
@@ -29,45 +47,20 @@ class Briefing:
     generated_at: str = field(
         default_factory=lambda: datetime.now(UTC).isoformat()
     )
+    observations_loaded: int = 0
+    read_tokens: int = 0
+    work_investment: int = 0
+    savings_pct: float = 0.0
 
 
 NEW_PROJECT_MESSAGE = (
-    "## Session Briefing — {project_name}\n\n"
+    "[{project_name}] recent context, {datetime}\n"
+    "\u2500" * 48 + "\n\n"
     "No prior memories found. This is a new project."
 )
 
-BRIEFING_TEMPLATE = """## Session Briefing — {project_name}
-
-{todos_section}{decisions_section}{failures_section}{facts_section}{session_section}"""
-
-TODO_SECTION = """### Active TODOs
-{items}
-
-"""
-
-DECISION_SECTION = """### Recent Decisions
-{items}
-
-"""
-
-FAILURE_SECTION = """### Unresolved Issues
-{items}
-
-"""
-
-FACT_SECTION = """### Key Facts
-{items}
-
-"""
-
-SESSION_SECTION = """### Last Session
-{summary}
-
-"""
-
 
 def _truncate_to_tokens(text: str, max_tokens: int) -> str:
-    """Truncate text to fit within token budget."""
     max_chars = max_tokens * 4
     if len(text) <= max_chars:
         return text
@@ -75,8 +68,6 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
 
 
 class BriefingGenerator:
-    """Assembles a startup briefing from project memories."""
-
     def __init__(
         self,
         repo: Repository,
@@ -94,18 +85,18 @@ class BriefingGenerator:
         max_tokens: int | None = None,
         focus: str | None = None,
     ) -> Briefing:
-        """Generate a startup briefing for the given project."""
         budget = max_tokens or self.config.briefing.max_tokens
-        components: dict[str, int] = {}
 
-        todos = self._fetch_todos(project_id, focus)
-        decisions = self._fetch_decisions(project_id, focus)
-        failures = self._fetch_failures(project_id, focus)
-        facts = self._fetch_facts(project_id, focus)
+        all_entities = self._fetch_all_entities(project_id, focus)
+        sessions = self._fetch_sessions_with_entities(project_id)
         last_session = self._fetch_last_session(project_id)
+        work_investment = self._compute_work_investment(project_id)
 
-        if not any([todos, decisions, failures, facts, last_session]):
-            content = NEW_PROJECT_MESSAGE.format(project_name=project_name)
+        if not all_entities and not last_session:
+            now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
+            content = NEW_PROJECT_MESSAGE.format(
+                project_name=project_name, datetime=now_str
+            )
             return Briefing(
                 project_name=project_name,
                 content=content,
@@ -113,84 +104,141 @@ class BriefingGenerator:
                 components={"new_project": 1},
             )
 
-        sections: list[tuple[str, str, int]] = []
+        observations_loaded = len(all_entities)
+        read_tokens = sum(
+            _estimate_tokens(e.get("content") or "") for e in all_entities
+        )
 
-        if todos:
-            text = self._format_todos(todos)
-            section = TODO_SECTION.format(items=text)
-            sections.append(("todos", section, _estimate_tokens(section)))
+        if work_investment > 0 and read_tokens > 0:
+            savings_pct = round(
+                (1 - read_tokens / work_investment) * 100, 1
+            )
+        else:
+            savings_pct = 0.0
 
-        if decisions:
-            text = self._format_decisions(decisions)
-            section = DECISION_SECTION.format(items=text)
-            sections.append(("decisions", section, _estimate_tokens(section)))
+        parts = self._build_briefing_parts(
+            project_name, all_entities, sessions,
+            last_session, observations_loaded, read_tokens,
+            work_investment, savings_pct,
+        )
+        assembled = "\n".join(parts)
 
-        if failures:
-            text = self._format_failures(failures)
-            section = FAILURE_SECTION.format(items=text)
-            sections.append(("failures", section, _estimate_tokens(section)))
+        if _estimate_tokens(assembled) > budget:
+            assembled = _truncate_to_tokens(assembled, budget)
 
-        if facts:
-            text = self._format_facts(facts)
-            section = FACT_SECTION.format(items=text)
-            sections.append(("facts", section, _estimate_tokens(section)))
-
+        components = {}
+        if all_entities:
+            components["entities"] = len(all_entities)
         if last_session:
-            text = self._format_session(last_session)
-            section = SESSION_SECTION.format(summary=text)
-            sections.append(("last_session", section, _estimate_tokens(section)))
-
-        header = f"## Session Briefing — {project_name}\n\n"
-        remaining_budget = budget - _estimate_tokens(header)
-        assembled = header
-
-        for name, section, tokens in sections:
-            if remaining_budget <= 0:
-                break
-            if tokens <= remaining_budget:
-                assembled += section
-                remaining_budget -= tokens
-                components[name] = tokens
-            else:
-                truncated = _truncate_to_tokens(section, remaining_budget)
-                assembled += truncated
-                components[name] = _estimate_tokens(truncated)
-                remaining_budget = 0
+            components["last_session"] = 1
 
         return Briefing(
             project_name=project_name,
             content=assembled,
             token_count=_estimate_tokens(assembled),
             components=components,
+            observations_loaded=observations_loaded,
+            read_tokens=read_tokens,
+            work_investment=work_investment,
+            savings_pct=savings_pct,
         )
 
-    def _fetch_todos(
-        self, project_id: str, focus: str | None
-    ) -> list[dict[str, Any]]:
-        return self._fetch_entities(project_id, "todo", "open", focus)
+    def write_session_summary(
+        self,
+        project_id: str,
+        project_name: str,
+        worktree_path: str | Path,
+        max_tokens: int | None = None,
+    ) -> Briefing:
+        from pathlib import Path
 
-    def _fetch_decisions(
-        self, project_id: str, focus: str | None
-    ) -> list[dict[str, Any]]:
-        entities = self._fetch_entities(project_id, "decision", None, focus)
-        return entities[:10]
+        briefing = self.generate(project_id, project_name, max_tokens)
+        summary_path = Path(worktree_path) / "SESSION_SUMMARY.md"
+        summary_path.write_text(briefing.content, encoding="utf-8")
+        return briefing
 
-    def _fetch_failures(
-        self, project_id: str, focus: str | None
-    ) -> list[dict[str, Any]]:
-        return self._fetch_entities(
-            project_id, "failure", "unresolved", focus
+    def _build_briefing_parts(
+        self,
+        project_name: str,
+        entities: list[dict[str, Any]],
+        sessions: list[dict[str, Any]],
+        last_session: dict[str, Any] | None,
+        observations_loaded: int,
+        read_tokens: int,
+        work_investment: int,
+        savings_pct: float,
+    ) -> list[str]:
+        parts: list[str] = []
+
+        now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
+        parts.append(
+            f"[{project_name}] recent context, {now_str}"
         )
+        parts.append("\u2500" * 48)
 
-    def _fetch_facts(
+        legend_parts = []
+        for cat in LEGEND_ORDER:
+            emoji = CATEGORY_EMOJI.get(cat, "")
+            legend_parts.append(f"{emoji} {cat}")
+        parts.append(f"Legend: {' | '.join(legend_parts)}")
+        parts.append("")
+
+        parts.append("Context Economics")
+        parts.append(
+            f"  Loading: {observations_loaded} observations "
+            f"({read_tokens:,} tokens to read)"
+        )
+        parts.append(
+            f"  Work investment: {work_investment:,} tokens "
+            f"of captured work"
+        )
+        parts.append(
+            f"  Your savings: {savings_pct}% reduction from reuse"
+        )
+        parts.append("")
+
+        entities_by_date = self._group_entities_by_date(entities)
+        for date_str, date_entities in entities_by_date.items():
+            parts.append(f"{date_str}")
+            parts.append("")
+
+            by_session = self._group_by_session(date_entities, sessions)
+            for session_header, session_entities in by_session:
+                parts.append(f"  {session_header}")
+                for e in session_entities:
+                    emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
+                    eid = (e.get("id") or "")[:8]
+                    title = e.get("title") or ""
+                    parts.append(f"    #{eid}  {emoji}  {title}")
+                parts.append("")
+
+        if last_session and last_session.get("summary"):
+            parts.append("Latest Session Summary:")
+            summary = last_session["summary"]
+            for line in summary.split("\n"):
+                parts.append(f"  {line}")
+            parts.append("")
+
+        footer = (
+            f"Access {work_investment:,} tokens of past work "
+            f"for just {read_tokens:,}t."
+        )
+        parts.append(footer)
+
+        ui_port = self.config.ui.port
+        ui_host = self.config.ui.host
+        parts.append(f"View observations live @ http://{ui_host}:{ui_port}")
+
+        return parts
+
+    def _fetch_all_entities(
         self, project_id: str, focus: str | None
     ) -> list[dict[str, Any]]:
         conn = self.repo.db.connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM entities WHERE project_id = ? AND type = 'fact' "
-                "AND pinned = 1 "
-                "ORDER BY updated_at DESC LIMIT 10",
+                "SELECT * FROM entities WHERE project_id = ? "
+                "ORDER BY pinned DESC, created_at DESC LIMIT 100",
                 (project_id,),
             ).fetchall()
             results = [dict(r) for r in rows]
@@ -204,40 +252,19 @@ class BriefingGenerator:
             ]
         return results
 
-    def _fetch_entities(
-        self,
-        project_id: str,
-        entity_type: str,
-        status: str | None,
-        focus: str | None,
+    def _fetch_sessions_with_entities(
+        self, project_id: str
     ) -> list[dict[str, Any]]:
         conn = self.repo.db.connect()
         try:
-            clauses: list[str] = [
-                "project_id = ?", "type = ?"
-            ]
-            params: list[Any] = [project_id, entity_type]
-
-            if status:
-                clauses.append("status = ?")
-                params.append(status)
-
-            where = " AND ".join(clauses)
             rows = conn.execute(
-                f"SELECT * FROM entities WHERE {where} "
-                f"ORDER BY pinned DESC, updated_at DESC LIMIT 20",
-                params,
+                "SELECT * FROM sessions WHERE project_id = ? "
+                "ORDER BY started_at DESC LIMIT 20",
+                (project_id,),
             ).fetchall()
-            results = [dict(r) for r in rows]
+            return [dict(r) for r in rows]
         finally:
             conn.close()
-        if focus:
-            results = [
-                r for r in results
-                if focus.lower() in (r.get("title") or "").lower()
-                or focus.lower() in (r.get("content") or "").lower()
-            ]
-        return results
 
     def _fetch_last_session(
         self, project_id: str
@@ -256,42 +283,76 @@ class BriefingGenerator:
         finally:
             conn.close()
 
-    def _format_todos(self, todos: list[dict[str, Any]]) -> str:
-        lines: list[str] = []
-        for t in todos:
-            priority = t.get("priority") or "medium"
-            title = t.get("title") or ""
-            content = (t.get("content") or "")[:80]
-            lines.append(f"- [ ] {title} ({priority}) — {content}")
-        return "\n".join(lines)
+    def _compute_work_investment(self, project_id: str) -> int:
+        conn = self.repo.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM("
+                "  COALESCE(token_count, LENGTH(content) / 4)"
+                "), 0) as total FROM events WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            return row["total"] if row else 0
+        finally:
+            conn.close()
 
-    def _format_decisions(self, decisions: list[dict[str, Any]]) -> str:
-        lines: list[str] = []
-        for d in decisions:
-            title = d.get("title") or ""
-            content = (d.get("content") or "")[:80]
-            when = (d.get("updated_at") or "")[:10]
-            lines.append(f"- {title}: {content} ({when})")
-        return "\n".join(lines)
+    def _group_entities_by_date(
+        self, entities: list[dict[str, Any]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for e in entities:
+            ts = e.get("created_at") or ""
+            date_str = ts[:10] if ts else "unknown"
+            groups.setdefault(date_str, []).append(e)
+        return dict(sorted(groups.items(), reverse=True))
 
-    def _format_failures(self, failures: list[dict[str, Any]]) -> str:
-        lines: list[str] = []
-        for f in failures:
-            title = f.get("title") or ""
-            content = (f.get("content") or "")[:80]
-            lines.append(f"- {title}: {content}")
-        return "\n".join(lines)
+    def _group_by_session(
+        self,
+        entities: list[dict[str, Any]],
+        sessions: list[dict[str, Any]],
+    ) -> list[tuple[str, list[dict[str, Any]]]]:
+        session_map: dict[str, dict[str, Any]] = {
+            s["id"]: s for s in sessions
+        }
 
-    def _format_facts(self, facts: list[dict[str, Any]]) -> str:
-        lines: list[str] = []
-        for f in facts:
-            title = f.get("title") or ""
-            content = (f.get("content") or "")[:80]
-            lines.append(f"- {title}: {content}")
-        return "\n".join(lines)
+        ungrouped: list[dict[str, Any]] = []
+        by_session: dict[str, list[dict[str, Any]]] = {}
 
-    def _format_session(self, session: dict[str, Any]) -> str:
-        summary = session.get("summary") or "No summary recorded."
-        event_count = session.get("event_count") or 0
-        ended = (session.get("ended_at") or "unknown")[:10]
-        return f"{summary} ({event_count} events, ended {ended})"
+        for e in entities:
+            source_id = e.get("source_event_id")
+            if not source_id:
+                ungrouped.append(e)
+                continue
+
+            conn = self.repo.db.connect()
+            try:
+                ev_row = conn.execute(
+                    "SELECT session_id FROM events WHERE id = ?",
+                    (source_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+
+            if ev_row and ev_row["session_id"]:
+                sid = ev_row["session_id"]
+                by_session.setdefault(sid, []).append(e)
+            else:
+                ungrouped.append(e)
+
+        result: list[tuple[str, list[dict[str, Any]]]] = []
+
+        for sid in sorted(
+            by_session.keys(),
+            key=lambda s: (session_map.get(s, {}).get("started_at") or ""),
+            reverse=True,
+        ):
+            s_info = session_map.get(sid, {})
+            started = (s_info.get("started_at") or "")[:10]
+            status = s_info.get("status") or "unknown"
+            header = f"#S{sid[:8]} Session ({started}, {status})"
+            result.append((header, by_session[sid]))
+
+        if ungrouped:
+            result.append(("Ungrouped", ungrouped))
+
+        return result
