@@ -5,12 +5,23 @@ build-backend = "hatchling.build"
 [project]
 name = "llm-mem"
 version = "0.1.0"
-description = "Persistent memory for coding agents"
+description = "Persistent memory for LLM coding agents — local-first, model-agnostic, SQLite-backed"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [
     { name = "Dan" },
+]
+keywords = ["llm", "memory", "coding-agent", "mcp", "ollama", "opencode", "sqlite"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
 ]
 
 dependencies = [
@@ -39,6 +50,11 @@ embeddings = [
     "sentence-transformers>=3.0",
     "sqlite-vec>=0.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/DANgerous25/llm-mem"
+Repository = "https://github.com/DANgerous25/llm-mem"
+Issues = "https://github.com/DANgerous25/llm-mem/issues"
 
 [project.scripts]
 llm-mem = "llm_mem.cli:main"

@@ -18,6 +18,9 @@ env/
 *.swp
 *.swo
 
+# llm-mem auto-generated files
+SESSION_SUMMARY.md
+
 # llm-mem database and logs (but NOT the bootstrap memory .md files)
 .llm-mem/memory.db
 .llm-mem/memory.db-wal

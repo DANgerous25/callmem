@@ -1,170 +1,316 @@
 # llm-mem
 
-**Persistent memory for coding agents.**
+**Persistent memory for LLM coding agents.**
 
-llm-mem gives any LLM-powered coding tool a durable, searchable memory layer that survives across sessions. It captures what happened, compresses it in the background, and serves a compact briefing when you start a new session — so the agent picks up where you left off without manual context management.
+llm-mem gives coding agents a durable, searchable memory that survives across sessions. It captures what happened, compresses it in the background using a local LLM, and serves a compact briefing when the next session starts — so the agent picks up where you left off without manual context management.
 
-## Why this exists
+Inspired by [claude-mem](https://github.com/anthropics/claude-mem), but built from the ground up with a different philosophy: model-agnostic, local-first, and designed around pluggable LLM backends rather than a single vendor.
 
-Coding agents today are stateless between sessions. Every time you open a new session, the agent forgets everything — decisions made, bugs fixed, architecture choices, TODOs, discovered gotchas. You end up re-explaining context, re-discovering the same things, and wasting tokens on information the agent already processed yesterday.
+---
 
-llm-mem fixes this by sitting between you and your coding agent as a transparent memory service.
+## Key Features
 
-## What it does
+### Automatic Context at Startup
+When a new session begins, llm-mem generates a structured briefing with context economics, an emoji-coded observation timeline, and a session summary. This is written to `SESSION_SUMMARY.md` in your project root, where your coding agent picks it up automatically — no manual context management needed.
 
-- **Startup briefing**: On session start, automatically provides a compact "here's what matters right now" context block — recent decisions, active TODOs, unresolved issues, project facts
-- **Automatic capture**: During the session, ingests prompts, responses, tool calls, file changes, decisions, failures, and discoveries — no manual tagging required
-- **Background compaction**: A local Ollama model summarizes, deduplicates, and compresses memories in the background, preventing unbounded growth
-- **Retrieval**: On each prompt, retrieves relevant memories via structured queries + full-text search (semantic search optional in v2)
-- **Inspectable**: A local web UI lets you browse, search, pin, edit, and delete memories
+### Real-Time Capture and Extraction
+During the session, llm-mem ingests prompts, responses, tool calls, and file changes via SSE. A background worker runs entity extraction through your local LLM, pulling out decisions, facts, TODOs, bugs, features, and discoveries. New observations appear in the web UI within milliseconds via Server-Sent Events.
 
-## Design principles
+### Layered Compression
+Raw events are compressed through multiple layers to keep token usage in check:
+- **Entity extraction** — structured knowledge pulled from raw conversation
+- **Chunk summaries** — rolling mid-session compression every N events
+- **Session summaries** — structured wrap-up when a session ends (Investigated / Learned / Completed / Next Steps)
+- **Cross-session summaries** — periodic project-level rollups
+- **Compaction** — old events archived to keep the database lean
 
-| Principle | What it means |
+### Dual Content Views
+Each observation has two representations:
+- **Key Points** — bullet-point summary (~50-100 tokens), cheap for context injection
+- **Synopsis** — flowing prose paragraph (~200-400 tokens), loaded on demand
+
+### Pluggable LLM Backend
+llm-mem doesn't care which model you use for coding. It uses a separate local model for memory maintenance:
+- **Ollama** (recommended) — fully local, zero API cost, works offline
+- **OpenAI-compatible** — any `/v1/chat/completions` API (LM Studio, vLLM, etc.)
+- **None** — pattern-only mode when no LLM is available
+
+### Web UI
+A local web interface for browsing and managing memories:
+- Card-based feed with colour-coded category badges
+- Expandable cards with Key Points / Synopsis toggle
+- Real-time updates via SSE
+- Full-text search across all entities
+- Session browser with event timeline
+- Briefing preview showing exactly what the agent sees
+- Accessible from your Tailscale network (default bind `0.0.0.0`)
+
+### Sensitive Data Handling
+Two-layer detection (pattern matching + LLM classification) catches secrets, credentials, and PII at ingest time. Detected items are redacted from memory and stored in an encrypted vault with configurable false-positive management.
+
+### MCP Integration
+Exposes tools via the Model Context Protocol so compatible agents can query memory on demand:
+- `search` — full-text search across all observations
+- `get_briefing` — generate a startup briefing
+- `search_by_file` — find observations related to specific files
+- `timeline` — chronological context around an observation
+
+---
+
+## Requirements
+
+- **Python 3.11+**
+- **Ollama** with a summarisation model (recommended: `qwen3:8b` or `qwen3:30b`)
+- **Linux** (tested on Ubuntu/Debian x86_64 and ARM64)
+- **SQLite 3.35+** (ships with Python 3.11+, FTS5 support required)
+
+### Tested Environments
+
+| Environment | Status |
 |---|---|
-| **Model agnostic** | Works with any LLM provider — not tied to a specific vendor |
-| **Agent agnostic** | Integrates via MCP first, but designed for non-MCP adapters too |
-| **Local-first** | All data stays on your machine. SQLite database, local Ollama for summarization |
-| **Privacy-friendly** | No cloud calls for memory management unless you opt in |
-| **Zero manual overhead** | Capture and compaction happen automatically; user edits are optional |
-| **Coding-project focused** | Optimized for long-lived software projects, not generic chatbot history |
+| Ubuntu 24.04, x86_64 (Hetzner VPS) | Tested |
+| Ubuntu 24.04, ARM64 (Hetzner CAX31) | Tested |
+| Ollama with qwen3:8b | Tested |
+| Ollama with qwen3:30b | Tested |
+| OpenCode as coding agent | Tested |
 
-## Why SQLite-first (not vector DB)
+macOS and Windows are untested but should work anywhere Python and Ollama run. The systemd service integration is Linux-only.
 
-Most coding memory retrieval is structured:
-- "What decisions did we make about the auth system?"
-- "What TODOs are still open?"
-- "What happened in the last 3 sessions?"
+---
 
-These queries are better served by structured tables + full-text search (FTS5) than by embedding similarity. SQLite is:
-- Zero-dependency, single-file, trivially backed up
-- Fast enough for tens of thousands of memories
-- Portable across machines (just copy the `.db` file)
-- Already has excellent full-text search via FTS5
+## Quick Start
 
-Vector embeddings are a planned v2 enhancement for semantic retrieval when keyword search isn't enough. The schema is designed to accommodate them without migration pain.
+### 1. Prerequisites
 
-## How Ollama is used
+```bash
+# Install Ollama (if not already installed)
+curl -fsSL https://ollama.com/install.sh | sh
 
-llm-mem uses a local Ollama model as its **memory-maintenance LLM** — separate from whatever model you use for interactive coding. This model handles:
+# Pull a summarisation model
+ollama pull qwen3:8b
+```
 
-- **Summarization**: Compressing verbose session logs into concise summaries
-- **Entity extraction**: Pulling out decisions, facts, TODOs, and entities from raw events
-- **Deduplication**: Identifying when new information supersedes old memories
-- **Briefing generation**: Composing the startup context block
+### 2. Install llm-mem
 
-The default model is configurable (recommended: `qwen3:8b` or similar). The memory-maintenance model never touches your interactive coding context — it runs in background jobs.
+```bash
+git clone https://github.com/DANgerous25/llm-mem.git
+cd llm-mem
 
-## How OpenCode / MCP integration works
+# Install with uv (recommended)
+uv sync
 
-llm-mem exposes itself as an **MCP server** that OpenCode (or any MCP-capable client) connects to. The MCP server provides:
+# Or with pip
+pip install -e .
+```
 
-- **Tools**: `mem_ingest`, `mem_search`, `mem_get_briefing`, `mem_pin`, `mem_get_tasks`
-- **Resources**: `memory://briefing`, `memory://tasks`, `memory://decisions`
-- **Prompts**: `startup-brief` prompt template that agents can use at session start
+### 3. Run the Setup Wizard
 
-OpenCode config (`opencode.json`):
+```bash
+uv run llm-mem setup
+```
+
+The wizard walks you through:
+- Choosing your LLM backend and model
+- Setting the web UI port (with multi-project conflict detection)
+- Configuring network bind address
+- Importing existing OpenCode sessions from SQLite
+- Optionally installing a systemd user service for auto-start
+
+The setup script is safe to re-run — it reconfigures without wiping data and backs up your `config.toml` before changes.
+
+### 4. Start the Daemon
+
+```bash
+# All-in-one: web UI + background workers + OpenCode SSE adapter
+uv run llm-mem daemon
+
+# Or via make
+make daemon
+
+# Or via systemd (if installed during setup)
+make start
+```
+
+### 5. Configure Your Coding Agent
+
+Add llm-mem as an MCP server in your agent's config. For OpenCode, add to `opencode.json`:
+
 ```json
 {
   "mcp": {
     "llm-mem": {
       "type": "local",
-      "command": ["python", "-m", "llm_mem.mcp.server"],
+      "command": ["uv", "run", "--directory", "/path/to/llm-mem", "python", "-m", "llm_mem.mcp.server"],
       "enabled": true
     }
   }
 }
 ```
 
-See [docs/mcp-integration.md](docs/mcp-integration.md) for full details.
+### 6. Open the Web UI
 
-## Quick start
+Navigate to `http://localhost:9090` (or your configured host:port).
 
-```bash
-# Clone and set up
-git clone https://github.com/DANgerous25/llm-mem.git
-cd llm-mem
+---
 
-# Install with uv (recommended)
-uv sync --extra dev
+## How It Works
 
-# Or with pip
-pip install -e ".[dev]"
-
-# Ensure Ollama is running with a summarization model
-ollama pull qwen3:8b
-
-# Initialize a project memory store
-llm-mem init --project ./my-project
-
-# Start the MCP server (for OpenCode integration)
-llm-mem serve
-
-# Start the web UI
-llm-mem ui
+```
+┌─────────────────┐     SSE      ┌─────────────────┐     Extract     ┌──────────────┐
+│  Coding Agent   │ ──────────▶  │   llm-mem       │ ──────────────▶ │  Local LLM   │
+│  (OpenCode)     │              │   Adapter       │                 │  (Ollama)    │
+└─────────────────┘              └────────┬────────┘                 └──────────────┘
+                                          │
+                                          ▼
+                                 ┌─────────────────┐
+                                 │   SQLite DB     │
+                                 │   + FTS5        │
+                                 └────────┬────────┘
+                                          │
+                              ┌───────────┼───────────┐
+                              ▼           ▼           ▼
+                        ┌──────────┐ ┌──────────┐ ┌──────────┐
+                        │ Web UI   │ │ MCP      │ │ Briefing │
+                        │ Feed     │ │ Server   │ │ Writer   │
+                        └──────────┘ └──────────┘ └──────────┘
 ```
 
-## Project structure
+1. **Capture**: The adapter listens to your coding agent's event stream (SSE for OpenCode) and stores raw events
+2. **Extract**: A background worker sends event batches to your local LLM for entity extraction — pulling out decisions, facts, TODOs, bugs, features, and discoveries
+3. **Compress**: Summaries are generated at chunk, session, and cross-session levels
+4. **Serve**: The briefing writer generates `SESSION_SUMMARY.md` in your project root; the MCP server responds to on-demand queries; the web UI shows everything in real-time
+
+---
+
+## CLI Reference
+
+```bash
+llm-mem setup              # Interactive setup wizard
+llm-mem daemon             # Start UI + workers + adapter in one process
+llm-mem ui                 # Start web UI only
+llm-mem serve              # Start MCP server only
+llm-mem import             # Import sessions from OpenCode SQLite DB
+llm-mem status             # Show service status
+llm-mem search <query>     # Search memories from the command line
+llm-mem briefing           # Generate and print a briefing
+```
+
+---
+
+## Entity Categories
+
+llm-mem extracts these observation types, each with a colour-coded badge in the UI:
+
+| Category | Icon | Description |
+|----------|------|-------------|
+| Feature | 🟢 | New functionality added |
+| Bugfix | 🔴 | Bug identified and/or fixed |
+| Discovery | 🔵 | Notable insight or finding |
+| Decision | ⚖️ | Architectural or design choice |
+| Todo | 📋 | Task to be done |
+| Fact | 📝 | Durable project knowledge |
+| Failure | ❌ | Error or failure encountered |
+| Research | 🔬 | Investigation or analysis |
+| Change | 🔄 | General code or file change |
+
+---
+
+## Configuration
+
+All settings live in `.llm-mem/config.toml` in your project root. Key options:
+
+```toml
+[llm]
+backend = "ollama"               # ollama | openai_compat | none
+model = "qwen3:8b"
+api_base = "http://localhost:11434"
+
+[server]
+host = "0.0.0.0"                 # Bind address (0.0.0.0 for Tailscale access)
+port = 9090
+
+[briefing]
+max_tokens = 2000                # Token budget for startup briefing
+auto_write_session_summary = true
+session_summary_filename = "SESSION_SUMMARY.md"
+
+[extraction]
+batch_size = 10                  # Events per extraction batch
+```
+
+See [docs/config.md](docs/config.md) for the full reference.
+
+---
+
+## Why SQLite, Not a Vector DB?
+
+Most coding memory retrieval is structured:
+- "What decisions did we make about auth?"
+- "What TODOs are still open?"
+- "What happened in the last 3 sessions?"
+
+These are better served by structured tables + full-text search (FTS5) than embedding similarity. SQLite is zero-dependency, single-file, trivially backed up, and fast enough for tens of thousands of memories.
+
+Vector embeddings are a planned enhancement for semantic retrieval when keyword search isn't enough. The schema is designed to accommodate them without migration pain.
+
+---
+
+## Project Structure
 
 ```
 llm-mem/
 ├── src/llm_mem/
-│   ├── core/           # Database, schema, memory engine
+│   ├── adapters/       # Agent integrations (OpenCode SSE, session import)
+│   ├── core/           # Engine, extraction, briefing, compression, event bus
 │   ├── mcp/            # MCP server and tool definitions
-│   ├── ui/             # Local web UI (FastAPI + htmx)
-│   ├── adapters/       # Integration adapters (OpenCode, future: Kilo, etc.)
-│   └── models/         # Data models and types
+│   ├── models/         # Data models, config, entity types
+│   └── ui/             # Web UI (FastAPI + Jinja2 + htmx + SSE)
+├── scripts/            # Setup wizard, session helpers
+├── tests/              # 382+ tests (unit + integration)
 ├── docs/
-│   ├── architecture.md
-│   ├── schema.md
-│   ├── mcp-integration.md
-│   ├── roadmap.md
-│   ├── ui.md
-│   ├── config.md
-│   ├── work-orders/    # Sequential implementation tickets
-│   └── prompts/        # Coding agent prompt templates
-├── tests/
-├── scripts/
+│   ├── work-orders/    # Implementation tickets
+│   └── ...             # Architecture, schema, config, roadmap docs
 └── pyproject.toml
 ```
 
-## Documentation
+---
 
-- [Architecture](docs/architecture.md) — System components, event flow, session lifecycle
-- [Schema](docs/schema.md) — SQLite tables, indexes, FTS5 strategy
-- [MCP Integration](docs/mcp-integration.md) — Tools, resources, OpenCode config
-- [Roadmap](docs/roadmap.md) — v0 through v3 phased plan
-- [Web UI](docs/ui.md) — Local inspection and management interface
-- [Configuration](docs/config.md) — All configurable options
-- [Sensitive Data](docs/sensitive-data.md) — Two-layer detection, encrypted vault, redaction pipeline
-- [Coding Norms](docs/coding-norms.md) — Development standards and rationale
-- [Getting Started](docs/getting-started.md) — First-session walkthrough for OpenCode/GLM
-- [Work Orders](docs/work-orders/) — Step-by-step implementation tickets for coding agents
-- [Prompts](docs/prompts/) — Templates for driving implementation with a coding agent
+## Development
 
-## Development Workflow
-
-This project uses a bootstrap memory system while llm-mem itself is being built:
-
-- **`AGENTS.md`** — Coding norms, session workflow, and architecture rules. Read by OpenCode/GLM automatically.
-- **`.llm-mem/SESSION.md`** — What happened in the last session. Read at start, updated at end.
-- **`.llm-mem/DECISIONS.md`** — Append-only design decision log.
-- **`.llm-mem/TODO.md`** — Current task list and work order progress.
-
-Helper scripts:
 ```bash
-# Auto-generate session summary from git history
-python scripts/session_save.py --from-git
+# Install with dev dependencies
+uv sync --extra dev
 
-# Interactive session summary
-python scripts/session_save.py
+# Run tests
+make test
 
-# Display all memory files
-python scripts/session_load.py
+# Run linter
+make lint
+
+# Run both
+make check
 ```
 
-See [docs/coding-norms.md](docs/coding-norms.md) for the full rationale behind each norm.
+---
+
+## Roadmap
+
+See [docs/roadmap.md](docs/roadmap.md) for the full plan. Highlights:
+
+- **Progressive disclosure search** — 3-layer MCP search pattern (index → timeline → full details)
+- **File-level tracking** — associate observations with specific files
+- **Knowledge agents** — build queryable corpora from observation history
+- **Settings panel** — web UI for config with live briefing preview
+- **Vector search** — optional semantic retrieval via sentence-transformers
+
+---
+
+## Acknowledgements
+
+llm-mem was inspired by [claude-mem](https://github.com/anthropics/claude-mem) by Alex Newman. We share the same goal — giving coding agents persistent memory — but llm-mem is built from scratch with a focus on model-agnostic operation, local-first architecture, and pluggable LLM backends.
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE)
