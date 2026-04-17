@@ -242,3 +242,108 @@ class TestImportCommand:
         )
         assert result.exit_code == 0
         assert "target" in result.output
+
+
+class TestImportStatusFlag:
+    def _setup_project(self, runner: CliRunner, project: Path) -> None:
+        runner.invoke(main, ["init", "--project", str(project)])
+
+    def test_status_no_previous_import(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        self._setup_project(runner, tmp_path)
+        result = runner.invoke(
+            main,
+            ["import", "--source", "opencode", "--status", "--project", str(tmp_path)],
+        )
+        assert result.exit_code == 0
+        assert "No import in progress" in result.output
+
+    def test_status_shows_completed_import(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        self._setup_project(runner, tmp_path)
+        oc_db = tmp_path / "opencode.db"
+        conn = _create_opencode_db(oc_db)
+        _populate_session(
+            conn, "p1", "/tmp/proj", "proj",
+            "s1", "Session 1", [("user", "hello")],
+        )
+        conn.close()
+
+        runner.invoke(
+            main,
+            [
+                "import", "--source", "opencode",
+                "--project", str(tmp_path),
+                "--opencode-db", str(oc_db),
+                "--all",
+            ],
+        )
+
+        result = runner.invoke(
+            main,
+            ["import", "--source", "opencode", "--status", "--project", str(tmp_path)],
+        )
+        assert result.exit_code == 0
+        assert "Last import" in result.output
+
+    def test_help_shows_new_flags(self) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["import", "--help"])
+        assert result.exit_code == 0
+        assert "--background" in result.output
+        assert "--status" in result.output
+
+
+class TestImportProgressDisplay:
+    def _setup_project(self, runner: CliRunner, project: Path) -> None:
+        runner.invoke(main, ["init", "--project", str(project)])
+
+    def test_import_all_shows_progress(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        self._setup_project(runner, tmp_path)
+        oc_db = tmp_path / "opencode.db"
+        conn = _create_opencode_db(oc_db)
+        _populate_session(
+            conn, "p1", "/tmp/proj", "proj",
+            "s1", "Session 1",
+            [("user", "hello"), ("assistant", "hi")],
+        )
+        conn.close()
+        result = runner.invoke(
+            main,
+            [
+                "import", "--source", "opencode",
+                "--project", str(tmp_path),
+                "--opencode-db", str(oc_db),
+                "--all",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Import complete" in result.output
+        assert "Sessions:" in result.output
+        assert "Events:" in result.output
+        assert "Time:" in result.output
+
+    def test_import_all_shows_summary_stats(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        self._setup_project(runner, tmp_path)
+        oc_db = tmp_path / "opencode.db"
+        conn = _create_opencode_db(oc_db)
+        _populate_session(
+            conn, "p1", "/tmp/proj", "proj",
+            "s1", "Fix auth redirect",
+            [("user", "hello"), ("assistant", "world")],
+        )
+        conn.close()
+        result = runner.invoke(
+            main,
+            [
+                "import", "--source", "opencode",
+                "--project", str(tmp_path),
+                "--opencode-db", str(oc_db),
+                "--all",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "1 imported" in result.output
+        assert "ingested" in result.output

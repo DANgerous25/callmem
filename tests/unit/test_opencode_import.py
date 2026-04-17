@@ -11,9 +11,11 @@ import pytest
 from llm_mem.adapters.opencode_import import (
     _map_message,
     _parse_json,
+    _progress_path,
     discover_sessions,
     import_session,
     import_sessions,
+    read_import_progress,
 )
 
 if TYPE_CHECKING:
@@ -368,3 +370,220 @@ class TestImportSessions:
         )
         assert len(results) == 1
         assert results[0]["event_count"] == 1
+
+
+class TestProgressCallback:
+    def test_progress_callback_receives_updates(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        _add_session(conn, "s2", "p1", "Session 2", ts=3000)
+        _add_message(conn, "m2", "s2", "user", ts=4000)
+        _add_part(conn, "pt2", "m2", "s2", {"type": "text", "text": "bye"})
+        conn.close()
+
+        updates: list[dict] = []
+        results = import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            import_all=True,
+            progress_callback=updates.append,
+        )
+
+        assert len(results) == 2
+        phases = [u.get("phase") for u in updates]
+        assert "discovery" in phases
+        assert "importing" in phases
+        assert any(u.get("session_index") == 1 for u in updates)
+        assert any(u.get("session_index") == 2 for u in updates)
+
+    def test_progress_callback_with_title(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "My Special Session", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "test"})
+        conn.close()
+
+        updates: list[dict] = []
+        import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            import_all=True,
+            progress_callback=updates.append,
+        )
+
+        importing = [u for u in updates if u.get("phase") == "importing"]
+        assert len(importing) == 1
+        assert importing[0]["session_title"] == "My Special Session"
+
+    def test_no_progress_callback(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        conn.close()
+
+        results = import_sessions(
+            engine_no_sensitive, db_path=db_path, import_all=True
+        )
+        assert len(results) == 1
+
+
+class TestProgressFile:
+    def test_progress_file_written(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        conn.close()
+
+        import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            import_all=True,
+            project=tmp_path,
+        )
+
+        progress = read_import_progress(tmp_path)
+        assert progress["status"] == "completed"
+        assert progress["imported_sessions"] == 1
+        assert progress["imported_events"] == 1
+        assert "started_at" in progress
+        assert "completed_at" in progress
+
+    def test_progress_file_not_written_without_project(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        conn.close()
+
+        import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            import_all=True,
+        )
+
+        progress_file = _progress_path(tmp_path)
+        assert not progress_file.exists()
+
+    def test_read_import_progress_no_file(self, tmp_path: Path) -> None:
+        result = read_import_progress(tmp_path)
+        assert result == {}
+
+    def test_read_import_progress_corrupt(self, tmp_path: Path) -> None:
+        progress_file = _progress_path(tmp_path)
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        progress_file.write_text("not json")
+        result = read_import_progress(tmp_path)
+        assert result == {}
+
+    def test_progress_updated_incrementally(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        _add_session(conn, "s2", "p1", "Session 2", ts=3000)
+        _add_message(conn, "m2", "s2", "user", ts=4000)
+        _add_part(conn, "pt2", "m2", "s2", {"type": "text", "text": "bye"})
+        conn.close()
+
+        snapshots: list[dict] = []
+
+        def _capture(progress: dict) -> None:
+            if progress.get("phase") == "importing":
+                from time import sleep
+                sleep(0.05)
+                pf = _progress_path(tmp_path)
+                if pf.exists():
+                    snapshots.append(json.loads(pf.read_text()))
+
+        import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            import_all=True,
+            progress_callback=_capture,
+            project=tmp_path,
+        )
+
+        assert len(snapshots) >= 1
+        for s in snapshots:
+            assert s["status"] == "running"
+        if len(snapshots) >= 2:
+            assert snapshots[1]["imported_sessions"] >= snapshots[0]["imported_sessions"]
+
+
+class TestLockfile:
+    def test_lockfile_prevents_concurrent(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        from llm_mem.adapters.opencode_import import _acquire_lock, _release_lock
+
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        conn.close()
+
+        lock_fd = _acquire_lock(tmp_path)
+        assert lock_fd is not None
+
+        with pytest.raises(RuntimeError, match="already in progress"):
+            import_sessions(
+                engine_no_sensitive,
+                db_path=db_path,
+                import_all=True,
+                project=tmp_path,
+            )
+
+        _release_lock(lock_fd)
+
+    def test_lockfile_released_after_import(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        from llm_mem.adapters.opencode_import import _acquire_lock
+
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Session 1", ts=1000)
+        _add_message(conn, "m1", "s1", "user", ts=2000)
+        _add_part(conn, "pt1", "m1", "s1", {"type": "text", "text": "hi"})
+        conn.close()
+
+        import_sessions(
+            engine_no_sensitive,
+            db_path=db_path,
+            import_all=True,
+            project=tmp_path,
+        )
+
+        lock_fd = _acquire_lock(tmp_path)
+        from llm_mem.adapters.opencode_import import _release_lock
+
+        _release_lock(lock_fd)
