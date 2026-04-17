@@ -36,6 +36,7 @@ class WorkerRunner:
         config: Config,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         event_bus: Any | None = None,
+        project_path: str | None = None,
     ) -> None:
         self.db = db
         self.ollama = ollama
@@ -45,6 +46,8 @@ class WorkerRunner:
         self.running = False
         self._thread: threading.Thread | None = None
         self.event_bus = event_bus
+        self.project_path = project_path
+        self._extractions_since_summary = 0
 
         self._handlers: dict[str, Any] = {
             "extract_entities": EntityExtractor(db, ollama, event_bus),
@@ -88,6 +91,11 @@ class WorkerRunner:
             self._dispatch(handler, job)
             self.queue.complete(job.id)
             logger.info("Job %s completed", job.id[:8])
+            if job.type == "extract_entities":
+                self._extractions_since_summary += 1
+                if self._extractions_since_summary >= 5:
+                    self._maybe_write_session_summary()
+                    self._extractions_since_summary = 0
         except Exception as exc:
             logger.error("Job %s failed: %s", job.id[:8], exc)
             self.queue.fail(job.id, str(exc))
@@ -103,6 +111,27 @@ class WorkerRunner:
             handler.run(project_id)
         else:
             raise RuntimeError(f"No dispatch for handler: {type(handler)}")
+
+    def _maybe_write_session_summary(self) -> None:
+        """Write SESSION_SUMMARY.md if auto-write is enabled and project_path is set."""
+        if not self.project_path:
+            return
+        if not self.config.briefing.auto_write_session_summary:
+            return
+        try:
+            from llm_mem.core.briefing import BriefingGenerator
+            from llm_mem.core.repository import Repository
+
+            repo = Repository(self.db)
+            gen = BriefingGenerator(repo, self.config, self.ollama)
+            gen.write_session_summary(
+                project_id=self.config.project.name,
+                project_name=self.config.project.name,
+                worktree_path=self.project_path,
+            )
+            logger.info("Updated SESSION_SUMMARY.md")
+        except Exception as exc:
+            logger.warning("Failed to write SESSION_SUMMARY.md: %s", exc)
 
     def _run_loop(self) -> None:
         """Main polling loop — runs in background thread."""
