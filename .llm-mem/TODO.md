@@ -26,6 +26,7 @@ Track work order progress and ad-hoc tasks here.
 | WO-17 | Settings panel with live briefing preview | **Complete** |
 | WO-18 | UI polish — project filter, infinite scroll, token economics | **Complete** |
 | WO-19 | Knowledge agents — queryable memory brains | **Complete** |
+| WO-20 | Import progress display and background execution | **Complete** |
 
 ## Ad-hoc Tasks
 

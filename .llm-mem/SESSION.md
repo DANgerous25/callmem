@@ -1,42 +1,24 @@
 # Last Session Summary
 
 **Date:** 2026-04-17
-**Duration:** WO-15 through WO-19
+**Duration:** WO-20
 
 ## What happened
 
-Completed WO-15 through WO-19:
+**WO-20 — Import Progress Display and Background Execution:**
 
-**WO-15 — SSE Real-Time UI:**
-- EventBus (in-process pub/sub) for SSE broadcasting
-- SSE endpoint at /events with keepalive and auto-cleanup
-- Engine publishes session_started/session_ended; extractor publishes entity_created
-- Feed uses EventSource with 30s polling fallback, green flash animation
-
-**WO-16 — File Tracking + Progressive Disclosure Search:**
-- Migration 005: entity_files junction table
-- Extraction prompt requests files per entity
-- Repository: get_entities_by_file, get_files_for_entity, get_timeline
-- 4 MCP tools: search_index (L1), timeline (L2), get_entities (L3), search_by_file
-
-**WO-17 — Settings Panel:**
-- /settings page with context injection, LLM backend, server, extraction settings
-- Config saved to config.toml with backup, reloaded in memory
-- Live briefing preview with 500ms debounce
-
-**WO-18 — UI Polish:**
-- Project filter pills, infinite scroll (30/page), per-card token counts
-- Feed header shows aggregate work tokens, briefing tokens, savings %
-
-**WO-19 — Knowledge Agents:**
-- Migration 006: corpora + corpus_entities tables
-- KnowledgeAgent: build, list, query, rebuild, delete corpora
-- 4 MCP tools + CLI commands (corpus build/list/query/rebuild/delete)
+- `opencode_import.py`: Added `progress_callback` param and `project` param to `import_sessions()` for real-time progress updates and progress file tracking
+- Progress file at `.llm-mem/import_progress.json` tracks PID, session counts, event counts, status (running/completed/stale)
+- Lockfile at `.llm-mem/import.lock` using `fcntl.flock(LOCK_NB)` prevents concurrent imports
+- `cli.py`: Added `--background` flag (forks import to subprocess with `Popen`), `--status` flag (reads progress file), progress bar with Unicode block chars
+- Import completion now shows summary: sessions imported, events ingested, jobs queued, elapsed time
+- `setup.py`: Offers "Import now" vs "Import in background" choice, real-time per-session progress output, summary stats on completion
+- Stale progress detection: if progress says "running" but PID is dead, marks as "stale"
 
 ## Current state
 
-- **All 19 work orders COMPLETE**
-- 389 tests passing, ruff clean
+- **All 20 work orders COMPLETE**
+- 404 tests passing, ruff clean (on modified files)
 - All committed and pushed to main
 - Schema version: 6
 
@@ -64,6 +46,8 @@ src/llm_mem/
 │   └── migrations/         # Schema migrations (001-006)
 ├── mcp/                    # MCP server + 15 tools
 ├── ui/                     # FastAPI web UI (SSE, settings, filters)
-├── adapters/               # OpenCode SSE adapter
+├── adapters/
+│   ├── opencode.py         # SSE adapter
+│   └── opencode_import.py  # Session importer (progress + lockfile)
 └── models/                 # Pydantic data models
 ```
