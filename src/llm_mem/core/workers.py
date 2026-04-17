@@ -123,10 +123,15 @@ class WorkerRunner:
             from llm_mem.core.repository import Repository
 
             repo = Repository(self.db)
+            project_name = self.config.project.name or "default"
+            project = repo.get_project_by_name(project_name)
+            if project is None:
+                logger.warning("No project '%s' found, skipping summary", project_name)
+                return
             gen = BriefingGenerator(repo, self.config, self.ollama)
             gen.write_session_summary(
-                project_id=self.config.project.name,
-                project_name=self.config.project.name,
+                project_id=project.id,
+                project_name=project_name,
                 worktree_path=self.project_path,
             )
             logger.info("Updated SESSION_SUMMARY.md")
