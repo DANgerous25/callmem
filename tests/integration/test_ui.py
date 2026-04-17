@@ -108,12 +108,12 @@ class TestFeed:
         assert "SESSION" in response.text
         assert "ended" in response.text.lower()
 
-    def test_feed_has_polling_div(self, memory_db: Database) -> None:
+    def test_feed_has_sse_and_fallback(self, memory_db: Database) -> None:
         client = _make_client(memory_db)
         html = _get_html(client.get("/"))
-        assert "hx-get" in html
+        assert "EventSource" in html
+        assert "/events" in html
         assert "/partials/feed" in html
-        assert "every 3s" in html
 
     def test_feed_empty_state(self, memory_db: Database) -> None:
         client = _make_client(memory_db)

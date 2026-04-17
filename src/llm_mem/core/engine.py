@@ -70,11 +70,17 @@ class MemoryEngine:
         engine.end_session(session.id)
     """
 
-    def __init__(self, db: Database, config: Config) -> None:
+    def __init__(
+        self,
+        db: Database,
+        config: Config,
+        event_bus: Any | None = None,
+    ) -> None:
         self.db = db
         self.config = config
         self.repo = Repository(db)
         self._project_id: str | None = None
+        self.event_bus = event_bus
 
         if config.sensitive_data.enabled:
             from llm_mem.core.redaction import PatternScanner
@@ -122,6 +128,11 @@ class MemoryEngine:
             model_name=model_name,
         )
         self.repo.insert_session(session)
+        self._publish("session_started", {
+            "id": session.id,
+            "started_at": session.started_at,
+            "agent_name": session.agent_name,
+        })
         return session
 
     def end_session(
@@ -143,6 +154,12 @@ class MemoryEngine:
         if note is not None:
             session.summary = note
         self.repo.update_session(session)
+
+        self._publish("session_ended", {
+            "id": session.id,
+            "ended_at": session.ended_at,
+            "summary": session.summary,
+        })
 
         self.queue.enqueue(
             "generate_summary",
@@ -373,6 +390,11 @@ class MemoryEngine:
         return self.repo.get_vault_entry(vault_id)
 
     # ── Private helpers ──────────────────────────────────────────────
+
+    def _publish(self, event_type: str, data: dict[str, Any]) -> None:
+        """Publish an event to the SSE event bus if available."""
+        if self.event_bus is not None:
+            self.event_bus.publish(event_type, data)
 
     def _ensure_active_session(self) -> Session:
         """Return the active session or create one if auto_start is on."""

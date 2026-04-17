@@ -6,7 +6,97 @@
     <p>Events: {{ event_count }} &middot; Entities: {{ entity_count }} &middot; Sessions: {{ session_count }}</p>
 </hgroup>
 
-<div id="feed-content" hx-get="/partials/feed" hx-trigger="every 3s" hx-swap="innerHTML">
+<div id="feed-content">
 {% include "feed_partial.html" %}
 </div>
+
+<script>
+(function() {
+    var container = document.getElementById('feed-content');
+    var reconnectDelay = 1000;
+    var maxDelay = 30000;
+    var fallbackInterval = null;
+
+    function connectSSE() {
+        var source = new EventSource('/events');
+
+        source.addEventListener('entity_created', function(e) {
+            var data = JSON.parse(e.data);
+            prependCard(data, 'entity');
+        });
+
+        source.addEventListener('session_started', function(e) {
+            var data = JSON.parse(e.data);
+            prependCard(data, 'session');
+        });
+
+        source.addEventListener('session_ended', function(e) {
+            var data = JSON.parse(e.data);
+            prependCard(data, 'summary');
+        });
+
+        source.addEventListener('error', function() {
+            source.close();
+            if (!fallbackInterval) {
+                startFallbackPolling();
+            }
+            setTimeout(function() {
+                connectSSE();
+                reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
+            }, reconnectDelay);
+        });
+
+        source.addEventListener('open', function() {
+            reconnectDelay = 1000;
+            if (fallbackInterval) {
+                clearInterval(fallbackInterval);
+                fallbackInterval = null;
+            }
+        });
+    }
+
+    function prependCard(data, kind) {
+        var existing = container.querySelector('[data-entity-id="' + data.id + '"]');
+        if (existing) return;
+
+        var card = document.createElement('div');
+        card.setAttribute('data-entity-id', data.id);
+        card.className = 'feed-card-new';
+        card.style.cssText = 'max-width:700px;margin:0 auto 1.25rem auto;padding:0.75rem 1.25rem;background:#1a3520;border:1px solid #22c55e;border-radius:0.75rem;opacity:0;transition:opacity 0.3s,background 0.3s;';
+
+        var category = data.type || kind;
+        var title = data.title || (kind === 'session' ? 'Session started' : 'New event');
+        var time = (data.created_at || data.started_at || '').substring(0, 19).replace('T', ' ');
+
+        card.innerHTML = '<span class="badge badge-' + category + '">' + category.toUpperCase() + '</span> ' +
+            '<strong style="color:#e2e8f0;">' + escapeHtml(title) + '</strong> ' +
+            '<span style="font-size:0.75rem;opacity:0.5;">' + time + '</span>';
+
+        container.insertBefore(card, container.firstChild);
+        requestAnimationFrame(function() {
+            card.style.opacity = '1';
+        });
+        setTimeout(function() {
+            card.style.background = '#1e293b';
+            card.style.borderColor = '#334155';
+        }, 2000);
+    }
+
+    function escapeHtml(text) {
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function startFallbackPolling() {
+        fallbackInterval = setInterval(function() {
+            fetch('/partials/feed').then(function(r) { return r.text(); }).then(function(html) {
+                container.innerHTML = html;
+            });
+        }, 30000);
+    }
+
+    connectSSE();
+})();
+</script>
 {% endblock %}

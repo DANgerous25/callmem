@@ -38,10 +38,16 @@ EXTRACTION_BATCH_SIZE = 10
 class EntityExtractor:
     """Extracts structured entities from events using the local LLM."""
 
-    def __init__(self, db: Database, ollama: OllamaClient) -> None:
+    def __init__(
+        self,
+        db: Database,
+        ollama: OllamaClient,
+        event_bus: Any | None = None,
+    ) -> None:
         self.db = db
         self.ollama = ollama
         self.queue = JobQueue(db)
+        self.event_bus = event_bus
 
     def enqueue_extraction(
         self, event_ids: list[str], session_id: str | None = None
@@ -134,6 +140,8 @@ class EntityExtractor:
                 )
                 self._insert_entity(entity)
                 entities.append(entity)
+                if self.event_bus is not None:
+                    self.event_bus.publish("entity_created", entity.to_row())
 
         return entities
 

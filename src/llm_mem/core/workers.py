@@ -35,6 +35,7 @@ class WorkerRunner:
         ollama: OllamaClient,
         config: Config,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
+        event_bus: Any | None = None,
     ) -> None:
         self.db = db
         self.ollama = ollama
@@ -43,9 +44,10 @@ class WorkerRunner:
         self.poll_interval = poll_interval
         self.running = False
         self._thread: threading.Thread | None = None
+        self.event_bus = event_bus
 
         self._handlers: dict[str, Any] = {
-            "extract_entities": EntityExtractor(db, ollama),
+            "extract_entities": EntityExtractor(db, ollama, event_bus),
             "generate_summary": Summarizer(db, ollama),
             "compact": Compactor(db, config),
         }
