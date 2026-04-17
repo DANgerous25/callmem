@@ -38,6 +38,8 @@ class OpenAICompatConfig(BaseModel):
 class BriefingConfig(BaseModel):
     max_tokens: int = 2000
     focus: str | None = None
+    auto_write_session_summary: bool = True
+    session_summary_filename: str = "SESSION_SUMMARY.md"
 
 
 class CompactionConfig(BaseModel):

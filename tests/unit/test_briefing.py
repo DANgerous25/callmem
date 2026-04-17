@@ -94,12 +94,14 @@ def _insert_entity(memory_db: Database, entity: Entity) -> None:
         conn.execute(
             "INSERT INTO entities "
             "(id, project_id, source_event_id, type, title, content, "
+            "key_points, synopsis, "
             "status, priority, pinned, created_at, updated_at, "
             "resolved_at, metadata, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row["id"], row["project_id"], row["source_event_id"],
                 row["type"], row["title"], row["content"],
+                row["key_points"], row["synopsis"],
                 row["status"], row["priority"], row["pinned"],
                 row["created_at"], row["updated_at"],
                 row["resolved_at"], row["metadata"], row["archived_at"],
@@ -111,33 +113,13 @@ def _insert_entity(memory_db: Database, entity: Entity) -> None:
 
 
 class TestBriefingGeneration:
-    def test_briefing_includes_todos(self, memory_db: Database) -> None:
+    def test_briefing_includes_entities(self, memory_db: Database) -> None:
         project_id = _seed_with_entities(memory_db)
         repo = Repository(memory_db)
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
-        assert "Active TODOs" in briefing.content
         assert "Add auth middleware" in briefing.content
-
-    def test_briefing_includes_decisions(
-        self, memory_db: Database
-    ) -> None:
-        project_id = _seed_with_entities(memory_db)
-        repo = Repository(memory_db)
-        gen = BriefingGenerator(repo, Config())
-        briefing = gen.generate(project_id, project_name="test")
-        assert "Recent Decisions" in briefing.content
         assert "Use FastAPI" in briefing.content
-
-    def test_briefing_includes_failures(
-        self, memory_db: Database
-    ) -> None:
-        project_id = _seed_with_entities(memory_db)
-        repo = Repository(memory_db)
-        gen = BriefingGenerator(repo, Config())
-        briefing = gen.generate(project_id, project_name="test")
-        assert "Unresolved Issues" in briefing.content
-        assert "Database connection timeout" in briefing.content
 
     def test_briefing_includes_session_summary(
         self, memory_db: Database
@@ -146,7 +128,7 @@ class TestBriefingGeneration:
         repo = Repository(memory_db)
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
-        assert "Last Session" in briefing.content
+        assert "Latest Session Summary" in briefing.content
         assert "Implemented auth" in briefing.content
 
     def test_briefing_new_project(self, memory_db: Database) -> None:
@@ -192,3 +174,57 @@ class TestBriefingGeneration:
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
         assert briefing.generated_at is not None
+
+    def test_briefing_includes_context_economics(
+        self, memory_db: Database
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert briefing.observations_loaded > 0
+        assert briefing.read_tokens > 0
+        assert briefing.work_investment >= 0
+        assert "Context Economics" in briefing.content
+
+    def test_briefing_includes_legend(
+        self, memory_db: Database
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "Legend:" in briefing.content
+
+    def test_briefing_includes_footer(
+        self, memory_db: Database
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "View observations live" in briefing.content
+
+    def test_briefing_has_savings_pct(
+        self, memory_db: Database
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert isinstance(briefing.savings_pct, float)
+
+    def test_write_session_summary(
+        self, memory_db: Database, tmp_path
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.write_session_summary(
+            project_id, "test", tmp_path
+        )
+        summary_path = tmp_path / "SESSION_SUMMARY.md"
+        assert summary_path.exists()
+        content = summary_path.read_text()
+        assert len(content) > 0
+        assert isinstance(briefing.observations_loaded, int)

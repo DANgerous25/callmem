@@ -290,6 +290,10 @@ class MemoryEngine:
             "content": briefing.content,
             "token_count": briefing.token_count,
             "components": briefing.components,
+            "observations_loaded": briefing.observations_loaded,
+            "read_tokens": briefing.read_tokens,
+            "work_investment": briefing.work_investment,
+            "savings_pct": briefing.savings_pct,
         }
 
     def search_fts(

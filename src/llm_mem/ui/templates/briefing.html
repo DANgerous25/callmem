@@ -4,13 +4,44 @@
 <h2>Session Briefing</h2>
 
 <form method="get" action="/briefing">
-    <input type="text" name="focus" value="{{ focus }}" placeholder="Focus topic (optional)">
-    <button type="submit">Filter</button>
+    <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:1rem;">
+        <input type="text" name="focus" value="{{ focus }}" placeholder="Focus topic (optional)">
+        <button type="submit">Filter</button>
+    </div>
 </form>
 
-<article>
-    {{ briefing.content }}
-</article>
+{% if briefing.observations_loaded %}
+<div class="stat-grid" style="margin-bottom:1rem;">
+    <div class="stat-card">
+        <div class="label">Observations</div>
+        <div class="value">{{ briefing.observations_loaded }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Tokens to Read</div>
+        <div class="value">{{ briefing.read_tokens }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Work Investment</div>
+        <div class="value">{{ briefing.work_investment }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Savings</div>
+        <div class="value">{{ briefing.savings_pct }}%</div>
+    </div>
+</div>
+{% endif %}
+
+<div style="position:relative;">
+    <button id="copy-btn" onclick="
+        var pre = document.getElementById('briefing-content');
+        navigator.clipboard.writeText(pre.textContent).then(function() {
+            var btn = document.getElementById('copy-btn');
+            btn.textContent = 'Copied!';
+            setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
+        });
+    " style="position:absolute;top:0.5rem;right:0.5rem;font-size:0.8rem;padding:0.3rem 0.8rem;border-radius:4px;background:#334155;color:#e2e8f0;border:1px solid #475569;cursor:pointer;">Copy</button>
+    <pre id="briefing-content" style="background:#0f172a;padding:1.25rem;border-radius:0.5rem;overflow-x:auto;line-height:1.6;font-size:0.85rem;white-space:pre-wrap;word-break:break-word;">{{ briefing.content }}</pre>
+</div>
 
 <p><small>Token count: {{ briefing.token_count }}</small></p>
 {% endblock %}
