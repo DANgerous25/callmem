@@ -45,6 +45,7 @@ def create_app(engine: MemoryEngine) -> FastAPI:
     from llm_mem.ui.routes.feed import router as feed_router
     from llm_mem.ui.routes.search import router as search_router
     from llm_mem.ui.routes.sessions import router as sessions_router
+    from llm_mem.ui.routes.settings import router as settings_router
     from llm_mem.ui.routes.sse import router as sse_router
 
     app.include_router(feed_router)
@@ -53,6 +54,7 @@ def create_app(engine: MemoryEngine) -> FastAPI:
     app.include_router(search_router)
     app.include_router(entities_router)
     app.include_router(briefing_router)
+    app.include_router(settings_router)
     app.include_router(sse_router)
 
     return app

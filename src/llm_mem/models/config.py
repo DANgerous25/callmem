@@ -40,6 +40,14 @@ class BriefingConfig(BaseModel):
     focus: str | None = None
     auto_write_session_summary: bool = True
     session_summary_filename: str = "SESSION_SUMMARY.md"
+    entity_types: list[str] = Field(default_factory=list)
+    max_per_type: int = 20
+    include_last_session: bool = True
+    default_view: str = "key_points"
+
+
+class ExtractionConfig(BaseModel):
+    batch_size: int = 10
 
 
 class CompactionConfig(BaseModel):
@@ -74,6 +82,7 @@ class Config(BaseModel):
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)
 
