@@ -174,7 +174,11 @@ def workers(project: Path, interval: int) -> None:
         click.echo("Set [llm] backend = 'ollama' or 'openai_compat' in config.toml.")
         return
 
-    runner = WorkerRunner(db, llm_client, config, poll_interval=interval)
+    runner = WorkerRunner(
+        db, llm_client, config,
+        poll_interval=interval,
+        project_path=str(project),
+    )
 
     stop_event = threading.Event()
 
@@ -284,7 +288,10 @@ def daemon(
         if llm_client is not None:
             from llm_mem.core.workers import WorkerRunner
 
-            worker_runner = WorkerRunner(db, llm_client, config)
+            worker_runner = WorkerRunner(
+                db, llm_client, config,
+                project_path=str(project),
+            )
             worker_runner.start()
             click.echo("  Workers:  started")
         else:
@@ -506,6 +513,9 @@ def import_cmd(
         click.echo()
         click.echo("Extraction will continue in the background via the worker.")
 
+        # Generate SESSION_SUMMARY.md so agents pick up context immediately
+        _write_session_summary(project, config, db, engine)
+
 
 def _show_import_status(project: Path) -> None:
     """Show the current import progress or last import summary."""
@@ -607,6 +617,64 @@ def _format_elapsed(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins}m {secs}s"
+
+
+def _write_session_summary(
+    project: Path, config: object, db: object, engine: object,
+) -> None:
+    """Generate SESSION_SUMMARY.md in the project root."""
+    from llm_mem.core.briefing import BriefingGenerator
+
+    if not config.briefing.auto_write_session_summary:
+        return
+
+    try:
+        gen = BriefingGenerator(engine.repo, config, engine.ollama)
+        briefing = gen.write_session_summary(
+            project_id=config.project.name,
+            project_name=config.project.name,
+            worktree_path=project,
+        )
+        click.echo(f"  Wrote SESSION_SUMMARY.md ({briefing.token_count} tokens)")
+    except Exception as exc:
+        click.echo(f"  Warning: could not write SESSION_SUMMARY.md: {exc}")
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--write", "write_file", is_flag=True, help="Write to SESSION_SUMMARY.md")
+def briefing(project: Path, write_file: bool) -> None:
+    """Generate and display the startup briefing."""
+    from llm_mem.core.briefing import BriefingGenerator
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine
+
+    config = load_config(project)
+    db_path = project / ".llm-mem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No llm-mem database found at {db_path}")
+        return
+
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+    gen = BriefingGenerator(engine.repo, config, engine.ollama)
+
+    if write_file:
+        result = gen.write_session_summary(
+            project_id=config.project.name,
+            project_name=config.project.name,
+            worktree_path=project,
+        )
+        click.echo(result.content)
+        click.echo(f"\nWritten to {project / 'SESSION_SUMMARY.md'}")
+    else:
+        result = gen.generate(
+            project_id=config.project.name,
+            project_name=config.project.name,
+        )
+        click.echo(result.content)
 
 
 # ── Corpus commands ──────────────────────────────────────────────────
