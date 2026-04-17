@@ -3,8 +3,28 @@
 {% block content %}
 <hgroup>
     <h2>{{ project_name }}</h2>
-    <p>Events: {{ event_count }} &middot; Entities: {{ entity_count }} &middot; Sessions: {{ session_count }}</p>
+    <p>
+        Events: {{ event_count }} &middot;
+        Entities: {{ entity_count }} &middot;
+        Sessions: {{ session_count }} &middot;
+        <strong>{{ work_tokens | format_number }}t captured &rarr; {{ briefing_tokens | format_number }}t briefing ({{ savings_pct }}% savings)</strong>
+    </p>
 </hgroup>
+
+{% if projects %}
+<div class="feed-filters">
+    <button class="filter-pill {% if not project_filter %}filter-active{% endif %}"
+            hx-get="/partials/feed" hx-vals='{"project": ""}' hx-target="#feed-content" hx-swap="innerHTML">
+        All
+    </button>
+    {% for p in projects %}
+    <button class="filter-pill {% if project_filter == p.id %}filter-active{% endif %}"
+            hx-get="/partials/feed" hx-vals='{"project": "{{ p.id }}"}' hx-target="#feed-content" hx-swap="innerHTML">
+        {{ p.name }}
+    </button>
+    {% endfor %}
+</div>
+{% endif %}
 
 <div id="feed-content">
 {% include "feed_partial.html" %}
