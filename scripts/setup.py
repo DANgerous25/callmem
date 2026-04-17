@@ -171,12 +171,10 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
     if not oc_db.is_file():
         return
 
-    # Query the OpenCode DB for sessions
     all_sessions = discover_sessions(db_path=oc_db)
     if not all_sessions:
         return
 
-    # Group by project
     projects: dict[str, list[dict]] = {}
     for s in all_sessions:
         key = s.get("project_worktree", "unknown")
@@ -213,7 +211,22 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
         print(f"  Run: llm-mem import --source opencode --all --project {project}")
         return
 
+    total_sessions = len(all_sessions)
+    est_minutes = max(1, total_sessions // 10)
+    print()
+    print(f"  Import {total_sessions} sessions (estimated ~{est_minutes} minute(s))?")
+    print("    [1] Import now (wait for completion)")
+    print("    [2] Import in background (start working immediately)")
+    print()
+    choice = ask("Choice", "1")
+
+    if choice.strip() == "2":
+        _run_setup_background_import(project, oc_db)
+        return
+
     try:
+        import time
+
         from llm_mem.core.config import load_config
         from llm_mem.core.database import Database
         from llm_mem.core.engine import MemoryEngine
@@ -224,25 +237,85 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
         engine = MemoryEngine(db, config)
 
         print()
-        print(f"  Importing {len(all_sessions)} session(s)...")
+        print(f"  Importing {total_sessions} session(s)...")
+
+        start_time = time.monotonic()
+
+        def _on_progress(update: dict) -> None:
+            phase = update.get("phase", "")
+            if phase == "discovery":
+                print(
+                    f"  Discovered {update['total_sessions']} sessions "
+                    f"(~{update['total_events_estimate']} events)"
+                )
+            elif phase == "importing":
+                idx = update["session_index"]
+                total = update["total_sessions"]
+                title = (update.get("session_title") or "untitled")[:40]
+                events = update.get("session_events", 0)
+                print(
+                    f"  [{idx}/{total}] {title} — {events} events "
+                    f"({update['total_events_so_far']} total)"
+                )
 
         results = import_sessions(
             engine,
             db_path=oc_db,
             import_all=True,
+            progress_callback=_on_progress,
+            project=project,
         )
 
+        elapsed = time.monotonic() - start_time
         imported = [r for r in results if not r.get("dry_run")]
         total_events = sum(r.get("event_count", 0) for r in imported)
         errors = sum(len(r.get("errors", [])) for r in imported)
 
-        print(f"  Imported {len(imported)} session(s), {total_events} events")
-        if errors:
-            print(f"  {errors} error(s) during import (non-fatal, events still stored)")
+        if elapsed < 60:
+            elapsed_str = f"{elapsed:.0f}s"
+        else:
+            elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+
+        print()
+        print("  Import complete:")
+        print(f"    Sessions: {len(imported)} imported")
+        print(f"    Events:   {total_events} ingested")
+        print(f"    Errors:   {errors}")
+        print(f"    Time:     {elapsed_str}")
+        print()
+        print("  Extraction will continue in the background via the worker.")
 
     except Exception as exc:
         print(f"  Import failed: {exc}")
         print(f"  You can retry: llm-mem import --source opencode --all --project {project}")
+
+
+def _run_setup_background_import(project: Path, oc_db: Path) -> None:
+    """Fork import into background from setup wizard."""
+    import subprocess
+    import sys
+
+    cmd = [
+        sys.executable, "-m", "llm_mem.cli",
+        "import",
+        "--source", "opencode",
+        "--project", str(project),
+        "--opencode-db", str(oc_db),
+        "--all",
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    print()
+    print(f"  Import running in background (PID {proc.pid}).")
+    print("  Check progress: llm-mem import --status")
+    print("  Extraction will begin automatically once events are ingested.")
+    print("  You can open OpenCode now — new memories will appear as they're processed.")
 
 
 # ── Systemd service ───────────────────────────────────────────────
