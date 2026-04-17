@@ -55,7 +55,7 @@ class Briefing:
 
 NEW_PROJECT_MESSAGE = (
     "[{project_name}] recent context, {datetime}\n"
-    "\u2500" * 48 + "\n\n"
+    + "\u2500" * 48 + "\n\n"
     "No prior memories found. This is a new project."
 )
 

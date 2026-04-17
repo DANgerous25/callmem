@@ -631,8 +631,8 @@ def _write_session_summary(
     try:
         gen = BriefingGenerator(engine.repo, config, engine.ollama)
         briefing = gen.write_session_summary(
-            project_id=config.project.name,
-            project_name=config.project.name,
+            project_id=engine.project_id,
+            project_name=config.project.name or "default",
             worktree_path=project,
         )
         click.echo(f"  Wrote SESSION_SUMMARY.md ({briefing.token_count} tokens)")
@@ -663,16 +663,16 @@ def briefing(project: Path, write_file: bool) -> None:
 
     if write_file:
         result = gen.write_session_summary(
-            project_id=config.project.name,
-            project_name=config.project.name,
+            project_id=engine.project_id,
+            project_name=config.project.name or "default",
             worktree_path=project,
         )
         click.echo(result.content)
         click.echo(f"\nWritten to {project / 'SESSION_SUMMARY.md'}")
     else:
         result = gen.generate(
-            project_id=config.project.name,
-            project_name=config.project.name,
+            project_id=engine.project_id,
+            project_name=config.project.name or "default",
         )
         click.echo(result.content)
 
