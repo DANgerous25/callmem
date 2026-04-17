@@ -31,6 +31,7 @@ def create_app(engine: MemoryEngine) -> FastAPI:
         return path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if path else ""
 
     env.filters["basename"] = _basename
+    env.filters["format_number"] = lambda n: f"{n:,}" if isinstance(n, int) else str(n)
 
     app.state.engine = engine
     app.state.templates = env
