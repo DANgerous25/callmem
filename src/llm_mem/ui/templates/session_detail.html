@@ -26,7 +26,16 @@
     <tr>
         <td>{{ e.type }}</td>
         <td>{{ e.title }}</td>
-        <td>{{ (e.content or "")[:60] }}</td>
+        <td class="event-content-cell">
+            {% if e.content and e.content | length > 500 %}
+            <details>
+                <summary>{{ e.content[:500] }}&hellip;</summary>
+                <div class="event-full-text">{{ e.content }}</div>
+            </details>
+            {% else %}
+            {{ e.content or "" }}
+            {% endif %}
+        </td>
     </tr>
     {% endfor %}
     </tbody>
@@ -41,7 +50,16 @@
     <tr>
         <td>{{ ev.timestamp[:16] }}</td>
         <td>{{ ev.type }}</td>
-        <td>{{ ev.content[:100] }}</td>
+        <td class="event-content-cell">
+            {% if ev.content and ev.content | length > 500 %}
+            <details>
+                <summary>{{ ev.content[:500] }}&hellip;</summary>
+                <div class="event-full-text">{{ ev.content }}</div>
+            </details>
+            {% else %}
+            {{ ev.content }}
+            {% endif %}
+        </td>
     </tr>
     {% endfor %}
     </tbody>

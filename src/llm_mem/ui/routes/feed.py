@@ -26,6 +26,8 @@ def _build_feed_items(engine: Any) -> list[dict[str, Any]]:
             "category": e["type"],
             "title": e["title"],
             "content": e.get("content", ""),
+            "key_points": e.get("key_points"),
+            "synopsis": e.get("synopsis"),
             "timestamp": e.get("created_at", ""),
             "id": e["id"],
             "status": e.get("status"),

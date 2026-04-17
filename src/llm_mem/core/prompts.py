@@ -13,19 +13,63 @@ Events:
 
 Extract the following (only include items that are clearly present — do not invent):
 
-1. **Decisions**: What was decided and why
+1. **Decisions**: What was decided and why (architectural/design choices)
 2. **TODOs**: Tasks mentioned that need to be done (with priority if stated)
 3. **Facts**: Durable project knowledge (e.g., "the API uses cursor-based pagination")
 4. **Failures**: What went wrong, error messages, whether resolved
 5. **Discoveries**: Notable insights or learnings
+6. **Features**: New functionality added or implemented
+7. **Bugfixes**: Bugs identified and/or fixed
+8. **Research**: Investigation, analysis, or exploration work
+9. **Changes**: General file or code changes that don't fit other categories
+
+For each extracted item, provide:
+- "title": a concise 1-line summary
+- "content": a detailed description (1-3 sentences)
+- "key_points": a list of 2-5 bullet points capturing the essential information
+- "synopsis": a flowing prose paragraph (2-4 sentences) giving full context
 
 Respond in this exact JSON format:
 {{
-  "decisions": [{{"title": "...", "content": "..."}}],
-  "todos": [{{"title": "...", "content": "...", "priority": "high|medium|low", "status": "open"}}],
-  "facts": [{{"title": "...", "content": "..."}}],
-  "failures": [{{"title": "...", "content": "...", "status": "unresolved|resolved"}}],
-  "discoveries": [{{"title": "...", "content": "..."}}]
+  "decisions": [{{
+    "title": "...", "content": "...",
+    "key_points": ["point 1", "point 2"],
+    "synopsis": "Narrative paragraph..."
+  }}],
+  "todos": [{{
+    "title": "...", "content": "...",
+    "priority": "high|medium|low", "status": "open",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "facts": [{{
+    "title": "...", "content": "...",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "failures": [{{
+    "title": "...", "content": "...",
+    "status": "unresolved|resolved",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "discoveries": [{{
+    "title": "...", "content": "...",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "features": [{{
+    "title": "...", "content": "...",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "bugfixes": [{{
+    "title": "...", "content": "...",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "research": [{{
+    "title": "...", "content": "...",
+    "key_points": ["..."], "synopsis": "..."
+  }}],
+  "changes": [{{
+    "title": "...", "content": "...",
+    "key_points": ["..."], "synopsis": "..."
+  }}]
 }}
 
 If a category has no items, use an empty array. Do not include explanatory text outside the JSON."""
@@ -48,13 +92,27 @@ Session chunks:
 Remaining events not yet summarized:
 {remaining_events_text}
 
-Produce a structured summary:
-1. **What was done**: Main accomplishments
-2. **Key decisions**: Important choices made
-3. **Issues**: Problems encountered or unresolved
-4. **TODOs**: Tasks identified for future work
+Produce a structured summary with a clear title line followed by
+relevant sections. Use emoji section headers for visual scanning.
+Omit sections that have no content (don't write empty sections).
 
-Be concise but specific."""
+Format:
+**[Clear 1-line title describing what was accomplished, NOT the user's raw prompt]**
+
+🔍 INVESTIGATED
+- What was explored, researched, or analyzed
+
+💡 LEARNED
+- Key insights or discoveries
+
+✅ COMPLETED
+- What was actually done or shipped
+
+📋 NEXT STEPS
+- Tasks or items identified for future work
+
+Be specific about files, functions, and technical details.
+The title should be a human-readable description of the session's outcome."""
 
 
 CROSS_SESSION_PROMPT = """Synthesize these session summaries into a project-level overview.

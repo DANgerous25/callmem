@@ -24,27 +24,110 @@
         .feed-card {
             max-width: 700px;
             margin: 0 auto 1.25rem auto;
-            padding: 1.25rem 1.5rem;
+            padding: 0;
             background: #1e293b;
             border: 1px solid #334155;
             border-radius: 0.75rem;
         }
-        .feed-card-compact {
+        .feed-card[open] {
+            padding-bottom: 0.5rem;
+        }
+        .feed-card > summary {
+            padding: 1.25rem 1.5rem;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .feed-card > summary::-webkit-details-marker { display: none; }
+        .feed-card-compact > summary {
             padding: 0.75rem 1.25rem;
         }
-        .feed-card-compact .feed-card-title {
+        .feed-card-compact .feed-card-title-inline {
             font-size: 0.95rem;
-            margin-bottom: 0.25rem;
         }
-        .feed-card-compact .feed-card-body {
-            font-size: 0.8rem;
+        .feed-card-chevron {
+            font-size: 0.65rem;
+            transition: transform 0.15s;
+            color: #94a3b8;
+        }
+        .feed-card[open] .feed-card-chevron {
+            transform: rotate(90deg);
         }
         .feed-card-header {
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            margin-bottom: 0.5rem;
             flex-wrap: wrap;
+        }
+        .feed-card-title-inline {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: #e2e8f0;
+        }
+        .feed-card-time-inline {
+            font-size: 0.75rem;
+            opacity: 0.5;
+            margin-left: auto;
+        }
+        .feed-card-content {
+            padding: 0 1.5rem 0.75rem 1.5rem;
+        }
+        .feed-card-body {
+            font-size: 0.85rem;
+            line-height: 1.5;
+            margin: 0 0 0.75rem 0;
+            opacity: 0.75;
+        }
+        .feed-card-toggle {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .toggle-btn {
+            padding: 0.3rem 0.9rem;
+            border-radius: 999px;
+            border: 1px solid #475569;
+            background: transparent;
+            color: #94a3b8;
+            font-size: 0.78rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .toggle-btn:hover {
+            border-color: #64748b;
+            color: #e2e8f0;
+        }
+        .toggle-btn.toggle-active {
+            background: #3b82f6;
+            border-color: #3b82f6;
+            color: #fff;
+        }
+        .feed-card-keypoints {
+            font-size: 0.85rem;
+            line-height: 1.7;
+            color: #cbd5e1;
+            white-space: pre-wrap;
+        }
+        .feed-card-synopsis {
+            font-size: 0.85rem;
+            line-height: 1.7;
+            color: #cbd5e1;
+        }
+        .feed-card-footer {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 0.75rem;
+            opacity: 0.5;
+            flex-wrap: wrap;
+            padding: 0 1.5rem 0.5rem 1.5rem;
+        }
+        .feed-card-footer a {
+            color: var(--pico-primary);
         }
         .badge {
             display: inline-block;
@@ -61,35 +144,16 @@
         .badge-fact       { background: #06b6d4; color: #000; }
         .badge-failure    { background: #ef4444; }
         .badge-discovery  { background: #8b5cf6; }
+        .badge-feature    { background: #22c55e; color: #000; }
+        .badge-bugfix     { background: #f97316; }
+        .badge-research   { background: #8b5cf6; }
+        .badge-change     { background: #64748b; }
         .badge-session    { background: #14b8a6; color: #000; }
         .badge-summary    { background: #6366f1; }
         .badge-agent      { background: #4a5568; }
         .feed-project {
             font-size: 0.8rem;
             opacity: 0.6;
-        }
-        .feed-card-title {
-            font-size: 1.05rem;
-            font-weight: 600;
-            margin: 0 0 0.4rem 0;
-            color: #e2e8f0;
-        }
-        .feed-card-body {
-            font-size: 0.85rem;
-            line-height: 1.5;
-            margin: 0 0 0.75rem 0;
-            opacity: 0.75;
-        }
-        .feed-card-footer {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            font-size: 0.75rem;
-            opacity: 0.5;
-            flex-wrap: wrap;
-        }
-        .feed-card-footer a {
-            color: var(--pico-primary);
         }
         .feed-card-status {
             padding: 0.1rem 0.4rem;
@@ -127,6 +191,19 @@
             opacity: 0.5;
             padding: 3rem 1rem;
         }
+        .event-content-cell {
+            max-width: 500px;
+        }
+        .event-content-cell details {
+            cursor: pointer;
+        }
+        .event-full-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin-top: 0.5rem;
+            padding-top: 0.5rem;
+            border-top: 1px solid #334155;
+        }
     </style>
 </head>
 <body>
@@ -147,5 +224,25 @@
         {% block content %}{% endblock %}
     </main>
     <footer class="container">llm-mem v{{ version | default("0.1.0") }}</footer>
+    <script>
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('toggle-btn')) {
+            var card = e.target.closest('.feed-card-content');
+            if (!card) return;
+            var view = e.target.getAttribute('data-view');
+            var keypoints = card.querySelector('.feed-card-keypoints');
+            var synopsis = card.querySelector('.feed-card-synopsis');
+            card.querySelectorAll('.toggle-btn').forEach(function(b) { b.classList.remove('toggle-active'); });
+            e.target.classList.add('toggle-active');
+            if (view === 'keypoints') {
+                keypoints.style.display = '';
+                synopsis.style.display = 'none';
+            } else {
+                keypoints.style.display = 'none';
+                synopsis.style.display = '';
+            }
+        }
+    });
+    </script>
 </body>
 </html>
