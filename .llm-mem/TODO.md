@@ -21,6 +21,11 @@ Track work order progress and ad-hoc tasks here.
 | WO-12 | OpenCode adapter and AGENTS.md template | **Complete** |
 | WO-13 | Feed card UI improvements | **Complete** |
 | WO-14 | Startup briefing context injection | **Complete** |
+| WO-15 | SSE real-time UI | **Complete** |
+| WO-16 | File tracking + progressive disclosure search | **Complete** |
+| WO-17 | Settings panel with live briefing preview | **Complete** |
+| WO-18 | UI polish — project filter, infinite scroll, token economics | **Complete** |
+| WO-19 | Knowledge agents — queryable memory brains | **Complete** |
 
 ## Ad-hoc Tasks
 
