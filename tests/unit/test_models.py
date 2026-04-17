@@ -149,7 +149,10 @@ class TestEntity:
         assert entity.updated_at is not None
 
     def test_all_entity_types(self) -> None:
-        for t in ["decision", "todo", "fact", "failure", "discovery"]:
+        for t in [
+            "decision", "todo", "fact", "failure", "discovery",
+            "feature", "bugfix", "research", "change",
+        ]:
             e = Entity(project_id="p", type=t, title="x", content="x")  # type: ignore[call-arg]
             assert e.type == t
 

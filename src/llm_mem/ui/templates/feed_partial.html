@@ -1,16 +1,41 @@
 {% if items %}
 {% for item in items %}
-<div class="feed-card{% if item.kind == 'session' %} feed-card-compact{% endif %}">
-  <div class="feed-card-header">
+<details class="feed-card{% if item.kind == 'session' %} feed-card-compact{% endif %}">
+  <summary class="feed-card-header">
+    <span class="feed-card-chevron">&#9654;</span>
     <span class="badge badge-{{ item.category }}">{{ item.category | upper }}</span>
     {% if item.agent_name %}
     <span class="badge badge-agent">{{ item.agent_name | upper }}</span>
     {% endif %}
+    <span class="feed-card-title-inline">{{ item.title }}</span>
     <span class="feed-project">{{ item.project_name }}</span>
+    <span class="feed-card-time-inline">{{ item.timestamp[:19] | replace("T", " ") }}</span>
+  </summary>
+  {% if item.kind == 'entity' and (item.key_points or item.content) %}
+  <div class="feed-card-content">
+    <div class="feed-card-toggle">
+      <button class="toggle-btn toggle-active" data-view="keypoints">Key Points</button>
+      <button class="toggle-btn" data-view="synopsis">Synopsis</button>
+    </div>
+    <div class="feed-card-keypoints">
+      {% if item.key_points %}
+      {{ item.key_points | replace("\n", "<br>") | safe }}
+      {% else %}
+      {{ item.content }}
+      {% endif %}
+    </div>
+    <div class="feed-card-synopsis" style="display:none">
+      {% if item.synopsis %}
+      {{ item.synopsis }}
+      {% else %}
+      {{ item.content }}
+      {% endif %}
+    </div>
   </div>
-  <h4 class="feed-card-title">{{ item.title }}</h4>
-  {% if item.content %}
-  <p class="feed-card-body">{{ item.content[:300] }}{% if item.content | length > 300 %}&hellip;{% endif %}</p>
+  {% elif item.content and item.kind != 'entity' %}
+  <div class="feed-card-content">
+    <p class="feed-card-body">{{ item.content }}</p>
+  </div>
   {% endif %}
   <div class="feed-card-footer">
     <span class="feed-card-id">
@@ -20,7 +45,6 @@
       #{{ item.id[:8] }}
       {% endif %}
     </span>
-    <span class="feed-card-time">{{ item.timestamp[:19] | replace("T", " ") }}</span>
     {% if item.status and item.kind == 'entity' %}
     <span class="feed-card-status status-{{ item.status }}">{{ item.status }}</span>
     {% endif %}
@@ -31,7 +55,7 @@
     <span class="feed-card-pinned">pinned</span>
     {% endif %}
   </div>
-</div>
+</details>
 {% endfor %}
 {% else %}
 <p class="feed-empty">No memory items yet. Start a session to see entities appear here.</p>

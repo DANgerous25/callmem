@@ -37,8 +37,11 @@ class TestEntityExtractor:
         assert event is not None
 
         llm_response = (
-            '{"decisions": [{"title": "Use Redis", "content": "Chose Redis for caching"}],'
-            '"todos": [], "facts": [], "failures": [], "discoveries": []}'
+            '{"decisions": [{"title": "Use Redis", "content": "Chose Redis for caching", '
+            '"key_points": ["Redis chosen for caching", "Fast in-memory store"], '
+            '"synopsis": "Decided to use Redis for the caching layer due to its speed."}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
         )
         with patch.object(extractor.ollama, "_generate", return_value=llm_response):
             entities = extractor.process_pending()
@@ -46,6 +49,10 @@ class TestEntityExtractor:
         assert len(entities) == 1
         assert entities[0].type == "decision"
         assert entities[0].title == "Use Redis"
+        assert entities[0].key_points is not None
+        assert "Redis chosen for caching" in entities[0].key_points
+        assert entities[0].synopsis is not None
+        assert "Redis" in entities[0].synopsis
 
     def test_extracts_todos(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)
@@ -57,7 +64,8 @@ class TestEntityExtractor:
             '{"decisions": [], "todos": ['
             '{"title": "Add auth middleware", "content": "Implement auth", '
             '"priority": "high", "status": "open"}],'
-            '"facts": [], "failures": [], "discoveries": []}'
+            '"facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
         )
         with patch.object(extractor.ollama, "_generate", return_value=llm_response):
             entities = extractor.process_pending()
@@ -80,7 +88,8 @@ class TestEntityExtractor:
             '"facts": [],'
             '"failures": [{"title": "500 error", '
             '"content": "Got a server error", "status": "unresolved"}],'
-            '"discoveries": []}'
+            '"discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
         )
         with patch.object(extractor.ollama, "_generate", return_value=llm_response):
             entities = extractor.process_pending()
@@ -100,7 +109,8 @@ class TestEntityExtractor:
 
         llm_response = (
             '{"decisions": [{"title": "Use SQLite", "content": "Storage"}],'
-            '"todos": [], "facts": [], "failures": [], "discoveries": []}'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
         )
         with patch.object(extractor.ollama, "_generate", return_value=llm_response):
             entities = extractor.process_pending()
@@ -152,6 +162,48 @@ class TestEntityExtractor:
         _, extractor = _setup_engine_and_extractor(memory_db)
         entities = extractor.process_pending()
         assert entities == []
+
+    def test_extracts_new_entity_types(
+        self, memory_db: Database
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("response", "Added export feature, fixed a bug")
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], '
+            '"features": [{"title": "Export feature", "content": "Added export"}], '
+            '"bugfixes": [{"title": "Fixed bug", "content": "Fixed null pointer"}], '
+            '"research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 2
+        types = {e.type for e in entities}
+        assert "feature" in types
+        assert "bugfix" in types
+
+    def test_key_points_fallback_to_content(
+        self, memory_db: Database
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        engine.ingest_one("response", "some content")
+
+        llm_response = (
+            '{"decisions": [{"title": "Test", "content": "The content"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        assert entities[0].key_points is None
+        assert entities[0].synopsis is None
 
 
 class TestIngestQueuesExtraction:

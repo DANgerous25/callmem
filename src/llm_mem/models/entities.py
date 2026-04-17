@@ -9,7 +9,10 @@ from typing import Any, Literal, Self
 from pydantic import BaseModel, Field
 from ulid import ULID
 
-EntityType = Literal["decision", "todo", "fact", "failure", "discovery"]
+EntityType = Literal[
+    "decision", "todo", "fact", "failure", "discovery",
+    "feature", "bugfix", "research", "change",
+]
 EntityStatus = Literal["open", "done", "cancelled", "unresolved", "resolved"]
 Priority = Literal["high", "medium", "low"]
 
@@ -34,6 +37,8 @@ class Entity(BaseModel):
     )
     resolved_at: str | None = None
     metadata: dict[str, Any] | None = None
+    key_points: str | None = None
+    synopsis: str | None = None
     archived_at: str | None = None
 
     def to_row(self) -> dict[str, Any]:
@@ -44,6 +49,8 @@ class Entity(BaseModel):
             "type": self.type,
             "title": self.title,
             "content": self.content,
+            "key_points": self.key_points,
+            "synopsis": self.synopsis,
             "status": self.status,
             "priority": self.priority,
             "pinned": 1 if self.pinned else 0,

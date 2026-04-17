@@ -26,6 +26,10 @@ ENTITY_TYPE_MAP = {
     "facts": "fact",
     "failures": "failure",
     "discoveries": "discovery",
+    "features": "feature",
+    "bugfixes": "bugfix",
+    "research": "research",
+    "changes": "change",
 }
 
 EXTRACTION_BATCH_SIZE = 10
@@ -104,6 +108,18 @@ class EntityExtractor:
                 if not title:
                     continue
 
+                key_points_list = item.get("key_points", [])
+                if isinstance(key_points_list, list) and key_points_list:
+                    key_points = "\n".join(
+                        f"\u2022 {p}" for p in key_points_list
+                    )
+                else:
+                    key_points = None
+
+                synopsis = item.get("synopsis")
+                if synopsis and not isinstance(synopsis, str):
+                    synopsis = None
+
                 source_event_id = event_ids[0] if event_ids else None
                 entity = Entity(
                     project_id=project_id,
@@ -111,6 +127,8 @@ class EntityExtractor:
                     type=entity_type,
                     title=title,
                     content=content,
+                    key_points=key_points,
+                    synopsis=synopsis,
                     status=item.get("status"),
                     priority=item.get("priority"),
                 )
@@ -161,7 +179,10 @@ class EntityExtractor:
             return {}
 
         result: dict[str, list[dict[str, str]]] = {}
-        for key in ("decisions", "todos", "facts", "failures", "discoveries"):
+        for key in (
+            "decisions", "todos", "facts", "failures", "discoveries",
+            "features", "bugfixes", "research", "changes",
+        ):
             items = raw.get(key, [])
             if isinstance(items, list):
                 result[key] = items
@@ -169,19 +190,20 @@ class EntityExtractor:
         return result
 
     def _insert_entity(self, entity: Entity) -> None:
-        """Insert an entity into the database."""
         conn = self.db.connect()
         try:
             row = entity.to_row()
             conn.execute(
                 "INSERT INTO entities "
                 "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, "
                 "status, priority, pinned, created_at, updated_at, "
                 "resolved_at, metadata, archived_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["id"], row["project_id"], row["source_event_id"],
                     row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"],
                     row["status"], row["priority"], row["pinned"],
                     row["created_at"], row["updated_at"],
                     row["resolved_at"], row["metadata"], row["archived_at"],
