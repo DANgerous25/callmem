@@ -7,9 +7,10 @@ active TODOs, decisions, and summaries with rich visual formatting.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from llm_mem.compat import UTC
 from llm_mem.core.retrieval import _estimate_tokens
 
 if TYPE_CHECKING:

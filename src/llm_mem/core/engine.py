@@ -147,7 +147,9 @@ class MemoryEngine:
             msg = f"Session {session_id} is not active (status={session.status})"
             raise ValueError(msg)
 
-        from datetime import UTC, datetime
+        from datetime import datetime
+
+        from llm_mem.compat import UTC
 
         session.ended_at = datetime.now(UTC).isoformat()
         session.status = "ended"

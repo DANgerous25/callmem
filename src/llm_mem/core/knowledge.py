@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from llm_mem.compat import UTC
 from llm_mem.core.prompts import KNOWLEDGE_QUERY_PROMPT
 from llm_mem.core.retrieval import _estimate_tokens
 from llm_mem.models.entities import Entity

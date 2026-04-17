@@ -12,10 +12,11 @@ import logging
 import os
 import sqlite3
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from llm_mem.compat import UTC
 from llm_mem.models.events import EventInput
 
 if TYPE_CHECKING:
