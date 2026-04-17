@@ -140,6 +140,9 @@ class EntityExtractor:
                 )
                 self._insert_entity(entity)
                 entities.append(entity)
+                files = item.get("files", [])
+                if isinstance(files, list) and files:
+                    self._insert_entity_files(entity.id, files)
                 if self.event_bus is not None:
                     self.event_bus.publish("entity_created", entity.to_row())
 
@@ -216,6 +219,20 @@ class EntityExtractor:
                     row["created_at"], row["updated_at"],
                     row["resolved_at"], row["metadata"], row["archived_at"],
                 ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _insert_entity_files(
+        self, entity_id: str, files: list[str]
+    ) -> None:
+        conn = self.db.connect()
+        try:
+            conn.executemany(
+                "INSERT OR IGNORE INTO entity_files "
+                "(entity_id, file_path, relation) VALUES (?, ?, 'related')",
+                [(entity_id, f) for f in files if f],
             )
             conn.commit()
         finally:

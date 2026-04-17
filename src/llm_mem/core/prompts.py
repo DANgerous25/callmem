@@ -28,13 +28,15 @@ For each extracted item, provide:
 - "content": a detailed description (1-3 sentences)
 - "key_points": a list of 2-5 bullet points capturing the essential information
 - "synopsis": a flowing prose paragraph (2-4 sentences) giving full context
+- "files": a list of file paths mentioned or affected (e.g., ["src/auth.py", "config.toml"])
 
 Respond in this exact JSON format:
 {{
   "decisions": [{{
     "title": "...", "content": "...",
     "key_points": ["point 1", "point 2"],
-    "synopsis": "Narrative paragraph..."
+    "synopsis": "Narrative paragraph...",
+    "files": ["path/to/file.py"]
   }}],
   "todos": [{{
     "title": "...", "content": "...",
@@ -161,3 +163,13 @@ Original briefing:
 {briefing_text}
 
 Produce a compressed version that retains the most important information."""
+
+
+KNOWLEDGE_QUERY_PROMPT = (
+    "You are a knowledge agent with access to a curated corpus of "
+    "project observations. Answer the question using ONLY the "
+    "information in the corpus below. If the corpus doesn't contain "
+    "enough information, say so. Cite observation IDs "
+    "(e.g., #E01K...) when referencing specific observations.\n\n"
+    "CORPUS:\n{context}\n\nQUESTION: {question}\n\nANSWER:"
+)

@@ -155,6 +155,102 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "mem_search_index",
+        "description": (
+            "Layer 1 — Compact search index. Returns a compact table of "
+            "matching entities for quick scanning. Start here, then use "
+            "mem_timeline or mem_get_entities for more detail."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["query"],
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "FTS5 search query",
+                },
+                "type": {
+                    "type": "string",
+                    "description": "Filter by entity type",
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": "Filter by associated file path",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results (default 20)",
+                    "default": 20,
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_timeline",
+        "description": (
+            "Layer 2 — Chronological timeline. Returns entities around "
+            "an anchor point with key_points for context."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "anchor_id": {
+                    "type": "string",
+                    "description": "Entity ID to center timeline around",
+                },
+                "depth_before": {
+                    "type": "integer",
+                    "description": "Entities before anchor (default 3)",
+                    "default": 3,
+                },
+                "depth_after": {
+                    "type": "integer",
+                    "description": "Entities after anchor (default 3)",
+                    "default": 3,
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_get_entities",
+        "description": (
+            "Layer 3 — Full entity details. Returns complete content "
+            "for specific entity IDs. Use after search_index/timeline."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["ids"],
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entity IDs to fetch",
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_search_by_file",
+        "description": (
+            "Find all memory entries related to a specific file."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["file_path"],
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "File path to search for",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum results (default 20)",
+                    "default": 20,
+                },
+            },
+        },
+    },
 ]
 
 
@@ -266,6 +362,103 @@ def handle_pin(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
     })
 
 
+def handle_search_index(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    query = args.get("query", "")
+    entity_type = args.get("type")
+    file_path = args.get("file_path")
+    limit = args.get("limit", 20)
+
+    if file_path:
+        results = engine.repo.get_entities_by_file(file_path, limit=limit)
+    else:
+        results = engine.search(query, types=[entity_type] if entity_type else None, limit=limit)
+
+    compact = []
+    for r in results:
+        eid = r.get("id", "")[:8]
+        etype = r.get("type", "")
+        title = r.get("title", "")
+        date = (r.get("timestamp") or r.get("created_at", ""))[:10]
+        files = engine.repo.get_files_for_entity(r.get("id", ""))
+        file_names = ", ".join(
+            f["file_path"].rsplit("/", 1)[-1] for f in files[:3]
+        )
+        compact.append(
+            f"#{eid} | {etype:10s} | {title[:40]:40s} | {date} | {file_names}"
+        )
+
+    header = "#ID     | Type       | Title                                    | Date       | Files"
+    lines = [header] + compact
+    return _make_result({"index": "\n".join(lines), "count": len(compact)})
+
+
+def handle_timeline(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    anchor_id = args.get("anchor_id")
+    depth_before = args.get("depth_before", 3)
+    depth_after = args.get("depth_after", 3)
+
+    entities = engine.repo.get_timeline(
+        engine.project_id,
+        anchor_id=anchor_id,
+        depth_before=depth_before,
+        depth_after=depth_after,
+    )
+
+    from llm_mem.core.briefing import CATEGORY_EMOJI
+    lines: list[str] = []
+    for e in entities:
+        eid = e.get("id", "")[:8]
+        emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
+        etype = e.get("type", "")
+        title = e.get("title", "")
+        kp = e.get("key_points") or ""
+        anchor_marker = " [ANCHOR]" if e.get("id") == anchor_id else ""
+        lines.append(f"#{eid} {emoji} {etype} — {title}{anchor_marker}")
+        if kp:
+            for point in kp.split("\n"):
+                if point.strip():
+                    lines.append(f"  {point.strip()}")
+
+    return _make_result({"timeline": "\n".join(lines), "count": len(entities)})
+
+
+def handle_get_entities(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    ids = args.get("ids", [])
+    results = []
+    for eid in ids:
+        conn = engine.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM entities WHERE id = ?", (eid,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if row:
+            from llm_mem.models.entities import Entity
+            entity = Entity.from_row(dict(row))
+            files = engine.repo.get_files_for_entity(eid)
+            d = entity.to_row()
+            d["files"] = files
+            results.append(d)
+
+    return _make_result({"entities": results, "count": len(results)})
+
+
+def handle_search_by_file(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    file_path = args.get("file_path", "")
+    limit = args.get("limit", 20)
+    results = engine.repo.get_entities_by_file(file_path, limit=limit)
+    return _make_result({"entities": results, "count": len(results)})
+
+
 _HANDLERS: dict[str, Any] = {
     "mem_session_start": handle_session_start,
     "mem_session_end": handle_session_end,
@@ -274,4 +467,8 @@ _HANDLERS: dict[str, Any] = {
     "mem_get_briefing": handle_get_briefing,
     "mem_get_tasks": handle_get_tasks,
     "mem_pin": handle_pin,
+    "mem_search_index": handle_search_index,
+    "mem_timeline": handle_timeline,
+    "mem_get_entities": handle_get_entities,
+    "mem_search_by_file": handle_search_by_file,
 }

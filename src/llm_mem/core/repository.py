@@ -401,3 +401,80 @@ class Repository:
             conn.commit()
         finally:
             conn.close()
+
+    def get_entities_by_file(
+        self, file_path: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        from llm_mem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.* FROM entities e "
+                "JOIN entity_files ef ON e.id = ef.entity_id "
+                "WHERE ef.file_path = ? "
+                "ORDER BY e.created_at DESC LIMIT ?",
+                (file_path, limit),
+            ).fetchall()
+            return [dict(Entity.from_row(dict(r)).to_row()) for r in rows]
+        finally:
+            conn.close()
+
+    def get_files_for_entity(
+        self, entity_id: str
+    ) -> list[dict[str, Any]]:
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT file_path, relation FROM entity_files "
+                "WHERE entity_id = ?",
+                (entity_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_timeline(
+        self,
+        project_id: str,
+        anchor_id: str | None = None,
+        depth_before: int = 3,
+        depth_after: int = 3,
+    ) -> list[dict[str, Any]]:
+        from llm_mem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            if anchor_id:
+                anchor = conn.execute(
+                    "SELECT * FROM entities WHERE id = ?",
+                    (anchor_id,),
+                ).fetchone()
+                if anchor is None:
+                    return []
+                anchor_time = anchor["created_at"]
+                before = conn.execute(
+                    "SELECT * FROM entities WHERE project_id = ? "
+                    "AND created_at < ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (project_id, anchor_time, depth_before),
+                ).fetchall()
+                after = conn.execute(
+                    "SELECT * FROM entities WHERE project_id = ? "
+                    "AND created_at > ? "
+                    "ORDER BY created_at ASC LIMIT ?",
+                    (project_id, anchor_time, depth_after),
+                ).fetchall()
+                all_rows = list(reversed(before)) + [anchor] + after
+            else:
+                all_rows = conn.execute(
+                    "SELECT * FROM entities WHERE project_id = ? "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (project_id, depth_before + depth_after + 1),
+                ).fetchall()
+
+            return [
+                dict(Entity.from_row(dict(r)).to_row()) for r in all_rows
+            ]
+        finally:
+            conn.close()

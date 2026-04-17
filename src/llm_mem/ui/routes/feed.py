@@ -21,6 +21,7 @@ def _build_feed_items(engine: Any) -> list[dict[str, Any]]:
     # Entities — primary feed items
     entities = engine.get_entities(limit=100)
     for e in entities:
+        files = engine.repo.get_files_for_entity(e["id"])
         items.append({
             "kind": "entity",
             "category": e["type"],
@@ -35,6 +36,7 @@ def _build_feed_items(engine: Any) -> list[dict[str, Any]]:
             "pinned": e.get("pinned", False),
             "agent_name": None,
             "project_name": project_name,
+            "files": files,
         })
 
     # Sessions
