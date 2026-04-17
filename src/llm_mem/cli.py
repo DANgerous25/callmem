@@ -381,6 +381,8 @@ def daemon(
 )
 @click.option("--all", "import_all", is_flag=True, help="Import all sessions.")
 @click.option("--dry-run", is_flag=True, help="Show what would be imported.")
+@click.option("--background", is_flag=True, help="Run import in background process.")
+@click.option("--status", "show_status", is_flag=True, help="Show import progress/status.")
 def import_cmd(
     project: Path,
     source: str,
@@ -389,8 +391,14 @@ def import_cmd(
     project_path: str | None,
     import_all: bool,
     dry_run: bool,
+    background: bool,
+    show_status: bool,
 ) -> None:
     """Import session history from an external source."""
+    if show_status:
+        _show_import_status(project)
+        return
+
     from llm_mem.adapters.opencode_import import (
         DEFAULT_DB_PATH,
         import_sessions,
@@ -406,12 +414,47 @@ def import_cmd(
         click.echo("Run 'llm-mem init' first.")
         return
 
+    oc_db = opencode_db if opencode_db is not None else DEFAULT_DB_PATH
+    click.echo(f"Reading {source} sessions from {oc_db}...")
+
+    if background and not dry_run:
+        _run_background_import(
+            project, source, oc_db, session_id, project_path,
+        )
+        return
+
     db = Database(db_path)
     db.initialize()
     engine = MemoryEngine(db, config)
 
-    oc_db = opencode_db if opencode_db is not None else DEFAULT_DB_PATH
-    click.echo(f"Reading {source} sessions from {oc_db}...")
+    import time
+
+    start_time = time.monotonic()
+    jobs_before = _count_pending_jobs(db_path)
+
+    progress_updates: list[dict] = []
+
+    def _on_progress(update: dict) -> None:
+        progress_updates.append(update)
+        phase = update.get("phase", "")
+        if phase == "discovery":
+            click.echo(
+                f"  Discovered {update['total_sessions']} sessions "
+                f"(~{update['total_events_estimate']} events)"
+            )
+        elif phase == "importing":
+            idx = update["session_index"]
+            total = update["total_sessions"]
+            title = (update.get("session_title") or "untitled")[:40]
+            events = update.get("session_events", 0)
+            pct = idx / total if total else 0
+            filled = int(20 * pct)
+            bar = "\u2588" * filled + "\u2591" * (20 - filled)
+            click.echo(
+                f"  [{bar}] {idx}/{total} sessions "
+                f"({update['total_events_so_far']} events) "
+                f"— {title} ({events} events)"
+            )
 
     results = import_sessions(
         engine,
@@ -420,14 +463,18 @@ def import_cmd(
         project_path=project_path,
         import_all=import_all,
         dry_run=dry_run,
+        progress_callback=_on_progress,
+        project=project,
     )
 
     if not results:
         click.echo("No sessions found.")
         return
 
-    imported = 0
-    total_events = 0
+    elapsed = time.monotonic() - start_time
+    jobs_after = _count_pending_jobs(db_path)
+    jobs_queued = max(0, jobs_after - jobs_before)
+
     for r in results:
         if r.get("dry_run"):
             proj = r.get("project_name", "")
@@ -438,18 +485,128 @@ def import_cmd(
             )
         else:
             errors = r.get("errors", [])
-            status = "OK" if not errors else f"{len(errors)} errors"
+            status_str = "OK" if not errors else f"{len(errors)} errors"
             click.echo(
                 f"  Imported {r['source_id']}: "
-                f"{r.get('event_count', 0)} events ({status})"
+                f"{r.get('event_count', 0)} events ({status_str})"
             )
-            imported += 1
-            total_events += r.get("event_count", 0)
 
     if dry_run or (not import_all and session_id is None):
         click.echo(f"\nFound {len(results)} session(s). Use --all to import all.")
     else:
-        click.echo(f"\nImported {imported} session(s), {total_events} events total.")
+        imported = len([r for r in results if not r.get("dry_run")])
+        total_events = sum(r.get("event_count", 0) for r in results if not r.get("dry_run"))
+        elapsed_str = _format_elapsed(elapsed)
+        click.echo()
+        click.echo("Import complete:")
+        click.echo(f"  Sessions: {imported} imported")
+        click.echo(f"  Events:   {total_events} ingested")
+        click.echo(f"  Jobs:     {jobs_queued} extraction jobs queued")
+        click.echo(f"  Time:     {elapsed_str}")
+        click.echo()
+        click.echo("Extraction will continue in the background via the worker.")
+
+
+def _show_import_status(project: Path) -> None:
+    """Show the current import progress or last import summary."""
+    from llm_mem.adapters.opencode_import import read_import_progress
+
+    progress = read_import_progress(project)
+    if not progress:
+        click.echo("No import in progress.")
+        click.echo("No previous import found.")
+        return
+
+    status = progress.get("status", "unknown")
+    if status == "running":
+        click.echo("Import in progress:")
+        click.echo(
+            f"  Sessions: {progress.get('imported_sessions', 0)}/"
+            f"{progress.get('total_sessions', '?')} imported"
+        )
+        click.echo(
+            f"  Events:   {progress.get('imported_events', 0)}/"
+            f"{progress.get('total_events', '?')} ingested"
+        )
+        click.echo(f"  PID:      {progress.get('pid', '?')}")
+    elif status == "completed":
+        click.echo("No import in progress.")
+        completed = progress.get("completed_at", "unknown")
+        click.echo(
+            f"Last import: {progress.get('imported_sessions', '?')} sessions, "
+            f"{progress.get('imported_events', '?')} events "
+            f"(completed {completed})"
+        )
+    elif status == "stale":
+        click.echo("Previous import process is no longer running (stale).")
+        click.echo(
+            f"  Sessions: {progress.get('imported_sessions', '?')}/"
+            f"{progress.get('total_sessions', '?')}"
+        )
+    else:
+        click.echo(f"Import status: {status}")
+
+
+def _run_background_import(
+    project: Path,
+    source: str,
+    oc_db: Path,
+    session_id: str | None,
+    project_path: str | None,
+) -> None:
+    """Fork the import into a background subprocess."""
+    import subprocess
+    import sys
+
+    cmd = [
+        sys.executable, "-m", "llm_mem.cli",
+        "import",
+        "--source", source,
+        "--project", str(project),
+        "--opencode-db", str(oc_db),
+        "--all",
+    ]
+    if session_id:
+        cmd.extend(["--session-id", session_id])
+    if project_path:
+        cmd.extend(["--project-path", project_path])
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    click.echo(f"Import running in background (PID {proc.pid}).")
+    click.echo("Check progress: llm-mem import --status")
+    click.echo("Extraction will begin automatically once events are ingested.")
+    click.echo("You can open OpenCode now — new memories will appear as they're processed.")
+
+
+def _count_pending_jobs(db_path: Path) -> int:
+    """Count pending extraction jobs in the database."""
+    import sqlite3
+
+    if not db_path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT COUNT(*) as c FROM jobs WHERE status = 'pending'"
+        ).fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except Exception:
+        return 0
+
+
+def _format_elapsed(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    mins = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{mins}m {secs}s"
 
 
 # ── Corpus commands ──────────────────────────────────────────────────

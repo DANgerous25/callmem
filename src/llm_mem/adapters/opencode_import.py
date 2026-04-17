@@ -6,10 +6,12 @@ into llm-mem as historical sessions. Separate from the live SSE adapter.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
     from llm_mem.core.engine import MemoryEngine
 
 logger = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def _default_db_path() -> Path:
@@ -33,6 +37,70 @@ DEFAULT_DB_PATH = _default_db_path()
 
 # Keep the old name around for anything that imports it
 DEFAULT_SESSION_DIR = DEFAULT_DB_PATH.parent
+
+
+PROGRESS_FILE = ".llm-mem" / Path("import_progress.json")
+LOCK_FILE = ".llm-mem" / Path("import.lock")
+
+
+def _progress_path(project: Path) -> Path:
+    return project / PROGRESS_FILE
+
+
+def _lock_path(project: Path) -> Path:
+    return project / LOCK_FILE
+
+
+def read_import_progress(project: Path) -> dict[str, Any]:
+    """Read the current import progress for a project.
+
+    Returns the progress dict or empty dict if no progress file exists.
+    """
+    p = _progress_path(project)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+        if data.get("status") == "running" and data.get("pid"):
+            try:
+                os.kill(data["pid"], 0)
+            except (ProcessLookupError, PermissionError):
+                data["status"] = "stale"
+                p.write_text(json.dumps(data, indent=2))
+        return data
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_progress(project: Path, progress: dict[str, Any]) -> None:
+    p = _progress_path(project)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(progress, indent=2))
+
+
+def _acquire_lock(project: Path) -> Any:
+    """Acquire the import lockfile. Raises RuntimeError if already held."""
+    lock = _lock_path(project)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, BlockingIOError):
+        os.close(fd)
+        raise RuntimeError(
+            "Another import is already in progress. "
+            "Use 'llm-mem import --status' to check progress."
+        ) from None
+    return fd
+
+
+def _release_lock(fd: Any) -> None:
+    import contextlib
+
+    with contextlib.suppress(OSError):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    with contextlib.suppress(OSError):
+        os.close(fd)
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
@@ -276,6 +344,8 @@ def import_sessions(
     project_path: str | None = None,
     import_all: bool = False,
     dry_run: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    project: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Import OpenCode sessions from the SQLite database.
 
@@ -286,6 +356,8 @@ def import_sessions(
         project_path: If provided, only import sessions for this project worktree.
         import_all: If True, import all discovered sessions.
         dry_run: If True, report what would be imported without importing.
+        progress_callback: Optional callable receiving progress dicts during import.
+        project: Project root path (for progress file and lockfile).
 
     Returns:
         List of result dicts, one per session processed.
@@ -297,14 +369,12 @@ def import_sessions(
     if not sessions:
         return []
 
-    # Filter by session ID if specified
     if session_id is not None:
         sessions = [s for s in sessions if s["id"] == session_id]
 
     if not sessions:
         return []
 
-    # Dry-run or list mode: just return summaries
     if dry_run or (not import_all and session_id is None):
         return [
             {
@@ -318,9 +388,30 @@ def import_sessions(
             for s in sessions
         ]
 
-    # Actually import — need a DB connection for loading messages
     if not db_path.is_file():
         return []
+
+    total_sessions = len(sessions)
+    total_events_estimate = sum(s.get("message_count", 0) for s in sessions)
+
+    if progress_callback is not None:
+        progress_callback({
+            "phase": "discovery",
+            "total_sessions": total_sessions,
+            "total_events_estimate": total_events_estimate,
+        })
+
+    if project is not None:
+        _write_progress(project, {
+            "pid": os.getpid(),
+            "started_at": datetime.now(UTC).isoformat(),
+            "total_sessions": total_sessions,
+            "imported_sessions": 0,
+            "total_events": total_events_estimate,
+            "imported_events": 0,
+            "jobs_queued": 0,
+            "status": "running",
+        })
 
     try:
         conn = _connect_readonly(db_path)
@@ -328,13 +419,67 @@ def import_sessions(
         logger.warning("Cannot open OpenCode database for import: %s", exc)
         return []
 
+    lock_fd = None
+    if project is not None:
+        try:
+            lock_fd = _acquire_lock(project)
+        except RuntimeError:
+            conn.close()
+            raise
+
     results: list[dict[str, Any]] = []
+    imported_sessions = 0
+    imported_events = 0
     try:
-        for s in sessions:
+        for i, s in enumerate(sessions):
             messages = _load_session_messages(conn, s["id"])
             result = import_session(engine, s, messages)
             results.append(result)
+            imported_sessions += 1
+            imported_events += result.get("event_count", 0)
+
+            if progress_callback is not None:
+                progress_callback({
+                    "phase": "importing",
+                    "session_index": i + 1,
+                    "total_sessions": total_sessions,
+                    "session_title": s.get("title", ""),
+                    "session_events": result.get("event_count", 0),
+                    "total_events_so_far": imported_events,
+                })
+
+            if project is not None:
+                _write_progress(project, {
+                    "pid": os.getpid(),
+                    "started_at": _read_started_at(project),
+                    "total_sessions": total_sessions,
+                    "imported_sessions": imported_sessions,
+                    "total_events": total_events_estimate,
+                    "imported_events": imported_events,
+                    "jobs_queued": 0,
+                    "status": "running",
+                })
     finally:
         conn.close()
+        if lock_fd is not None:
+            _release_lock(lock_fd)
+
+    if project is not None:
+        _write_progress(project, {
+            "pid": os.getpid(),
+            "started_at": _read_started_at(project),
+            "total_sessions": total_sessions,
+            "imported_sessions": imported_sessions,
+            "total_events": total_events_estimate,
+            "imported_events": imported_events,
+            "jobs_queued": 0,
+            "status": "completed",
+            "completed_at": datetime.now(UTC).isoformat(),
+        })
 
     return results
+
+
+def _read_started_at(project: Path) -> str:
+    data = read_import_progress(project)
+    return data.get("started_at", datetime.now(UTC).isoformat())
