@@ -54,6 +54,13 @@
     {% if item.pinned %}
     <span class="feed-card-pinned">pinned</span>
     {% endif %}
+    {% if item.files %}
+    <span class="feed-card-files">
+      {% for f in item.files[:3] %}
+      <span class="file-tag">{{ f.file_path | replace("\\", "/") | basename }}</span>
+      {% endfor %}
+    </span>
+    {% endif %}
   </div>
 </details>
 {% endfor %}

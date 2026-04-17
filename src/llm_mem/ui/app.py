@@ -27,6 +27,10 @@ def create_app(engine: MemoryEngine) -> FastAPI:
         loader=FileSystemLoader(str(templates_dir)),
         autoescape=True,
     )
+    def _basename(path: str) -> str:
+        return path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if path else ""
+
+    env.filters["basename"] = _basename
 
     app.state.engine = engine
     app.state.templates = env
