@@ -29,6 +29,13 @@ Track work order progress and ad-hoc tasks here.
 | WO-20 | Import progress display and background execution | **Complete** |
 | WO-21 | Smart model selection & context window config | **Complete** |
 | WO-22 | Re-extraction command | **Complete** |
+| WO-23 | Extraction tests — null event_bus handling | **Complete** |
+| WO-24 | Update .gitignore with missing patterns | **Complete** |
+| WO-25 | Centralize test fixtures in conftest.py | **Complete** |
+| WO-26 | Settings route integration tests | **Complete** |
+| WO-27 | MCP tool tests — vault review + untested tools | **Complete** |
+| WO-28 | False positive marking + Ollama client tests | **Complete** |
+| WO-29 | Migration cleanup — document dead scan_status column | **Complete** |
 
 ## Ad-hoc Tasks
 
