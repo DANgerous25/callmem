@@ -318,7 +318,7 @@ def import_session(
         try:
             inputs = _map_message(msg)
             if inputs:
-                stored = engine.ingest(inputs)
+                stored = engine.ingest(inputs, session_id=session.id)
                 event_count += len(stored)
         except Exception as exc:
             errors.append(str(exc))

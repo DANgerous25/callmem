@@ -198,16 +198,25 @@ class MemoryEngine:
 
     # ── Ingest ───────────────────────────────────────────────────────
 
-    def ingest(self, events: list[EventInput]) -> list[Event]:
+    def ingest(
+        self, events: list[EventInput], session_id: str | None = None
+    ) -> list[Event]:
         """Ingest a batch of events into the current session.
 
         If no active session exists and auto_start is enabled,
-        a new session is created automatically.
+        a new session is created automatically. If session_id is
+        provided, events are attached to that session directly
+        (bypasses _ensure_active_session).
         """
         if not events:
             return []
 
-        session = self._ensure_active_session()
+        if session_id is not None:
+            session = self.get_session(session_id)
+            if session is None:
+                raise ValueError(f"Session {session_id} not found")
+        else:
+            session = self._ensure_active_session()
 
         stored: list[Event] = []
         for inp in events:
