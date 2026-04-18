@@ -265,6 +265,7 @@
             <li><a href="/settings">Settings</a></li>
             <li><a href="/entities/todo">TODOs</a></li>
             <li><a href="/briefing">Briefing</a></li>
+            <li id="queue-indicator" style="display:none;"><span id="queue-badge" style="background:#334155;padding:2px 8px;border-radius:12px;font-size:0.75rem;color:#94a3b8;">0</span></li>
         </ul>
     </nav>
     <main class="container">
@@ -290,6 +291,31 @@
             }
         }
     });
+
+    (function() {
+        var badge = document.getElementById('queue-badge');
+        var indicator = document.getElementById('queue-indicator');
+        if (!badge || !indicator) return;
+
+        function updateBadge(data) {
+            var pending = data.pending || 0;
+            var failed = data.failed || 0;
+            var total = pending + failed;
+            badge.textContent = pending > 0 ? pending + ' pending' : (failed > 0 ? failed + ' failed' : '');
+            indicator.style.display = total > 0 ? '' : 'none';
+            badge.style.background = pending > 0 ? '#1e40af' : (failed > 0 ? '#991b1b' : '#334155');
+        }
+
+        fetch('/api/queue-status').then(function(r) { return r.json(); }).then(updateBadge).catch(function() {});
+
+        if (typeof EventSource !== 'undefined') {
+            var es = new EventSource('/events');
+            es.addEventListener('queue_updated', function(e) {
+                try { updateBadge(JSON.parse(e.data)); } catch(ex) {}
+            });
+            es.onerror = function() { es.close(); };
+        }
+    })();
     </script>
 </body>
 </html>

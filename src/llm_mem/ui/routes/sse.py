@@ -47,3 +47,13 @@ async def sse_stream(request: Request) -> StreamingResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/api/queue-status")
+async def queue_status(request: Request) -> dict:
+    """Return current queue status counts."""
+    from llm_mem.core.queue import JobQueue
+
+    engine = request.app.state.engine
+    queue = JobQueue(engine.db)
+    return queue.get_status_summary()
