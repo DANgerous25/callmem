@@ -8,6 +8,8 @@ from llm_mem.core.gpu_scan import (
     GPUInfo,
     ModelInfo,
     ModelRecommendation,
+    _estimate_param_billions,
+    _quality_score,
     detect_gpu,
     detect_ram,
     fetch_ollama_models,
@@ -123,17 +125,32 @@ class TestModelRecommendation:
         assert len(recs) == 1
         assert recs[0].fit_status == "ok"
 
-    def test_pick_best_prefers_largest_fitting(self) -> None:
+    def test_pick_best_prefers_quality_over_size(self) -> None:
+        """qwen3:14b should beat gemma4:e4b even though e4b is larger in bytes."""
         recs = [
             ModelRecommendation(
-                model=ModelInfo(name="gemma4:e4b", size_bytes=5_100_000_000),
+                model=ModelInfo(name="gemma4:e4b", size_bytes=9_500_000_000),
                 fit_status="easy",
+                free_after_mb=15000,
             ),
             ModelRecommendation(
-                model=ModelInfo(name="qwen3:14b", size_bytes=9_800_000_000),
+                model=ModelInfo(name="qwen3:14b", size_bytes=9_200_000_000),
                 fit_status="ok",
+                free_after_mb=14000,
             ),
         ]
+        best = pick_best(recs)
+        assert best is not None
+        assert best.model.name == "qwen3:14b"
+
+    def test_pick_best_prefers_quality_on_24gb_gpu(self) -> None:
+        """Simulate a 24GB GPU with both models fitting — quality wins."""
+        gpu = GPUInfo(name="RTX 4090", total_vram_mb=24576, free_vram_mb=22100)
+        models = [
+            ModelInfo(name="gemma4:e4b", size_bytes=9_500_000_000),
+            ModelInfo(name="qwen3:14b", size_bytes=9_200_000_000),
+        ]
+        recs = recommend_models(models, gpu)
         best = pick_best(recs)
         assert best is not None
         assert best.model.name == "qwen3:14b"
@@ -153,6 +170,22 @@ class TestModelRecommendation:
         assert best is not None
         assert best.model.name == "qwen3:30b"
 
+    def test_pick_best_tight_prefers_quality(self) -> None:
+        """Among tight-fit models, quality scoring should still apply."""
+        recs = [
+            ModelRecommendation(
+                model=ModelInfo(name="gemma4:e4b", size_bytes=9_500_000_000),
+                fit_status="tight",
+            ),
+            ModelRecommendation(
+                model=ModelInfo(name="qwen3:14b", size_bytes=9_200_000_000),
+                fit_status="tight",
+            ),
+        ]
+        best = pick_best(recs)
+        assert best is not None
+        assert best.model.name == "qwen3:14b"
+
     def test_pick_best_returns_none_if_all_oom(self) -> None:
         recs = [
             ModelRecommendation(
@@ -162,6 +195,41 @@ class TestModelRecommendation:
         ]
         best = pick_best(recs)
         assert best is None
+
+
+class TestQualityScoring:
+    def test_estimate_param_billions_standard(self) -> None:
+        assert _estimate_param_billions("qwen3:14b") == 14.0
+        assert _estimate_param_billions("qwen3:30b") == 30.0
+        assert _estimate_param_billions("llama3:8b") == 8.0
+        assert _estimate_param_billions("deepseek-r1:1.5b") == 1.5
+
+    def test_estimate_param_billions_efficiency_models(self) -> None:
+        assert _estimate_param_billions("gemma4:e4b") == 4.0
+        assert _estimate_param_billions("gemma4:e2b") == 2.0
+
+    def test_estimate_param_billions_mistral_default(self) -> None:
+        assert _estimate_param_billions("mistral:instruct") == 7.0
+
+    def test_estimate_param_billions_unknown(self) -> None:
+        assert _estimate_param_billions("unknown-model") == 0.0
+
+    def test_quality_score_known_models(self) -> None:
+        assert _quality_score(ModelInfo(name="qwen3:14b")) == 100
+        assert _quality_score(ModelInfo(name="qwen3:30b")) == 110
+        assert _quality_score(ModelInfo(name="qwen3.5:9b")) == 70
+
+    def test_quality_score_by_param_count(self) -> None:
+        score_14b = _quality_score(ModelInfo(name="some-model:14b"))
+        score_8b = _quality_score(ModelInfo(name="some-model:8b"))
+        score_4b = _quality_score(ModelInfo(name="gemma4:e4b"))
+        assert score_14b > score_8b > score_4b
+
+    def test_quality_score_14b_beats_e4b(self) -> None:
+        """Core regression: 14B model must score higher than 4B efficiency model."""
+        score_qwen14 = _quality_score(ModelInfo(name="qwen3:14b"))
+        score_gemma4 = _quality_score(ModelInfo(name="gemma4:e4b"))
+        assert score_qwen14 > score_gemma4
 
 
 class TestFormatTable:

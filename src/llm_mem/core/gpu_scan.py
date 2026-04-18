@@ -16,6 +16,56 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Quality bonuses for models known to produce good structured JSON extraction
+_QUALITY_BONUS: dict[str, int] = {
+    "qwen3:14b": 100,
+    "qwen3:14b-fast": 100,
+    "qwen2.5:14b": 95,
+    "qwen3:30b": 110,
+    "qwen3.5:35b": 110,
+    "qwen3.5:9b": 70,
+    "qwen3:8b": 65,
+    "qwen2.5:7b": 60,
+    "llama3:8b": 55,
+    "mistral:instruct": 55,
+}
+
+
+def _estimate_param_billions(name: str) -> float:
+    """Estimate parameter count in billions from model name."""
+    name_lower = name.lower()
+    # Handle e4b/e2b patterns (Google efficiency models)
+    if "e4b" in name_lower:
+        return 4.0
+    if "e2b" in name_lower:
+        return 2.0
+    # Look for NNb pattern
+    match = re.search(r"(\d+\.?\d*)b", name_lower)
+    if match:
+        return float(match.group(1))
+    # Common defaults
+    if "mistral" in name_lower and "instruct" in name_lower:
+        return 7.0
+    return 0.0
+
+
+def _quality_score(model: ModelInfo) -> int:
+    """Score model quality for extraction tasks. Higher = better."""
+    if model.name in _QUALITY_BONUS:
+        return _QUALITY_BONUS[model.name]
+
+    # Fall back to parameter count estimate
+    params = _estimate_param_billions(model.name)
+    if params >= 14:
+        return 90
+    if params >= 8:
+        return 60
+    if params >= 4:
+        return 40
+    if params >= 2:
+        return 20
+    return 10
+
 
 @dataclass
 class GPUInfo:
@@ -210,10 +260,15 @@ def pick_best(recommendations: list[ModelRecommendation]) -> ModelRecommendation
     if not candidates:
         tight = [r for r in recommendations if r.fit_status == "tight"]
         if tight:
+            tight.sort(key=lambda r: _quality_score(r.model), reverse=True)
             return tight[0]
         return None
 
-    candidates.sort(key=lambda r: r.model.size_bytes, reverse=True)
+    # Sort by quality score (primary), then by VRAM headroom (secondary)
+    candidates.sort(
+        key=lambda r: (_quality_score(r.model), r.free_after_mb),
+        reverse=True,
+    )
     return candidates[0]
 
 
