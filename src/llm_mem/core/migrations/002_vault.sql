@@ -1,4 +1,9 @@
 -- llm-mem schema v2: Vault table and scan_status column
+--
+-- Note: events.scan_status is currently unused by application code.
+-- The engine stores scan_status inside the event metadata JSON dict
+-- instead. The column is retained for potential future use as a
+-- directly queryable index. See DECISIONS.md #011.
 
 CREATE TABLE IF NOT EXISTS vault (
     id             TEXT PRIMARY KEY,

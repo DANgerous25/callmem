@@ -43,3 +43,7 @@ Append-only log. Record decisions as they are made. Never delete entries — mar
 ### 010 — /briefing command as interim startup briefing (2026-04-18)
 **Decision:** Use the `/briefing` custom command as the primary way to view the llm-mem startup briefing in OpenCode, rather than auto-displaying it via the session.created plugin hook.
 **Why:** An auto-briefing plugin (.opencode/plugins/auto-briefing.js) was built to hook session.created and auto-inject a prompt via the SDK. However, OpenCode has a known bug (anomalyco/opencode#14808) where session.created events do not fire for plugins. Until that upstream issue is resolved, `/briefing` is the reliable workaround. The plugin remains installed so it will activate automatically when the bug is fixed — no changes needed on our side.
+
+### 011 — Retain unused events.scan_status column (2026-04-18)
+**Decision:** The `events.scan_status` column (added in migration 002) remains in the schema but is not used by application code. The engine stores scan_status inside the event `metadata` JSON dict instead. The column is retained for potential future use as a directly queryable/indexed field.
+**Why:** Removing the column would require a new migration and carries risk of breaking existing databases. The column has no performance cost (NULL values occupy negligible space). If direct SQL querying of scan_status becomes useful (e.g., "find all unscanned events"), the column is ready. Documented in migration 002 header.
