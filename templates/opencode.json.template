@@ -4,5 +4,6 @@
       "command": "llm-mem",
       "args": ["serve", "--project", "."]
     }
-  }
+  },
+  "instructions": ["SESSION_SUMMARY.md"]
 }

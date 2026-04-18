@@ -896,6 +896,13 @@ vault_mode = "{vault_mode}"
             "enabled": True,
         }
 
+        # Ensure SESSION_SUMMARY.md is loaded into context at startup
+        instructions = oc_config.get("instructions", [])
+        if "SESSION_SUMMARY.md" not in instructions:
+            instructions.append("SESSION_SUMMARY.md")
+            oc_config["instructions"] = instructions
+            print("  Added SESSION_SUMMARY.md to OpenCode instructions")
+
         oc_config_path.write_text(json.dumps(oc_config, indent=2) + "\n")
         print(f"  Wrote MCP config to {oc_config_path.name}")
 
