@@ -38,6 +38,25 @@ def _ensure_agents_session_summary(agents_path: Path) -> None:
     agents_path.write_text(content, encoding="utf-8")
 
 
+def _ensure_opencode_plugin(project: Path) -> None:
+    """Install OpenCode auto-briefing plugin and /briefing command if missing or outdated."""
+    import filecmp
+
+    templates_dir = Path(__file__).parent.parent.parent / "templates" / "opencode"
+
+    targets = [
+        (templates_dir / "plugins" / "auto-briefing.js", project / ".opencode" / "plugins" / "auto-briefing.js"),
+        (templates_dir / "commands" / "briefing.md", project / ".opencode" / "commands" / "briefing.md"),
+    ]
+
+    for src, dst in targets:
+        if not src.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def _ensure_opencode_instructions(project: Path) -> None:
     """Ensure opencode.json has SESSION_SUMMARY.md in its instructions array."""
     import json
@@ -114,6 +133,7 @@ def init(project: Path) -> None:
 
     _ensure_agents_session_summary(agents_path)
     _ensure_opencode_instructions(project)
+    _ensure_opencode_plugin(project)
 
     click.echo(f"Initialized llm-mem in {llm_mem_dir}")
     click.echo(f"  Database: {db_path}")
