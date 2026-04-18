@@ -63,6 +63,44 @@ def port_available(port: int, host: str = "0.0.0.0") -> bool:
         return False
 
 
+def _stop_own_service(project: Path) -> str | None:
+    """Stop this project's systemd service if running. Returns service name or None."""
+    import subprocess
+
+    svc_name = _service_name(project)
+    unit_path = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
+    if not unit_path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", svc_name],
+            capture_output=True, text=True,
+        )
+        if result.stdout.strip() == "active":
+            subprocess.run(
+                ["systemctl", "--user", "stop", svc_name],
+                capture_output=True, check=True,
+            )
+            import time
+            time.sleep(1)  # give the port time to release
+            return svc_name
+    except Exception:
+        pass
+    return None
+
+
+def _restart_service(svc_name: str) -> None:
+    """Restart a previously stopped service."""
+    import contextlib
+    import subprocess
+
+    with contextlib.suppress(Exception):
+        subprocess.run(
+            ["systemctl", "--user", "start", svc_name],
+            capture_output=True, check=True,
+        )
+
+
 def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
     """Scan other llm-mem projects for their configured UI ports.
 
@@ -649,6 +687,11 @@ def main() -> None:
     default_host = existing.get("ui", {}).get("host", "0.0.0.0")
     default_port = existing.get("ui", {}).get("port", 9090)
 
+    # Stop this project's own service so its port isn't flagged as in-use
+    stopped_service = _stop_own_service(project) if is_rerun else None
+    if stopped_service:
+        print(f"  Stopped {stopped_service} for port check (will restart after setup)")
+
     # Check what ports other llm-mem projects are using
     other_ports = _find_other_llm_mem_ports(project)
     if other_ports:
@@ -911,6 +954,11 @@ vault_mode = "{vault_mode}"
     print()
     print("  Re-run this wizard anytime: make setup")
     print()
+
+    # If we stopped the service for the port check, make sure it's restarted
+    if stopped_service:
+        _restart_service(stopped_service)
+        print(f"  Restarted {stopped_service}")
 
 
 if __name__ == "__main__":
