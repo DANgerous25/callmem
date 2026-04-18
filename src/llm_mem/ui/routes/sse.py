@@ -27,13 +27,15 @@ async def sse_stream(request: Request) -> StreamingResponse:
                     break
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=30)
-                except TimeoutError:
+                except asyncio.CancelledError:
+                    raise
+                except (TimeoutError, asyncio.TimeoutError):
                     yield ": keepalive\n\n"
                     continue
                 event_type = msg["event"]
                 data = json.dumps(msg["data"])
                 yield f"event: {event_type}\ndata: {data}\n\n"
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, GeneratorExit):
             pass
         finally:
             bus.unsubscribe(queue)
