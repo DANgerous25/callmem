@@ -16,6 +16,25 @@ def main() -> None:
     """llm-mem: Persistent memory for coding agents."""
 
 
+_SESSION_SUMMARY_SNIPPET = (
+    "\n## Startup briefing\n\n"
+    "At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) "
+    "if it exists. It contains an auto-generated briefing with recent context, key "
+    "entities, and open tasks from previous sessions.\n"
+)
+
+
+def _ensure_agents_session_summary(agents_path: Path) -> None:
+    """Patch an existing AGENTS.md to reference SESSION_SUMMARY.md if missing."""
+    if not agents_path.exists():
+        return
+    content = agents_path.read_text(encoding="utf-8")
+    if "SESSION_SUMMARY.md" in content:
+        return
+    content += _SESSION_SUMMARY_SNIPPET
+    agents_path.write_text(content, encoding="utf-8")
+
+
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 def setup(project: Path) -> None:
@@ -61,6 +80,8 @@ def init(project: Path) -> None:
     agents_path = project / "AGENTS.md"
     if agents_template.exists() and not agents_path.exists():
         agents_path.write_text(agents_template.read_text())
+
+    _ensure_agents_session_summary(agents_path)
 
     click.echo(f"Initialized llm-mem in {llm_mem_dir}")
     click.echo(f"  Database: {db_path}")
