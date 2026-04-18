@@ -63,8 +63,57 @@ def _ensure_opencode_plugin(project: Path) -> None:
             dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
+def _detect_mcp_command(project: Path) -> list[str]:
+    """Detect the best command to run the llm-mem MCP server.
+
+    Checks in order:
+    1. System Python can import llm_mem → use python3 directly.
+    2. We're inside the llm-mem project itself → use uv run.
+    3. Find llm-mem install path → use uv run --directory.
+    4. Fallback → use python3 (best-effort).
+    """
+    import subprocess
+
+    # 1. Check if llm_mem is importable from system Python
+    try:
+        result = subprocess.run(
+            ["python3", "-c", "import llm_mem"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return ["python3", "-m", "llm_mem.mcp.server", "--project", "."]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 2. Check if we're in the llm-mem project itself
+    if (project / "src" / "llm_mem").is_dir():
+        return ["uv", "run", "python", "-m", "llm_mem.mcp.server", "--project", "."]
+
+    # 3. Fall back to uv with --directory pointing to llm-mem source
+    try:
+        result = subprocess.run(
+            [
+                "python3", "-c",
+                "import llm_mem; from pathlib import Path; "
+                "print(Path(llm_mem.__file__).parent.parent.parent)",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            llm_mem_dir = result.stdout.strip()
+            return [
+                "uv", "run", "--directory", llm_mem_dir,
+                "python", "-m", "llm_mem.mcp.server", "--project", ".",
+            ]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 4. Ultimate fallback
+    return ["python3", "-m", "llm_mem.mcp.server", "--project", "."]
+
+
 def _ensure_opencode_instructions(project: Path) -> None:
-    """Ensure opencode.json has SESSION_SUMMARY.md in its instructions array."""
+    """Ensure opencode.json has SESSION_SUMMARY.md and correct MCP config."""
     import json
 
     oc_path = None
@@ -82,13 +131,31 @@ def _ensure_opencode_instructions(project: Path) -> None:
     except (json.JSONDecodeError, OSError):
         return
 
-    instructions = oc_config.get("instructions", [])
-    if "SESSION_SUMMARY.md" in instructions:
-        return
+    changed = False
 
-    instructions.append("SESSION_SUMMARY.md")
-    oc_config["instructions"] = instructions
-    oc_path.write_text(json.dumps(oc_config, indent=2) + "\n", encoding="utf-8")
+    # Ensure MCP server command is correct
+    mcp = oc_config.get("mcp", {})
+    llm_mem_mcp = mcp.get("llm-mem", {})
+    detected_cmd = _detect_mcp_command(project)
+    if llm_mem_mcp.get("command") != detected_cmd:
+        if "mcp" not in oc_config:
+            oc_config["mcp"] = {}
+        oc_config["mcp"]["llm-mem"] = {
+            "type": "local",
+            "command": detected_cmd,
+            "enabled": True,
+        }
+        changed = True
+
+    # Ensure SESSION_SUMMARY.md in instructions
+    instructions = oc_config.get("instructions", [])
+    if "SESSION_SUMMARY.md" not in instructions:
+        instructions.append("SESSION_SUMMARY.md")
+        oc_config["instructions"] = instructions
+        changed = True
+
+    if changed:
+        oc_path.write_text(json.dumps(oc_config, indent=2) + "\n", encoding="utf-8")
 
 
 @main.command()
