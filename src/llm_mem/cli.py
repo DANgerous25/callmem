@@ -45,8 +45,14 @@ def _ensure_opencode_plugin(project: Path) -> None:
     templates_dir = Path(__file__).parent.parent.parent / "templates" / "opencode"
 
     targets = [
-        (templates_dir / "plugins" / "auto-briefing.js", project / ".opencode" / "plugins" / "auto-briefing.js"),
-        (templates_dir / "commands" / "briefing.md", project / ".opencode" / "commands" / "briefing.md"),
+        (
+            templates_dir / "plugins" / "auto-briefing.js",
+            project / ".opencode" / "plugins" / "auto-briefing.js",
+        ),
+        (
+            templates_dir / "commands" / "briefing.md",
+            project / ".opencode" / "commands" / "briefing.md",
+        ),
     ]
 
     for src, dst in targets:
@@ -748,6 +754,136 @@ def briefing(project: Path, write_file: bool) -> None:
             project_name=config.project.name or "default",
         )
         click.echo(result.content)
+
+
+@main.command("re-extract")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--session", "session_id", default=None, help="Limit to a specific session ID.")
+@click.option("--since", default=None, help="Limit to events from last N days (e.g. 7d).")
+@click.option("--batch-size", type=int, default=None, help="Override extraction batch size.")
+@click.option("--dry-run", is_flag=True, help="Show scope without executing.")
+@click.option("--force", is_flag=True, help="Overwrite all entities including edited ones.")
+@click.option(
+    "--no-preserve-edits/--preserve-edits",
+    default=True,
+    help="Skip manually modified entities (default: preserve).",
+)
+def re_extract(
+    project: Path,
+    session_id: str | None,
+    since: str | None,
+    batch_size: int | None,
+    dry_run: bool,
+    force: bool,
+    no_preserve_edits: bool,
+) -> None:
+    """Re-extract entities from existing events using the current model."""
+    import time
+
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine
+    from llm_mem.core.reextraction import ReExtractor
+
+    config = load_config(project)
+    db_path = project / ".llm-mem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No llm-mem database found at {db_path}")
+        click.echo("Run 'llm-mem init' first.")
+        return
+
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+
+    if engine.llm_client is None:
+        click.echo("LLM backend is 'none' — nothing to re-extract with.")
+        return
+
+    if not engine.llm_client.is_available():
+        click.echo(f"Ollama not reachable at {config.ollama.endpoint}")
+        click.echo("Start Ollama first and try again.")
+        return
+
+    re_extractor = ReExtractor(db, engine.llm_client, config)
+    project_id = engine.project_id
+
+    total_events = re_extractor.count_events(project_id, session_id, since)
+    total_sessions = re_extractor.count_sessions(project_id, session_id, since)
+
+    if total_events == 0:
+        click.echo("No events found matching the given filters.")
+        return
+
+    ctx_val = config.ollama.num_ctx or "auto"
+    click.echo(
+        f"Re-extracting with {config.ollama.model} (num_ctx: {ctx_val})"
+    )
+    click.echo()
+
+    if dry_run:
+        result = re_extractor.run(
+            project_id, session_id=session_id, since=since,
+            batch_size=batch_size, dry_run=True,
+        )
+        click.echo(f"  Sessions: {result['total_sessions']}")
+        click.echo(f"  Events:   {result['total_events']}")
+        click.echo(f"  Batches:  {result['batches']}")
+        click.echo()
+        click.echo("Use without --dry-run to execute.")
+        return
+
+    preserve = bool(not force)
+
+    est_minutes = max(1, total_events // 100)
+    click.echo(f"Re-extract {total_events} events across {total_sessions} sessions?")
+    click.echo(f"Estimated time: ~{est_minutes} minute(s)")
+    click.echo("Existing entities will be archived (not deleted).")
+    if preserve:
+        click.echo("Pinned and edited entities will be preserved.")
+    click.echo()
+
+    proceed = click.confirm("Proceed?", default=False)
+    if not proceed:
+        click.echo("Cancelled.")
+        return
+
+    click.echo()
+    start_time = time.monotonic()
+
+    def _on_progress(update: dict) -> None:
+        batch = update["batch"]
+        total = update["total_batches"]
+        evts = update["events_processed"]
+        total_evts = update["total_events"]
+        ents = update["entities_created"]
+        click.echo(
+            f"  Batch {batch}/{total} — {evts}/{total_evts} events, "
+            f"{ents} entities created"
+        )
+
+    result = re_extractor.run(
+        project_id,
+        session_id=session_id,
+        since=since,
+        batch_size=batch_size,
+        force=force,
+        dry_run=False,
+        progress_callback=_on_progress,
+    )
+
+    elapsed = time.monotonic() - start_time
+    if elapsed < 60:
+        elapsed_str = f"{elapsed:.0f}s"
+    else:
+        elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+
+    click.echo()
+    click.echo("Re-extraction complete:")
+    click.echo(f"  Events processed:  {result['events_processed']}")
+    click.echo(f"  Entities created:  {result['entities_created']}")
+    click.echo(f"  Entities archived: {result['entities_archived']}")
+    click.echo(f"  Time:              {elapsed_str}")
 
 
 # ── Corpus commands ──────────────────────────────────────────────────

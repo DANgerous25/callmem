@@ -130,6 +130,7 @@ backend = "ollama"
 [ollama]
 model = "qwen3:8b"
 endpoint = "http://localhost:11434"
+# num_ctx = 8192  # Uncomment to cap context window (reduces VRAM usage)
 
 # [openai_compat]
 # endpoint = "https://open.bigmodel.cn/api/paas/v4"
