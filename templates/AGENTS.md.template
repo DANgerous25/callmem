@@ -5,9 +5,10 @@ This project uses llm-mem for persistent memory across coding sessions.
 ## Session workflow
 
 **Start of session:**
-1. Call `mem_session_start` to register this session
-2. The returned briefing contains important context from previous sessions
-3. Read the briefing carefully before starting work
+1. Read `SESSION_SUMMARY.md` (if it exists) — it contains an auto-generated briefing with recent context, key entities, and open tasks from previous sessions
+2. Call `mem_session_start` to register this session
+3. The returned briefing contains additional context from previous sessions
+4. Read both carefully before starting work
 
 **During the session:**
 - When you make an important decision, call `mem_ingest` with type "decision"
