@@ -1,8 +1,9 @@
 {
-  "mcpServers": {
+  "mcp": {
     "llm-mem": {
-      "command": "llm-mem",
-      "args": ["serve", "--project", "."]
+      "type": "local",
+      "command": ["python3", "-m", "llm_mem.mcp.server", "--project", "."],
+      "enabled": true
     }
   },
   "instructions": ["SESSION_SUMMARY.md"]

@@ -203,6 +203,55 @@ def find_opencode_config(project: Path) -> Path | None:
     return None
 
 
+def _detect_mcp_command(project: Path) -> list[str]:
+    """Detect the best command to run the llm-mem MCP server.
+
+    Checks in order:
+    1. System Python can import llm_mem → use python3 directly.
+    2. We're inside the llm-mem project itself → use uv run.
+    3. Find llm-mem install path → use uv run --directory.
+    4. Fallback → use python3 (best-effort).
+    """
+    import subprocess
+
+    # 1. Check if llm_mem is importable from system Python
+    try:
+        result = subprocess.run(
+            ["python3", "-c", "import llm_mem"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return ["python3", "-m", "llm_mem.mcp.server", "--project", "."]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 2. Check if we're in the llm-mem project itself
+    if (project / "src" / "llm_mem").is_dir():
+        return ["uv", "run", "python", "-m", "llm_mem.mcp.server", "--project", "."]
+
+    # 3. Fall back to uv with --directory pointing to llm-mem source
+    try:
+        result = subprocess.run(
+            [
+                "python3", "-c",
+                "import llm_mem; from pathlib import Path; "
+                "print(Path(llm_mem.__file__).parent.parent.parent)",
+            ],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            llm_mem_dir = result.stdout.strip()
+            return [
+                "uv", "run", "--directory", llm_mem_dir,
+                "python", "-m", "llm_mem.mcp.server", "--project", ".",
+            ]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 4. Ultimate fallback
+    return ["python3", "-m", "llm_mem.mcp.server", "--project", "."]
+
+
 # ── Session import ───────────────────────────────────────────────────
 
 
@@ -1025,7 +1074,7 @@ vault_mode = "{vault_mode}"
 
         oc_config["mcp"]["llm-mem"] = {
             "type": "local",
-            "command": ["uv", "run", "python", "-m", "llm_mem.mcp.server", "--project", "."],
+            "command": _detect_mcp_command(project),
             "enabled": True,
         }
 
