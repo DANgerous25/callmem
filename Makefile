@@ -1,7 +1,7 @@
 PROJECT := $(shell pwd)
 SVC_NAME := llm-mem-$(shell basename $(PROJECT))
 
-.PHONY: test dev setup lint typecheck session-save session-load clean start stop restart logs status daemon
+.PHONY: test dev setup lint typecheck session-save session-load clean start stop restart logs status daemon watch
 
 # Run the full test suite
 test:
@@ -48,6 +48,10 @@ session-save:
 # Load and display current session memory
 session-load:
 	uv run python scripts/session_load.py
+
+# Watch job queue progress
+watch:
+	python3 scripts/job_watch.py --project .
 
 # Show memory status
 status:

@@ -953,6 +953,86 @@ def re_extract(
     click.echo(f"  Time:              {elapsed_str}")
 
 
+# ── Watch command ────────────────────────────────────────────────────
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--interval", "-n", type=int, default=30, help="Refresh interval in seconds.")
+@click.option("--once", is_flag=True, help="Show once and exit.")
+def watch(project: Path, interval: int, once: bool) -> None:
+    """Watch job queue progress with live ETA."""
+    import sqlite3
+    import time
+    from datetime import datetime
+
+    db_path = project / ".llm-mem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No llm-mem database found at {db_path}", err=True)
+        raise SystemExit(1)
+
+    def _show() -> None:
+        db = sqlite3.connect(str(db_path))
+        counts = dict(db.execute("SELECT status, COUNT(*) FROM jobs GROUP BY status").fetchall())
+        pending = counts.get("pending", 0)
+        completed = counts.get("completed", 0)
+        running = counts.get("running", 0)
+        failed = counts.get("failed", 0)
+        total = pending + completed + running + failed
+
+        recent = db.execute(
+            "SELECT MIN(completed_at), MAX(completed_at), COUNT(*) "
+            "FROM jobs WHERE status='completed' "
+            "AND completed_at > datetime('now', '-10 minutes')"
+        ).fetchone()
+
+        rate = ""
+        eta = ""
+        if recent and recent[2] > 1 and recent[0] and recent[1]:
+            t0 = datetime.fromisoformat(recent[0])
+            t1 = datetime.fromisoformat(recent[1])
+            secs = (t1 - t0).total_seconds()
+            if secs > 0:
+                per_min = recent[2] / (secs / 60)
+                mins_left = pending / per_min if per_min > 0 else 0
+                rate = f"{per_min:.1f} jobs/min"
+                if mins_left > 60:
+                    eta = f"{mins_left / 60:.1f} hours"
+                else:
+                    eta = f"{mins_left:.0f} min"
+
+        pct = int(completed / total * 100) if total > 0 else 0
+        bar_len = 30
+        filled = int(bar_len * completed / total) if total > 0 else 0
+        bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
+
+        click.echo(f"[{bar}] {pct}%")
+        click.echo(f"Completed: {completed}/{total}")
+        click.echo(f"Pending:   {pending}")
+        click.echo(f"Running:   {running}")
+        if failed:
+            click.echo(f"Failed:    {failed}")
+        if rate:
+            click.echo(f"Rate:      {rate}")
+        if eta:
+            click.echo(f"ETA:       {eta}")
+        db.close()
+
+    if once:
+        _show()
+        return
+
+    try:
+        while True:
+            click.echo("\033[2J\033[H", nl=False)
+            click.echo(f"llm-mem job queue \u2014 {datetime.now().strftime('%H:%M:%S')}")
+            click.echo()
+            _show()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        click.echo()
+
+
 # ── Corpus commands ──────────────────────────────────────────────────
 
 
