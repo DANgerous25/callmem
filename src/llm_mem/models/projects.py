@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Self
+from typing import Any
 
 from pydantic import BaseModel, Field
+from typing_extensions import Self
 from ulid import ULID
 
 from llm_mem.compat import UTC
