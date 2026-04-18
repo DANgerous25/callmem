@@ -38,7 +38,7 @@ class TestToolDefinitions:
             "mem_session_start", "mem_session_end", "mem_ingest",
             "mem_search", "mem_get_briefing", "mem_get_tasks", "mem_pin",
             "mem_search_index", "mem_timeline", "mem_get_entities",
-            "mem_search_by_file",
+            "mem_search_by_file", "mem_vault_review",
         }
         assert names == expected
 
