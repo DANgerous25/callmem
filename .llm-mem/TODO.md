@@ -41,6 +41,7 @@ Track work order progress and ad-hoc tasks here.
 | WO-32 | Session isolation for imports | **Complete** |
 | WO-33 | Queue status indicator — live SSE badge in header | **Complete** |
 | WO-34 | Feed filtering — type pills, search, ordering | **Complete** |
+| WO-04c | Auto-patch AGENTS.md with MCP tool instructions | **Complete** |
 
 ## Ad-hoc Tasks
 
