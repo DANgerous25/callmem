@@ -36,6 +36,11 @@ Track work order progress and ad-hoc tasks here.
 | WO-27 | MCP tool tests — vault review + untested tools | **Complete** |
 | WO-28 | False positive marking + Ollama client tests | **Complete** |
 | WO-29 | Migration cleanup — document dead scan_status column | **Complete** |
+| WO-30 | Timestamp fixes — preserve import times, relative UI formatting | **Complete** |
+| WO-31 | Wire event_bus to worker for SSE entity push | **Complete** |
+| WO-32 | Session isolation for imports | **Complete** |
+| WO-33 | Queue status indicator — live SSE badge in header | **Complete** |
+| WO-34 | Feed filtering — type pills, search, ordering | **Complete** |
 
 ## Ad-hoc Tasks
 
