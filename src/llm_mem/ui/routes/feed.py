@@ -11,44 +11,94 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
+ENTITY_TYPES = [
+    "decision", "todo", "fact", "failure", "discovery",
+    "feature", "bugfix", "research", "change",
+]
 
-def _build_feed_items(engine: Any) -> list[dict[str, Any]]:
-    """Build a unified feed of entities and sessions sorted by timestamp desc."""
+
+def _build_feed_items(
+    engine: Any,
+    entity_type: str | None = None,
+    query: str | None = None,
+    order: str = "desc",
+) -> list[dict[str, Any]]:
+    """Build a unified feed of entities and sessions sorted by timestamp."""
     items: list[dict[str, Any]] = []
-
     project_name = engine.config.project.name or "default"
 
-    # Entities — primary feed items
-    entities = engine.get_entities(limit=100)
-    for e in entities:
-        files = engine.repo.get_files_for_entity(e["id"])
-        items.append({
-            "kind": "entity",
-            "category": e["type"],
-            "title": e["title"],
-            "content": e.get("content", ""),
-            "key_points": e.get("key_points"),
-            "synopsis": e.get("synopsis"),
-            "timestamp": e.get("created_at", ""),
-            "id": e["id"],
-            "status": e.get("status"),
-            "priority": e.get("priority"),
-            "pinned": e.get("pinned", False),
-            "agent_name": None,
-            "project_name": project_name,
-            "files": files,
-        })
-
-    # Sessions
-    sessions = engine.list_sessions(limit=20)
-    for s in sessions:
-        if s.summary:
+    if query:
+        results = engine.search(query, limit=100)
+        entity_ids = set()
+        for r in results:
+            eid = r.get("id", "")
+            if entity_type and r.get("type") != entity_type:
+                continue
+            entity_ids.add(eid)
             items.append({
-                "kind": "summary",
-                "category": "summary",
-                "title": "Session Summary",
-                "content": s.summary,
-                "timestamp": s.ended_at or s.started_at,
+                "kind": "entity",
+                "category": r.get("type", "unknown"),
+                "title": r.get("title") or r.get("content", "")[:60],
+                "content": r.get("content", ""),
+                "key_points": None,
+                "synopsis": None,
+                "timestamp": r.get("timestamp", ""),
+                "id": eid,
+                "status": r.get("status"),
+                "priority": r.get("priority"),
+                "pinned": False,
+                "agent_name": None,
+                "project_name": project_name,
+                "files": [],
+            })
+    else:
+        type_filter = entity_type if entity_type else None
+        entities = engine.get_entities(type=type_filter, limit=100)
+        for e in entities:
+            files = engine.repo.get_files_for_entity(e["id"])
+            items.append({
+                "kind": "entity",
+                "category": e["type"],
+                "title": e["title"],
+                "content": e.get("content", ""),
+                "key_points": e.get("key_points"),
+                "synopsis": e.get("synopsis"),
+                "timestamp": e.get("created_at", ""),
+                "id": e["id"],
+                "status": e.get("status"),
+                "priority": e.get("priority"),
+                "pinned": e.get("pinned", False),
+                "agent_name": None,
+                "project_name": project_name,
+                "files": files,
+            })
+
+    if not query and not entity_type:
+        sessions = engine.list_sessions(limit=20)
+        for s in sessions:
+            if s.summary:
+                items.append({
+                    "kind": "summary",
+                    "category": "summary",
+                    "title": "Session Summary",
+                    "content": s.summary,
+                    "timestamp": s.ended_at or s.started_at,
+                    "id": s.id,
+                    "status": s.status,
+                    "priority": None,
+                    "pinned": False,
+                    "agent_name": s.agent_name,
+                    "project_name": project_name,
+                })
+
+            items.append({
+                "kind": "session",
+                "category": "session",
+                "title": f"Session {'started' if s.status == 'active' else s.status}",
+                "content": f"{s.event_count} events" + (
+                    f" \u00b7 {s.agent_name}" if s.agent_name else ""
+                ),
+                "timestamp": s.started_at,
                 "id": s.id,
                 "status": s.status,
                 "priority": None,
@@ -57,23 +107,8 @@ def _build_feed_items(engine: Any) -> list[dict[str, Any]]:
                 "project_name": project_name,
             })
 
-        items.append({
-            "kind": "session",
-            "category": "session",
-            "title": f"Session {'started' if s.status == 'active' else s.status}",
-            "content": f"{s.event_count} events" + (
-                f" \u00b7 {s.agent_name}" if s.agent_name else ""
-            ),
-            "timestamp": s.started_at,
-            "id": s.id,
-            "status": s.status,
-            "priority": None,
-            "pinned": False,
-            "agent_name": s.agent_name,
-            "project_name": project_name,
-        })
-
-    items.sort(key=lambda x: x["timestamp"], reverse=True)
+    reverse = order == "desc"
+    items.sort(key=lambda x: x["timestamp"], reverse=reverse)
     return items
 
 
@@ -94,6 +129,13 @@ async def feed(request: Request) -> HTMLResponse:
 
     items = _build_feed_items(engine)
 
+    conn2 = engine.db.connect()
+    try:
+        prows = conn2.execute("SELECT id, name FROM projects").fetchall()
+    finally:
+        conn2.close()
+    projects = [{"id": r["id"], "name": r["name"]} for r in prows]
+
     return render_template(
         request.app,
         "feed.html",
@@ -102,6 +144,11 @@ async def feed(request: Request) -> HTMLResponse:
         entity_count=entity_count,
         session_count=session_count,
         items=items,
+        projects=projects,
+        entity_types=ENTITY_TYPES,
+        active_type=None,
+        active_query=None,
+        active_order="desc",
     )
 
 
@@ -110,7 +157,11 @@ async def feed_partial(request: Request) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
-    items = _build_feed_items(engine)
+    entity_type = request.query_params.get("type")
+    query = request.query_params.get("q")
+    order = request.query_params.get("order", "desc")
+
+    items = _build_feed_items(engine, entity_type=entity_type, query=query, order=order)
 
     return render_template(
         request.app,
