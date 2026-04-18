@@ -136,17 +136,26 @@ def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
     return used
 
 
-def check_ollama(endpoint: str) -> tuple[bool, list[str]]:
+def check_ollama(endpoint: str) -> tuple[bool, list[str], list[dict]]:
+    """Check Ollama availability and return (ok, model_names, model_details).
+
+    model_details is a list of dicts with 'name' and 'size' keys.
+    """
     try:
         import httpx
         resp = httpx.get(f"{endpoint}/api/tags", timeout=5.0)
         if resp.status_code == 200:
             data = resp.json()
-            models = [m["name"] for m in data.get("models", [])]
-            return True, models
+            models = data.get("models", [])
+            model_names = [m["name"] for m in models]
+            model_details = [
+                {"name": m.get("name", ""), "size": m.get("size", 0)}
+                for m in models
+            ]
+            return True, model_names, model_details
     except Exception:
         pass
-    return False, []
+    return False, [], []
 
 
 def check_openai_compat(endpoint: str, api_key: str, model: str) -> bool:
@@ -667,18 +676,99 @@ def main() -> None:
         print("── Ollama configuration ──")
         print()
         ollama_endpoint = ask("Ollama endpoint", ollama_endpoint)
-        ollama_ok, available_models = check_ollama(ollama_endpoint)
+        ollama_ok, available_models, model_details = check_ollama(ollama_endpoint)
 
         if ollama_ok:
             print(f"  Connected to Ollama at {ollama_endpoint}")
-            if available_models:
-                print(f"  Models available: {', '.join(available_models[:10])}")
+
+            from llm_mem.core.gpu_scan import (
+                ModelInfo,
+                SystemInfo,
+                detect_system,
+                fetch_ollama_models,
+                format_recommendation_table,
+                pick_best,
+                recommend_models,
+            )
+
+            sys_info = detect_system()
+            if sys_info.gpu.available:
+                models_with_size = [
+                    ModelInfo(name=d["name"], size_bytes=d["size"])
+                    for d in model_details if d["size"]
+                ]
+                if models_with_size:
+                    recs = recommend_models(models_with_size, sys_info.gpu)
+                    table = format_recommendation_table(
+                        sys_info.gpu, sys_info.ram_mb, recs,
+                    )
+                    print()
+                    print(table)
+                    print()
+
+                    best = pick_best(recs)
+                    if best:
+                        print(f"  Recommended: {best.model.name} ({best.note})")
+                        if ollama_model not in [m.name for m in models_with_size]:
+                            ollama_model = best.model.name
+                else:
+                    print(f"  Models available: {', '.join(available_models[:10])}")
+            else:
+                print("  (GPU info not available — skipping VRAM estimates)")
+                if available_models:
+                    print(f"  Models available: {', '.join(available_models[:10])}")
         else:
             print(f"  Ollama not reachable at {ollama_endpoint}")
             print("  You can configure it now and start Ollama later.")
 
         ollama_model = ask("Model", ollama_model)
         ollama_timeout = int(ask("Timeout (seconds)", str(ollama_timeout)))
+
+        existing_num_ctx = existing.get("ollama", {}).get("num_ctx", None)
+        num_ctx_str = ""
+        if existing_num_ctx is not None:
+            num_ctx_str = str(existing_num_ctx)
+
+        if ollama_ok and sys_info.gpu.available:
+            chosen_model_info = None
+            for d in model_details:
+                if d["name"] == ollama_model:
+                    chosen_model_info = ModelInfo(
+                        name=d["name"], size_bytes=d["size"],
+                    )
+                    break
+
+            if chosen_model_info and chosen_model_info.size_bytes:
+                recs = recommend_models([chosen_model_info], sys_info.gpu)
+                if recs and recs[0].fit_status in ("tight", "oom"):
+                    rec = recs[0]
+                    suggested_ctx = rec.recommended_ctx or 8192
+                    print()
+                    print(
+                        f"  \u26a0\ufe0f  {ollama_model} uses ~{chosen_model_info.size_gb:.1f} GB "
+                        f"— leaving ~{rec.free_after_mb} MB for context."
+                    )
+                    print(
+                        "  llm-mem extraction batches are small, "
+                        "so a reduced context window works fine."
+                    )
+                    print()
+                    num_ctx_str = ask(
+                        f"Context window (num_ctx)",
+                        num_ctx_str or str(suggested_ctx),
+                    )
+                elif recs and recs[0].fit_status in ("easy", "ok"):
+                    if not num_ctx_str:
+                        num_ctx_str = ""
+
+        ollama_num_ctx = None
+        if num_ctx_str.strip():
+            try:
+                ollama_num_ctx = int(num_ctx_str.strip())
+            except ValueError:
+                ollama_num_ctx = None
+    else:
+        ollama_num_ctx = None
 
     # ── OpenAI-compatible config ──────────────────────────────────
     oai_endpoint = existing.get("openai_compat", {}).get("endpoint", "https://open.bigmodel.cn/api/paas/v4")
@@ -826,7 +916,13 @@ backend = "{backend}"
 [ollama]
 model = "{ollama_model}"
 endpoint = "{ollama_endpoint}"
-timeout = {ollama_timeout}
+timeout = {ollama_timeout}{''
+if ollama_num_ctx is not None else
+''}"""
+    if ollama_num_ctx is not None:
+        config_content += f"\nnum_ctx = {ollama_num_ctx}"
+
+    config_content += f"""
 
 [openai_compat]
 endpoint = "{oai_endpoint}"

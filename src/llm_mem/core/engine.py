@@ -37,6 +37,7 @@ def _create_llm_client(config: Config) -> Any:
             endpoint=config.ollama.endpoint,
             model=config.ollama.model,
             timeout=config.ollama.timeout,
+            num_ctx=config.ollama.num_ctx,
         )
 
     if backend == "openai_compat":

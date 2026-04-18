@@ -27,6 +27,8 @@ Track work order progress and ad-hoc tasks here.
 | WO-18 | UI polish — project filter, infinite scroll, token economics | **Complete** |
 | WO-19 | Knowledge agents — queryable memory brains | **Complete** |
 | WO-20 | Import progress display and background execution | **Complete** |
+| WO-21 | Smart model selection & context window config | **Complete** |
+| WO-22 | Re-extraction command | **Complete** |
 
 ## Ad-hoc Tasks
 

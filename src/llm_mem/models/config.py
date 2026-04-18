@@ -26,6 +26,7 @@ class OllamaConfig(BaseModel):
     model: str = "qwen3:8b"
     endpoint: str = "http://localhost:11434"
     timeout: int = 120
+    num_ctx: int | None = None
 
 
 class OpenAICompatConfig(BaseModel):

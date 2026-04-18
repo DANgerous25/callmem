@@ -27,10 +27,12 @@ class OllamaClient:
         endpoint: str = "http://localhost:11434",
         model: str = "qwen3:8b",
         timeout: int = 120,
+        num_ctx: int | None = None,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.num_ctx = num_ctx
 
     def is_available(self) -> bool:
         """Check if the Ollama instance is reachable."""
@@ -43,13 +45,17 @@ class OllamaClient:
     def _generate(self, prompt: str) -> str | None:
         """Send a generate request to Ollama and return the response text."""
         try:
+            body = {
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+            }
+            if self.num_ctx is not None:
+                body["options"] = {"num_ctx": self.num_ctx}
+
             resp = httpx.post(
                 f"{self.endpoint}/api/generate",
-                json={
-                    "model": self.model,
-                    "prompt": prompt,
-                    "stream": False,
-                },
+                json=body,
                 timeout=self.timeout,
             )
             resp.raise_for_status()
