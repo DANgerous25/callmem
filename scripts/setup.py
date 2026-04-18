@@ -138,7 +138,10 @@ def load_existing_config(config_path: Path) -> dict:
     if not config_path.exists():
         return {}
     try:
-        import tomllib
+        if sys.version_info >= (3, 11):
+            import tomllib
+        else:
+            import tomli as tomllib  # type: ignore[no-redef]
         with open(config_path, "rb") as f:
             return tomllib.load(f)
     except Exception:
@@ -470,6 +473,60 @@ WantedBy=default.target
         )
 
 
+# ── AGENTS.md patching ──────────────────────────────────────────────
+
+_SESSION_SUMMARY_SNIPPET = (
+    "\n## Startup briefing\n\n"
+    "At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) "
+    "if it exists. It contains an auto-generated briefing with recent context, key "
+    "entities, and open tasks from previous sessions.\n"
+)
+
+
+def _ensure_agents_session_summary(agents_path: Path) -> None:
+    """Patch an existing AGENTS.md to reference SESSION_SUMMARY.md if missing."""
+    if not agents_path.exists():
+        return
+    content = agents_path.read_text(encoding="utf-8")
+    if "SESSION_SUMMARY.md" in content:
+        print("  AGENTS.md already references SESSION_SUMMARY.md")
+        return
+    content += _SESSION_SUMMARY_SNIPPET
+    agents_path.write_text(content, encoding="utf-8")
+    print("  Patched AGENTS.md with SESSION_SUMMARY.md startup reference")
+
+
+# ── Initial briefing generation ────────────────────────────────────
+
+
+def _generate_initial_briefing(project: Path, db_path: Path) -> None:
+    """Generate SESSION_SUMMARY.md so agents get context on first launch."""
+    if not db_path.exists():
+        return
+    try:
+        from llm_mem.core.briefing import BriefingGenerator
+        from llm_mem.core.config import load_config
+        from llm_mem.core.database import Database
+        from llm_mem.core.engine import MemoryEngine
+
+        config = load_config(project)
+        db = Database(db_path)
+        db.initialize()
+        engine = MemoryEngine(db, config)
+        gen = BriefingGenerator(engine.repo, config, engine.ollama)
+
+        project_name = config.project.name or "default"
+        briefing = gen.write_session_summary(
+            project_id=engine.project_id,
+            project_name=project_name,
+            worktree_path=project,
+        )
+        print(f"  Wrote SESSION_SUMMARY.md ({briefing.token_count} tokens)")
+    except Exception as exc:
+        print(f"  Could not generate SESSION_SUMMARY.md: {exc}")
+        print("  Generate manually: llm-mem briefing --write -p .")
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -758,6 +815,12 @@ vault_mode = "{vault_mode}"
 
     # ── Session import ───────────────────────────────────────────
     _offer_session_import(project, db_path)
+
+    # ── AGENTS.md — ensure SESSION_SUMMARY.md reference ──────────
+    _ensure_agents_session_summary(project / "AGENTS.md")
+
+    # ── Generate initial briefing ────────────────────────────────
+    _generate_initial_briefing(project, db_path)
 
     # ── OpenCode MCP ──────────────────────────────────────────────
     print()
