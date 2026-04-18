@@ -537,6 +537,40 @@ def _ensure_agents_session_summary(agents_path: Path) -> None:
     print("  Patched AGENTS.md with SESSION_SUMMARY.md startup reference")
 
 
+# ── OpenCode plugin / command provisioning ─────────────────────────
+
+
+def _ensure_opencode_plugin(project: Path) -> None:
+    """Install OpenCode auto-briefing plugin and /briefing command if missing or outdated."""
+    import filecmp
+
+    templates_dir = Path(__file__).parent / "templates" / "opencode"
+    # When running as scripts/setup.py the templates dir is a sibling
+    if not templates_dir.is_dir():
+        templates_dir = Path(__file__).parent.parent / "templates" / "opencode"
+    if not templates_dir.is_dir():
+        return
+
+    targets = [
+        (templates_dir / "plugins" / "auto-briefing.js", project / ".opencode" / "plugins" / "auto-briefing.js"),
+        (templates_dir / "commands" / "briefing.md", project / ".opencode" / "commands" / "briefing.md"),
+    ]
+
+    installed: list[str] = []
+    for src, dst in targets:
+        if not src.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            installed.append(dst.name)
+
+    if installed:
+        print(f"  Installed OpenCode files: {', '.join(installed)}")
+    else:
+        print("  OpenCode plugin and command already up to date")
+
+
 # ── Initial briefing generation ────────────────────────────────────
 
 
@@ -908,6 +942,9 @@ vault_mode = "{vault_mode}"
 
         oc_config_path.write_text(json.dumps(oc_config, indent=2) + "\n")
         print(f"  Wrote MCP config to {oc_config_path.name}")
+
+    # ── OpenCode plugin + command ────────────────────────────────
+    _ensure_opencode_plugin(project)
 
     # ── Autostart ─────────────────────────────────────────────────
     _offer_systemd_service(project, ui_host, ui_port)
