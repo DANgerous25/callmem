@@ -206,6 +206,50 @@ class TestEntityExtractor:
         assert entities[0].synopsis is None
 
 
+class TestEventBusHandling:
+    def test_no_error_when_event_bus_is_none(self, memory_db: Database) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        assert extractor.event_bus is None
+        engine.start_session()
+        event = engine.ingest_one("response", "We chose PostgreSQL for the DB")
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [{"title": "Use PostgreSQL", "content": "DB choice"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        assert entities[0].type == "decision"
+
+    def test_publish_called_when_event_bus_provided(self, memory_db: Database) -> None:
+        from unittest.mock import MagicMock
+
+        event_bus = MagicMock()
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        extractor.event_bus = event_bus
+        engine.start_session()
+        event = engine.ingest_one("response", "We decided on SQLite")
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [{"title": "Use SQLite", "content": "Storage choice"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        event_bus.publish.assert_called_once()
+        call_args = event_bus.publish.call_args
+        assert call_args[0][0] == "entity_created"
+        assert call_args[0][1]["title"] == "Use SQLite"
+
+
 class TestIngestQueuesExtraction:
     def test_ingest_creates_extraction_job(
         self, memory_db: Database
