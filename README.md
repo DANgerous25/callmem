@@ -59,10 +59,10 @@ Exposes tools via the Model Context Protocol so compatible agents can query memo
 
 ## Requirements
 
-- **Python 3.11+**
+- **Python 3.10+**
 - **Ollama** with a summarisation model (recommended: `qwen3:8b` or `qwen3:30b`)
 - **Linux** (tested on Ubuntu/Debian x86_64 and ARM64)
-- **SQLite 3.35+** (ships with Python 3.11+, FTS5 support required)
+- **SQLite 3.35+** (FTS5 support required)
 
 ### Tested Environments
 
@@ -72,6 +72,7 @@ Exposes tools via the Model Context Protocol so compatible agents can query memo
 | Ubuntu 24.04, ARM64 (Hetzner CAX31) | Tested |
 | Ollama with qwen3:8b | Tested |
 | Ollama with qwen3:30b | Tested |
+| Ollama with gemma4:e4b | Tested |
 | OpenCode as coding agent | Tested |
 
 macOS and Windows are untested but should work anywhere Python and Ollama run. The systemd service integration is Linux-only.
@@ -86,7 +87,7 @@ macOS and Windows are untested but should work anywhere Python and Ollama run. T
 # Install Ollama (if not already installed)
 curl -fsSL https://ollama.com/install.sh | sh
 
-# Pull a summarisation model
+# Pull a summarisation model (any instruction-following model works)
 ollama pull qwen3:8b
 ```
 
@@ -147,6 +148,8 @@ Add llm-mem as an MCP server in your agent's config. For OpenCode, add to `openc
 }
 ```
 
+Once configured, you can type `/briefing` in OpenCode to display the startup briefing on demand.
+
 ### 6. Open the Web UI
 
 Navigate to `http://localhost:9090` (or your configured host:port).
@@ -193,6 +196,7 @@ llm-mem import             # Import sessions from OpenCode SQLite DB
 llm-mem status             # Show service status
 llm-mem search <query>     # Search memories from the command line
 llm-mem briefing           # Generate and print a briefing
+llm-mem briefing --write   # Write briefing to SESSION_SUMMARY.md
 ```
 
 ---
@@ -266,7 +270,7 @@ llm-mem/
 │   ├── models/         # Data models, config, entity types
 │   └── ui/             # Web UI (FastAPI + Jinja2 + htmx + SSE)
 ├── scripts/            # Setup wizard, session helpers
-├── tests/              # 382+ tests (unit + integration)
+├── tests/              # 400+ tests (unit + integration)
 ├── docs/
 │   ├── work-orders/    # Implementation tickets
 │   └── ...             # Architecture, schema, config, roadmap docs
@@ -308,6 +312,16 @@ See [docs/roadmap.md](docs/roadmap.md) for the full plan. Highlights:
 ## Acknowledgements
 
 llm-mem was inspired by [claude-mem](https://github.com/anthropics/claude-mem) by Alex Newman. We share the same goal — giving coding agents persistent memory — but llm-mem is built from scratch with a focus on model-agnostic operation, local-first architecture, and pluggable LLM backends.
+
+---
+
+## Known Issues
+
+### Auto-briefing plugin does not trigger on session start
+An OpenCode plugin (`.opencode/plugins/auto-briefing.js`) is installed during setup that should auto-display the briefing when a new session starts. However, due to an [upstream OpenCode bug](https://github.com/anomalyco/opencode/issues/14808) where `session.created` events do not fire for plugins, this does not currently work. Use the `/briefing` command in OpenCode as a workaround. The plugin will activate automatically when the bug is fixed upstream — no changes needed.
+
+### Python 3.10 compatibility shims
+llm-mem supports Python 3.10+ but requires `tomli` (backport of `tomllib`) and `typing_extensions` on Python 3.10. These are installed automatically as conditional dependencies. On Python 3.11+, the stdlib equivalents are used.
 
 ---
 
