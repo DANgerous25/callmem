@@ -14,25 +14,6 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from llm_mem.mcp.server import create_server
-
-
-@pytest.fixture
-def project_dir(tmp_path: Path) -> Path:
-    """Create a project directory with initialized database."""
-    from llm_mem.core.database import Database
-
-    llm_dir = tmp_path / ".llm-mem"
-    llm_dir.mkdir()
-    db = Database(llm_dir / "memory.db")
-    db.initialize()
-    return tmp_path
-
-
-@pytest.fixture
-def mcp_server(project_dir: Path) -> object:
-    return create_server(project_dir)
-
 
 class TestMCPToolsList:
     @pytest.mark.anyio
