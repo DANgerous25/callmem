@@ -128,7 +128,7 @@ class TestBriefingGeneration:
         repo = Repository(memory_db)
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
-        assert "Latest Session Summary" in briefing.content
+        assert "Latest Session" in briefing.content
         assert "Implemented auth" in briefing.content
 
     def test_briefing_new_project(self, memory_db: Database) -> None:
@@ -194,7 +194,7 @@ class TestBriefingGeneration:
         repo = Repository(memory_db)
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
-        assert "Legend:" in briefing.content
+        assert "\U0001f7e2 feature" in briefing.content
 
     def test_briefing_includes_footer(
         self, memory_db: Database
@@ -203,7 +203,7 @@ class TestBriefingGeneration:
         repo = Repository(memory_db)
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
-        assert "View observations live" in briefing.content
+        assert "Web UI:" in briefing.content
 
     def test_briefing_has_savings_pct(
         self, memory_db: Database

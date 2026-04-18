@@ -38,6 +38,16 @@ LEGEND_ORDER = [
     "todo", "failure", "research", "change", "fact",
 ]
 
+# Box-drawing characters for visual structure
+_BOX_H = "\u2500"  # ─
+_BOX_TL = "\u256d"  # ╭
+_BOX_TR = "\u256e"  # ╮
+_BOX_BL = "\u2570"  # ╰
+_BOX_BR = "\u256f"  # ╯
+_BOX_V = "\u2502"  # │
+_BULLET = "\u25cf"  # ●
+_ARROW = "\u25b6"  # ▶
+
 
 @dataclass
 class Briefing:
@@ -170,65 +180,118 @@ class BriefingGenerator:
         savings_pct: float,
     ) -> list[str]:
         parts: list[str] = []
+        w = 58  # box width
 
         now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
-        parts.append(
-            f"[{project_name}] recent context, {now_str}"
-        )
-        parts.append("\u2500" * 48)
 
+        # ── Header box ──
+        title = f" {_ARROW} {project_name} "
+        date_str = f" {now_str} "
+        pad = w - 2 - len(title) - len(date_str)
+        if pad < 1:
+            pad = 1
+
+        parts.append(f"{_BOX_TL}{_BOX_H * (w - 2)}{_BOX_TR}")
+        parts.append(f"{_BOX_V}{title}{' ' * pad}{date_str}{_BOX_V}")
+        parts.append(f"{_BOX_BL}{_BOX_H * (w - 2)}{_BOX_BR}")
+        parts.append("")
+
+        # ── Context economics ──
+        parts.append(f"{_BOX_H * 3} Context Economics {_BOX_H * (w - 22)}")
+        parts.append("")
+        parts.append(
+            f"  {_BULLET} {observations_loaded} observations loaded "
+            f"({read_tokens:,} tokens)"
+        )
+        parts.append(
+            f"  {_BULLET} {work_investment:,} tokens of captured work"
+        )
+        if savings_pct > 0:
+            parts.append(
+                f"  {_BULLET} {savings_pct}% compression savings"
+            )
+        parts.append("")
+
+        # ── Legend ──
         legend_parts = []
         for cat in LEGEND_ORDER:
             emoji = CATEGORY_EMOJI.get(cat, "")
             legend_parts.append(f"{emoji} {cat}")
-        parts.append(f"Legend: {' | '.join(legend_parts)}")
+        sep = f" {_BOX_V} "
+        parts.append(f"  {sep.join(legend_parts)}")
         parts.append("")
 
-        parts.append("Context Economics")
-        parts.append(
-            f"  Loading: {observations_loaded} observations "
-            f"({read_tokens:,} tokens to read)"
-        )
-        parts.append(
-            f"  Work investment: {work_investment:,} tokens "
-            f"of captured work"
-        )
-        parts.append(
-            f"  Your savings: {savings_pct}% reduction from reuse"
-        )
-        parts.append("")
+        # ── Latest session summary (prioritized at top) ──
+        if last_session and last_session.get("summary"):
+            started = (last_session.get("started_at") or "")[:10]
+            parts.append(
+                f"{_BOX_H * 3} Latest Session ({started}) "
+                f"{_BOX_H * (w - 23 - len(started))}"
+            )
+            parts.append("")
+            summary = last_session["summary"]
+            for line in summary.strip().split("\n"):
+                parts.append(f"  {line}")
+            parts.append("")
 
+        # ── Open TODOs and failures (high priority) ──
+        todos = [
+            e for e in entities
+            if e.get("type") == "todo"
+            and e.get("status") != "resolved"
+        ]
+        failures = [
+            e for e in entities
+            if e.get("type") == "failure"
+            and e.get("status") != "resolved"
+        ]
+
+        if todos or failures:
+            parts.append(
+                f"{_BOX_H * 3} Action Items "
+                f"{_BOX_H * (w - 18)}"
+            )
+            parts.append("")
+            for e in failures:
+                title = e.get("title") or e.get("content", "")[:60]
+                parts.append(f"  \u274c  {title}")
+            for e in todos:
+                title = e.get("title") or e.get("content", "")[:60]
+                priority = e.get("priority", "")
+                flag = f" [{priority}]" if priority else ""
+                parts.append(f"  \U0001f4cb  {title}{flag}")
+            parts.append("")
+
+        # ── Observations by date ──
         entities_by_date = self._group_entities_by_date(entities)
-        for date_str, date_entities in entities_by_date.items():
-            parts.append(f"{date_str}")
+        for date_label, date_entities in entities_by_date.items():
+            parts.append(
+                f"{_BOX_H * 3} {date_label} "
+                f"{_BOX_H * (w - 6 - len(date_label))}"
+            )
             parts.append("")
 
             by_session = self._group_by_session(date_entities, sessions)
             for session_header, session_entities in by_session:
-                parts.append(f"  {session_header}")
+                parts.append(f"  {_ARROW} {session_header}")
                 for e in session_entities:
                     emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
-                    eid = (e.get("id") or "")[:8]
                     title = e.get("title") or ""
-                    parts.append(f"    #{eid}  {emoji}  {title}")
+                    parts.append(f"    {emoji}  {title}")
                 parts.append("")
 
-        if last_session and last_session.get("summary"):
-            parts.append("Latest Session Summary:")
-            summary = last_session["summary"]
-            for line in summary.split("\n"):
-                parts.append(f"  {line}")
-            parts.append("")
-
-        footer = (
-            f"Access {work_investment:,} tokens of past work "
-            f"for just {read_tokens:,}t."
+        # ── Footer ──
+        parts.append(f"{_BOX_H * w}")
+        parts.append(
+            f"  {work_investment:,}t captured "
+            f"{_BOX_V} {read_tokens:,}t to read "
+            f"{_BOX_V} {savings_pct}% saved"
         )
-        parts.append(footer)
-
         ui_port = self.config.ui.port
         ui_host = self.config.ui.host
-        parts.append(f"View observations live @ http://{ui_host}:{ui_port}")
+        parts.append(
+            f"  Web UI: http://{ui_host}:{ui_port}"
+        )
 
         return parts
 

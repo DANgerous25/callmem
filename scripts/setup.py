@@ -517,7 +517,10 @@ _SESSION_SUMMARY_SNIPPET = (
     "\n## Startup briefing\n\n"
     "At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) "
     "if it exists. It contains an auto-generated briefing with recent context, key "
-    "entities, and open tasks from previous sessions.\n"
+    "entities, and open tasks from previous sessions.\n\n"
+    "After reading it, present a brief summary to the user: greet them, state the "
+    "project name, mention the most recent session activity, highlight any open TODOs "
+    "or unresolved failures, and ask what they'd like to work on.\n"
 )
 
 

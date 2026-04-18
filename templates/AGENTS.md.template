@@ -6,9 +6,9 @@ This project uses llm-mem for persistent memory across coding sessions.
 
 **Start of session:**
 1. Read `SESSION_SUMMARY.md` (if it exists) — it contains an auto-generated briefing with recent context, key entities, and open tasks from previous sessions
-2. Call `mem_session_start` to register this session
-3. The returned briefing contains additional context from previous sessions
-4. Read both carefully before starting work
+2. Present a brief summary to the user: greet them, state the project name, mention the most recent session activity, highlight any open TODOs or unresolved failures, and ask what they'd like to work on
+3. Call `mem_session_start` to register this session
+4. The returned briefing contains additional context from previous sessions
 
 **During the session:**
 - When you make an important decision, call `mem_ingest` with type "decision"
