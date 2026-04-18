@@ -30,7 +30,15 @@ SESSION_SUMMARY.md
 .llm-mem/vault.salt
 vault.key
 vault.salt
+*.key
+*.pem
+*.salt
+*.bak
+llm_mem.db
 .llm-mem/SESSION.*.md
+.llm-mem/config.toml.bak
+.llm-mem/import.lock
+.llm-mem/import_progress.json
 
 # Testing
 .pytest_cache/
