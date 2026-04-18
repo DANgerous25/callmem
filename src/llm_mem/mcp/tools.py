@@ -251,6 +251,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "mem_vault_review",
+        "description": (
+            "Mark a vault entry as a false positive, un-redacting the "
+            "original content in the associated event."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["vault_id"],
+            "properties": {
+                "vault_id": {
+                    "type": "string",
+                    "description": "ID of the vault entry to mark as false positive",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -379,7 +396,7 @@ def handle_search_index(
     for r in results:
         eid = r.get("id", "")[:8]
         etype = r.get("type", "")
-        title = r.get("title", "")
+        title = r.get("title") or ""
         date = (r.get("timestamp") or r.get("created_at", ""))[:10]
         files = engine.repo.get_files_for_entity(r.get("id", ""))
         file_names = ", ".join(
@@ -459,6 +476,19 @@ def handle_search_by_file(
     return _make_result({"entities": results, "count": len(results)})
 
 
+def handle_vault_review(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    vault_id = args.get("vault_id", "")
+    if not vault_id:
+        return _make_error("vault_id is required")
+    try:
+        engine.mark_false_positive(vault_id)
+    except ValueError as exc:
+        return _make_error(str(exc))
+    return _make_result({"vault_id": vault_id, "status": "false_positive"})
+
+
 _HANDLERS: dict[str, Any] = {
     "mem_session_start": handle_session_start,
     "mem_session_end": handle_session_end,
@@ -471,4 +501,5 @@ _HANDLERS: dict[str, Any] = {
     "mem_timeline": handle_timeline,
     "mem_get_entities": handle_get_entities,
     "mem_search_by_file": handle_search_by_file,
+    "mem_vault_review": handle_vault_review,
 }

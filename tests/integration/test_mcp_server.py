@@ -107,3 +107,72 @@ class TestMCPToolCalls:
             result = await client.call_tool("mem_session_end", {})
             data = json.loads(result.content[0].text)
             assert "error" in data
+
+
+class TestMCPAdvancedTools:
+    @pytest.mark.anyio
+    async def test_get_briefing(self, mcp_server: object) -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            result = await client.call_tool("mem_get_briefing", {})
+            data = json.loads(result.content[0].text)
+            assert "content" in data
+            assert "project_name" in data
+
+    @pytest.mark.anyio
+    async def test_get_briefing_with_max_tokens(self, mcp_server: object) -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            result = await client.call_tool("mem_get_briefing", {"max_tokens": 500})
+            data = json.loads(result.content[0].text)
+            assert "content" in data
+
+    @pytest.mark.anyio
+    async def test_search_index(self, mcp_server: object) -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            await client.call_tool("mem_session_start", {})
+            await client.call_tool("mem_ingest", {
+                "events": [{"type": "decision", "content": "Use FastAPI for API"}],
+            })
+            result = await client.call_tool("mem_search_index", {"query": "FastAPI"})
+            data = json.loads(result.content[0].text)
+            assert "index" in data
+            assert "count" in data
+
+    @pytest.mark.anyio
+    async def test_search_by_file(self, mcp_server: object) -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            result = await client.call_tool("mem_search_by_file", {
+                "file_path": "src/main.py",
+            })
+            data = json.loads(result.content[0].text)
+            assert "entities" in data
+            assert "count" in data
+
+    @pytest.mark.anyio
+    async def test_get_entities_empty(self, mcp_server: object) -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            result = await client.call_tool("mem_get_entities", {
+                "ids": ["nonexistent_id"],
+            })
+            data = json.loads(result.content[0].text)
+            assert data["count"] == 0
+
+    @pytest.mark.anyio
+    async def test_vault_review_nonexistent(self, mcp_server: object) -> None:
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            result = await client.call_tool("mem_vault_review", {
+                "vault_id": "nonexistent",
+            })
+            data = json.loads(result.content[0].text)
+            assert "error" in data

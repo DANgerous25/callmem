@@ -69,7 +69,15 @@ async def save_settings(request: Request) -> HTMLResponse:
 
     existing = {}
     if config_file.exists():
-        existing = tomllib.loads(config_file.read_text())
+        raw = config_file.read_text()
+        try:
+            existing = tomllib.loads(raw)
+        except Exception:
+            try:
+                import json
+                existing = json.loads(raw)
+            except Exception:
+                existing = {}
 
     max_tokens = int(form_data.get("briefing_max_tokens", 2000))
     existing.setdefault("briefing", {})["max_tokens"] = max_tokens
