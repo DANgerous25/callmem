@@ -6,29 +6,37 @@ See WO-06 and WO-08 for usage.
 
 from __future__ import annotations
 
-EXTRACTION_PROMPT = """Analyze this coding session exchange and extract structured information.
+EXTRACTION_PROMPT = """Analyze this coding session exchange and extract ONLY significant, non-trivial information.
 
 Events:
 {events_text}
 
-Extract the following (only include items that are clearly present — do not invent):
+RULES:
+- Extract ONLY items that provide genuine, durable value to a future developer
+- Do NOT extract items that merely restate what happened — focus on WHY and WHAT NEXT
+- Do NOT create multiple items for the same concept (e.g., if a bug is found and fixed, create ONE bugfix entry, not a separate failure + todo + bugfix)
+- If an event is routine or low-signal (e.g., "ran tests", "pushed changes"), skip it entirely
+- key_points must contain SPECIFIC technical details (file paths, function names, error messages, exact config values), not vague restatements
+- Prefer fewer high-quality items over many shallow ones
 
-1. **Decisions**: What was decided and why (architectural/design choices)
-2. **TODOs**: Tasks mentioned that need to be done (with priority if stated)
-3. **Facts**: Durable project knowledge (e.g., "the API uses cursor-based pagination")
-4. **Failures**: What went wrong, error messages, whether resolved
-5. **Discoveries**: Notable insights or learnings
-6. **Features**: New functionality added or implemented
-7. **Bugfixes**: Bugs identified and/or fixed
-8. **Research**: Investigation, analysis, or exploration work
-9. **Changes**: General file or code changes that don't fit other categories
+Categories (only include items that are clearly and meaningfully present):
 
-For each extracted item, provide:
-- "title": a concise 1-line summary
-- "content": a detailed description (1-3 sentences)
-- "key_points": a list of 2-5 bullet points capturing the essential information
-- "synopsis": a flowing prose paragraph (2-4 sentences) giving full context
-- "files": a list of file paths mentioned or affected (e.g., ["src/auth.py", "config.toml"])
+1. **decisions**: Architectural or design choices with rationale — WHY was X chosen over Y
+2. **todos**: Concrete tasks with enough detail to act on — must include what file/area and what to do
+3. **facts**: Durable project knowledge a new developer would need — e.g., "auth uses JWT with RS256", "the scheduler runs in a goroutine pool of 4"
+4. **failures**: Bugs or errors with actual error messages, root cause, and resolution status
+5. **features**: Significant new functionality — not trivial UI tweaks or copy changes
+6. **bugfixes**: Bugs that were fixed — include root cause and the fix approach
+7. **discoveries**: Non-obvious insights — e.g., "SQLite WAL mode doesn't work over NFS"
+8. **research**: Investigation that yielded actionable conclusions
+9. **changes**: Notable code/architecture changes not covered above
+
+For each item:
+- "title": concise specific summary (not generic — "Fix FK constraint in vault insertion" not "Fix database issue")
+- "content": 1-3 sentences with concrete details (file paths, function names, values)
+- "key_points": 2-5 bullets with SPECIFIC technical details, NOT vague restatements of the title
+- "synopsis": 2-4 sentence narrative paragraph giving full context for someone who wasn't there
+- "files": file paths mentioned or affected
 
 Respond in this exact JSON format:
 {{
