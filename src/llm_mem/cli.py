@@ -439,6 +439,7 @@ def daemon(
 
             worker_runner = WorkerRunner(
                 db, llm_client, config,
+                event_bus=app.state.event_bus,
                 project_path=str(project),
             )
             worker_runner.start()
