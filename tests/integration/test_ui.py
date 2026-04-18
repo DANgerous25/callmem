@@ -254,6 +254,42 @@ class TestEntities:
         assert response.status_code == 200
 
 
+class TestSettings:
+    def test_settings_page_loads(self, ui_client: TestClient) -> None:
+        response = ui_client.get("/settings")
+        assert response.status_code == 200
+        assert "briefing_max_tokens" in response.text
+
+    def test_settings_page_shows_current_config(self, ui_client: TestClient) -> None:
+        response = ui_client.get("/settings")
+        assert response.status_code == 200
+        assert "2000" in response.text or "briefing" in response.text.lower()
+
+    def test_settings_save(self, ui_client_with_data: TestClient) -> None:
+        response = ui_client_with_data.post("/settings", data={
+            "briefing_max_tokens": "3000",
+            "briefing_max_per_type": "25",
+            "briefing_default_view": "key_points",
+            "llm_backend": "ollama",
+            "ollama_model": "qwen3:8b",
+            "ollama_endpoint": "http://localhost:11434",
+            "ui_port": "9090",
+            "ui_host": "0.0.0.0",
+            "extraction_batch_size": "10",
+        })
+        assert response.status_code == 200
+        assert "saved" in response.text or "3000" in response.text
+
+    def test_briefing_preview(self, ui_client_with_data: TestClient) -> None:
+        response = ui_client_with_data.get("/partials/briefing-preview")
+        assert response.status_code == 200
+        assert "<!DOCTYPE" not in response.text
+
+    def test_briefing_preview_with_max_tokens(self, ui_client_with_data: TestClient) -> None:
+        response = ui_client_with_data.get("/partials/briefing-preview?max_tokens=500")
+        assert response.status_code == 200
+
+
 class TestBriefing:
     def test_briefing_page(self, ui_client_with_data: TestClient) -> None:
         response = ui_client_with_data.get("/briefing")
