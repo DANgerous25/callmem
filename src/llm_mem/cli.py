@@ -35,6 +35,34 @@ def _ensure_agents_session_summary(agents_path: Path) -> None:
     agents_path.write_text(content, encoding="utf-8")
 
 
+def _ensure_opencode_instructions(project: Path) -> None:
+    """Ensure opencode.json has SESSION_SUMMARY.md in its instructions array."""
+    import json
+
+    oc_path = None
+    for name in ("opencode.json", ".opencode.json", "opencode.jsonc"):
+        candidate = project / name
+        if candidate.exists():
+            oc_path = candidate
+            break
+
+    if oc_path is None:
+        return
+
+    try:
+        oc_config = json.loads(oc_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+
+    instructions = oc_config.get("instructions", [])
+    if "SESSION_SUMMARY.md" in instructions:
+        return
+
+    instructions.append("SESSION_SUMMARY.md")
+    oc_config["instructions"] = instructions
+    oc_path.write_text(json.dumps(oc_config, indent=2) + "\n", encoding="utf-8")
+
+
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 def setup(project: Path) -> None:
@@ -82,6 +110,7 @@ def init(project: Path) -> None:
         agents_path.write_text(agents_template.read_text())
 
     _ensure_agents_session_summary(agents_path)
+    _ensure_opencode_instructions(project)
 
     click.echo(f"Initialized llm-mem in {llm_mem_dir}")
     click.echo(f"  Database: {db_path}")
