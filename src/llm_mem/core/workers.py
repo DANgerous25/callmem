@@ -91,6 +91,7 @@ class WorkerRunner:
             self._dispatch(handler, job)
             self.queue.complete(job.id)
             logger.info("Job %s completed", job.id[:8])
+            self._publish_queue_status()
             if job.type == "extract_entities":
                 self._extractions_since_summary += 1
                 if self._extractions_since_summary >= 5:
@@ -99,6 +100,7 @@ class WorkerRunner:
         except Exception as exc:
             logger.error("Job %s failed: %s", job.id[:8], exc)
             self.queue.fail(job.id, str(exc))
+            self._publish_queue_status()
 
         return True
 
@@ -111,6 +113,15 @@ class WorkerRunner:
             handler.run(project_id)
         else:
             raise RuntimeError(f"No dispatch for handler: {type(handler)}")
+
+    def _publish_queue_status(self) -> None:
+        """Publish queue status via event_bus if available."""
+        if self.event_bus is not None:
+            try:
+                counts = self.queue.get_status_summary()
+                self.event_bus.publish("queue_updated", counts)
+            except Exception as exc:
+                logger.warning("Failed to publish queue status: %s", exc)
 
     def _maybe_write_session_summary(self) -> None:
         """Write SESSION_SUMMARY.md if auto-write is enabled and project_path is set."""

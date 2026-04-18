@@ -187,3 +187,17 @@ class JobQueue:
             return Job.from_row(dict(row))
         finally:
             conn.close()
+
+    def get_status_summary(self) -> dict[str, int]:
+        """Return counts by status."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as c FROM jobs GROUP BY status"
+            ).fetchall()
+            counts: dict[str, int] = {"pending": 0, "completed": 0, "failed": 0}
+            for r in rows:
+                counts[r["status"]] = r["c"]
+            return counts
+        finally:
+            conn.close()
