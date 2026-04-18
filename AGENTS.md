@@ -202,3 +202,17 @@ Each work order specifies:
 
 Do not skip ahead. Do not partially implement a work order and start the next one.
 Complete all acceptance criteria before moving on.
+
+## Memory (llm-mem)
+
+This project uses llm-mem for persistent memory via MCP tools.
+
+**At session start:** Call `mem_get_briefing` to load context from previous sessions.
+**After completing a task or meaningful discussion:** Call `mem_ingest` with a summary of what happened.
+**To search past context:** Call `mem_search` with relevant keywords.
+
+These tools replace the `.memory/` flat files. Use them instead.
+
+## Startup briefing
+
+At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) if it exists. It contains an auto-generated briefing with recent context, key entities, and open tasks from previous sessions.
