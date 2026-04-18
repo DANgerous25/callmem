@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,39 @@ from jinja2 import Environment, FileSystemLoader
 
 if TYPE_CHECKING:
     from llm_mem.core.engine import MemoryEngine
+
+from llm_mem.compat import UTC
+
+
+def _relative_time(ts: str) -> str:
+    """Convert an ISO timestamp to a human-friendly relative or local string."""
+    if not ts:
+        return ""
+    try:
+        clean = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(UTC)
+        diff = now - dt
+        total_secs = int(diff.total_seconds())
+        if total_secs < 0:
+            total_secs = 0
+        if total_secs < 60:
+            return "just now"
+        if total_secs < 3600:
+            mins = total_secs // 60
+            return f"{mins}m ago"
+        if total_secs < 86400:
+            hours = total_secs // 3600
+            return f"{hours}h ago"
+        if total_secs < 604800:
+            days = total_secs // 86400
+            return f"{days}d ago"
+        return dt.strftime("%b %d, %I:%M %p")
+    except (ValueError, TypeError):
+        return ts[:19].replace("T", " ")
 
 
 def create_app(engine: MemoryEngine) -> FastAPI:
@@ -32,6 +66,7 @@ def create_app(engine: MemoryEngine) -> FastAPI:
 
     env.filters["basename"] = _basename
     env.filters["format_number"] = lambda n: f"{n:,}" if isinstance(n, int) else str(n)
+    env.filters["relative_time"] = _relative_time
 
     app.state.engine = engine
     app.state.templates = env

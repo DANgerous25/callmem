@@ -9,7 +9,7 @@
     {% endif %}
     <span class="feed-card-title-inline">{{ item.title }}</span>
     <span class="feed-project">{{ item.project_name }}</span>
-    <span class="feed-card-time-inline">{{ item.timestamp[:19] | replace("T", " ") }}</span>
+    <span class="feed-card-time-inline" title="{{ item.timestamp[:19] | replace('T', ' ') }}">{{ item.timestamp | relative_time }}</span>
   </summary>
   {% if item.kind == 'entity' and (item.key_points or item.content) %}
   <div class="feed-card-content">
