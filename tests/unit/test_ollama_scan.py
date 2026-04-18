@@ -182,4 +182,67 @@ class TestConfidenceThreshold:
         assert event.metadata["scan_status"] == "pattern_only"
 
 
+class TestExtractMethod:
+    def test_extract_returns_response(self) -> None:
+        client = OllamaClient()
+        with patch.object(client, "_generate", return_value="extraction result"):
+            result = client.extract("test prompt")
+        assert result == "extraction result"
+
+    def test_extract_returns_none_on_failure(self) -> None:
+        client = OllamaClient()
+        with patch.object(client, "_generate", return_value=None):
+            result = client.extract("test prompt")
+        assert result is None
+
+    def test_extract_passes_prompt_through(self) -> None:
+        client = OllamaClient()
+        with patch.object(client, "_generate", return_value="ok") as mock:
+            client.extract("my special prompt")
+        mock.assert_called_once_with("my special prompt")
+
+
+class TestGenerateHttpErrors:
+    def test_generate_handles_http_500(self) -> None:
+        client = OllamaClient()
+        with patch("llm_mem.core.ollama.httpx.post") as mock_post:
+            import httpx
+            mock_post.return_value.raise_for_status.side_effect = (
+                httpx.HTTPStatusError("500", request=httpx.Request("POST", "http://x"), response=httpx.Response(500))
+            )
+            result = client._generate("test")
+        assert result is None
+
+
+class TestParseFindingsEdgeCases:
+    def test_non_list_json_returns_empty(self) -> None:
+        client = OllamaClient()
+        result = client._parse_findings("content", '{"key": "value"}')
+        assert result == []
+
+    def test_item_missing_value_skipped(self) -> None:
+        client = OllamaClient()
+        result = client._parse_findings(
+            "some content",
+            '[{"category": "secret", "confidence": 0.9}]',
+        )
+        assert result == []
+
+    def test_item_zero_confidence_skipped(self) -> None:
+        client = OllamaClient()
+        result = client._parse_findings(
+            "password hunter2",
+            '[{"value": "hunter2", "category": "secret", "confidence": 0}]',
+        )
+        assert result == []
+
+    def test_non_dict_items_skipped(self) -> None:
+        client = OllamaClient()
+        result = client._parse_findings(
+            "password hunter2",
+            '["string_item", 42, true]',
+        )
+        assert result == []
+
+
 # Import for type hint in test methods

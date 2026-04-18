@@ -139,3 +139,52 @@ class TestIngestWithRedaction:
 
         with pytest.raises(ValueError, match="Vault entry not found"):
             engine.mark_false_positive("nonexistent_id")
+
+    def test_false_positive_idempotent(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("note", "key = AKIAIOSFODNN7EXAMPLE")
+        assert event is not None
+
+        conn = memory_db.connect()
+        try:
+            vault_row = conn.execute("SELECT * FROM vault LIMIT 1").fetchone()
+            vault_id = vault_row["id"]
+        finally:
+            conn.close()
+
+        engine.mark_false_positive(vault_id)
+        result = engine.mark_false_positive(vault_id)
+        assert result["false_positive"] == 1
+
+    def test_false_positive_restores_correct_value(
+        self, memory_db: Database
+    ) -> None:
+        engine = _make_engine(memory_db)
+        engine.start_session()
+        event = engine.ingest_one(
+            "note",
+            "aws AKIAIOSFODNN7EXAMPLE and github ghp_ABCDEFghijklmnopqrstuvwxyz1234567890",
+        )
+        assert event is not None
+        assert event.content.count("[REDACTED:") >= 2
+
+        conn = memory_db.connect()
+        try:
+            rows = conn.execute("SELECT * FROM vault").fetchall()
+            aws_vault_id = None
+            for r in rows:
+                placeholder = f"[REDACTED:secret:{r['id']}]"
+                if placeholder in event.content:
+                    aws_vault_id = r["id"]
+                    break
+            assert aws_vault_id is not None
+        finally:
+            conn.close()
+
+        engine.mark_false_positive(aws_vault_id)
+
+        refreshed = engine.get_event(event.id)
+        assert refreshed is not None
+        assert "AKIAIOSFODNN7EXAMPLE" in refreshed.content
+        assert "ghp_" not in refreshed.content
