@@ -437,13 +437,16 @@ class MemoryEngine:
         metadata = dict(inp.metadata) if inp.metadata else {}
         metadata["scan_status"] = scan_status
 
-        event = Event(
-            session_id=session.id,
-            project_id=session.project_id,
-            type=inp.type,
-            content=content,
-            metadata=metadata,
-        )
+        event_kwargs: dict[str, Any] = {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "type": inp.type,
+            "content": content,
+            "metadata": metadata,
+        }
+        if inp.timestamp is not None:
+            event_kwargs["timestamp"] = inp.timestamp
+        event = Event(**event_kwargs)
         self.repo.insert_event(event)
 
         if detections:

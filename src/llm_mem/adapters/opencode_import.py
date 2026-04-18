@@ -270,23 +270,24 @@ def _map_message(message: dict[str, Any]) -> list[EventInput]:
     events: list[EventInput] = []
     role = message.get("role", "")
     content = message.get("content", "")
+    ts = message.get("timestamp")
 
     if content:
         if role == "user":
-            events.append(EventInput(type="prompt", content=content))
+            events.append(EventInput(type="prompt", content=content, timestamp=ts))
         elif role == "assistant":
-            events.append(EventInput(type="response", content=content))
+            events.append(EventInput(type="response", content=content, timestamp=ts))
 
     for tc in message.get("tool_calls", []):
         name = tc.get("name", "unknown")
         args = tc.get("args", "")
         tc_content = f"{name}({args})" if args else name
-        events.append(EventInput(type="tool_call", content=tc_content))
+        events.append(EventInput(type="tool_call", content=tc_content, timestamp=ts))
 
     for fc in message.get("file_changes", []):
         path = fc.get("path", "unknown")
         change = fc.get("change", "modified")
-        events.append(EventInput(type="file_change", content=f"{change}: {path}"))
+        events.append(EventInput(type="file_change", content=f"{change}: {path}", timestamp=ts))
 
     return events
 

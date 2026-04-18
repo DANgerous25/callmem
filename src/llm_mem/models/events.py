@@ -24,6 +24,7 @@ class EventInput(BaseModel):
     type: EventType
     content: str
     metadata: dict[str, Any] | None = None
+    timestamp: str | None = None
 
 
 class Event(BaseModel):

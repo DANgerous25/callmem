@@ -86,7 +86,7 @@
 
         var category = data.type || kind;
         var title = data.title || (kind === 'session' ? 'Session started' : 'New event');
-        var time = (data.created_at || data.started_at || '').substring(0, 19).replace('T', ' ');
+        var time = relativeTime(data.created_at || data.started_at || '');
 
         card.innerHTML = '<span class="badge badge-' + category + '">' + category.toUpperCase() + '</span> ' +
             '<strong style="color:#e2e8f0;">' + escapeHtml(title) + '</strong> ' +
@@ -106,6 +106,20 @@
         var div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    function relativeTime(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return ts.substring(0, 19).replace('T', ' ');
+        var now = new Date();
+        var secs = Math.floor((now - d) / 1000);
+        if (secs < 0) secs = 0;
+        if (secs < 60) return 'just now';
+        if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+        if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+        if (secs < 604800) return Math.floor(secs / 86400) + 'd ago';
+        return d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
     }
 
     function startFallbackPolling() {
