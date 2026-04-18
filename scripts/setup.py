@@ -1072,11 +1072,15 @@ vault_mode = "{vault_mode}"
         if "mcp" not in oc_config:
             oc_config["mcp"] = {}
 
+        detected_cmd = _detect_mcp_command(project)
+        old_cmd = oc_config["mcp"].get("llm-mem", {}).get("command")
         oc_config["mcp"]["llm-mem"] = {
             "type": "local",
-            "command": _detect_mcp_command(project),
+            "command": detected_cmd,
             "enabled": True,
         }
+        if old_cmd is not None and old_cmd != detected_cmd:
+            print("  Updated MCP server command in opencode.json")
 
         # Ensure SESSION_SUMMARY.md is loaded into context at startup
         instructions = oc_config.get("instructions", [])
