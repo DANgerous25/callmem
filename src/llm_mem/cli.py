@@ -138,6 +138,7 @@ def _ensure_opencode_instructions(project: Path) -> None:
     llm_mem_mcp = mcp.get("llm-mem", {})
     detected_cmd = _detect_mcp_command(project)
     if llm_mem_mcp.get("command") != detected_cmd:
+        existed = "llm-mem" in mcp
         if "mcp" not in oc_config:
             oc_config["mcp"] = {}
         oc_config["mcp"]["llm-mem"] = {
@@ -146,6 +147,8 @@ def _ensure_opencode_instructions(project: Path) -> None:
             "enabled": True,
         }
         changed = True
+        if existed:
+            click.echo("Updated MCP server command in opencode.json")
 
     # Ensure SESSION_SUMMARY.md in instructions
     instructions = oc_config.get("instructions", [])
