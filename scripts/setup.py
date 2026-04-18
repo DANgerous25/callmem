@@ -595,6 +595,46 @@ def _ensure_agents_session_summary(agents_path: Path) -> None:
     print("  Patched AGENTS.md with SESSION_SUMMARY.md startup reference")
 
 
+_MCP_BLOCK_SNIPPET = (
+
+    "\n## Memory (llm-mem)\n\n"
+    "This project uses llm-mem for persistent memory via MCP tools.\n\n"
+    "**Start of session:**\n"
+    "1. Read `SESSION_SUMMARY.md` (if it exists) for an auto-generated briefing\n"
+    "2. Call `mem_session_start` to register this session\n"
+    "3. Present a brief summary: greet the user, mention recent activity, highlight open TODOs\n\n"
+    "**During the session:**\n"
+    "- When you make a design decision, call `mem_ingest` with type \"decision\"\n"
+    "- When you identify a TODO, call `mem_ingest` with type \"todo\"\n"
+    "- When you discover something notable, call `mem_ingest` with type \"discovery\"\n"
+    "- When something fails unexpectedly, call `mem_ingest` with type \"failure\"\n"
+    "- To recall past context, call `mem_search` with keywords\n"
+    "- To see open tasks, call `mem_get_tasks`\n\n"
+    "**End of session:**\n"
+    "- Call `mem_session_end` to trigger summary generation\n\n"
+    "**Guidelines:**\n"
+    "- Be specific in memory content (include file paths, function names, error messages)\n"
+    "- Set priority on TODOs: high, medium, or low\n"
+    "- Mark failures as resolved when you fix them\n"
+    "- The system captures raw events automatically — focus on recording decisions and TODOs\n"
+)
+
+_MCP_SENTINELS = ("## Memory (llm-mem)", "mem_ingest", "mem_session_start")
+
+
+def _ensure_agents_mcp_block(agents_path: Path) -> None:
+    """Patch an existing AGENTS.md with llm-mem MCP tool usage instructions."""
+    if not agents_path.exists():
+        return
+    content = agents_path.read_text(encoding="utf-8")
+    if any(s in content for s in _MCP_SENTINELS):
+        print("  AGENTS.md already has llm-mem instructions")
+        return
+    content += _MCP_BLOCK_SNIPPET
+    agents_path.write_text(content, encoding="utf-8")
+    print("  Patched AGENTS.md with llm-mem MCP tool instructions")
+
+
 # ── OpenCode plugin / command provisioning ─────────────────────────
 
 
@@ -1043,6 +1083,7 @@ vault_mode = "{vault_mode}"
 
     # ── AGENTS.md — ensure SESSION_SUMMARY.md reference ──────────
     _ensure_agents_session_summary(project / "AGENTS.md")
+    _ensure_agents_mcp_block(project / "AGENTS.md")
 
     # ── Generate initial briefing ────────────────────────────────
     _generate_initial_briefing(project, db_path)

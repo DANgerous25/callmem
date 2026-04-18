@@ -207,12 +207,24 @@ Complete all acceptance criteria before moving on.
 
 This project uses llm-mem for persistent memory via MCP tools.
 
-**At session start:** Call `mem_get_briefing` to load context from previous sessions.
-**After completing a task or meaningful discussion:** Call `mem_ingest` with a summary of what happened.
-**To search past context:** Call `mem_search` with relevant keywords.
+**Start of session:**
+1. Read `SESSION_SUMMARY.md` (if it exists) for an auto-generated briefing
+2. Call `mem_session_start` to register this session
+3. Present a brief summary: greet the user, mention recent activity, highlight open TODOs
 
-These tools replace the `.memory/` flat files. Use them instead.
+**During the session:**
+- When you make a design decision, call `mem_ingest` with type "decision"
+- When you identify a TODO, call `mem_ingest` with type "todo"
+- When you discover something notable, call `mem_ingest` with type "discovery"
+- When something fails unexpectedly, call `mem_ingest` with type "failure"
+- To recall past context, call `mem_search` with keywords
+- To see open tasks, call `mem_get_tasks`
 
-## Startup briefing
+**End of session:**
+- Call `mem_session_end` to trigger summary generation
 
-At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) if it exists. It contains an auto-generated briefing with recent context, key entities, and open tasks from previous sessions.
+**Guidelines:**
+- Be specific in memory content (include file paths, function names, error messages)
+- Set priority on TODOs: high, medium, or low
+- Mark failures as resolved when you fix them
+- The system captures raw events automatically — focus on recording decisions and TODOs
