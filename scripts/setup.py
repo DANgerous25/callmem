@@ -766,6 +766,35 @@ def _ensure_opencode_plugin(project: Path) -> None:
         print("  OpenCode plugin and command already up to date")
 
 
+def _ensure_claude_code_commands(project: Path) -> None:
+    """Install Claude Code /briefing slash command if missing or outdated."""
+    import filecmp
+
+    templates_dir = Path(__file__).parent / "templates" / "claude"
+    if not templates_dir.is_dir():
+        templates_dir = Path(__file__).parent.parent / "templates" / "claude"
+    if not templates_dir.is_dir():
+        return
+
+    targets = [
+        (templates_dir / "commands" / "briefing.md", project / ".claude" / "commands" / "briefing.md"),
+    ]
+
+    installed: list[str] = []
+    for src, dst in targets:
+        if not src.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            installed.append(dst.name)
+
+    if installed:
+        print(f"  Installed Claude Code commands: {', '.join(installed)}")
+    else:
+        print("  Claude Code commands already up to date")
+
+
 # ── Initial briefing generation ────────────────────────────────────
 
 
@@ -1278,6 +1307,7 @@ vault_mode = "{vault_mode}"
         print()
         print("── Claude Code MCP ──")
         _ensure_claude_code_mcp(project)
+        _ensure_claude_code_commands(project)
 
     if tool_choice == "skip":
         print("  Skipped coding tool integration.")
