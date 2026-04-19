@@ -75,6 +75,15 @@ class SensitiveDataConfig(BaseModel):
     vault_mode: str = "auto"
 
 
+class AdaptersConfig(BaseModel):
+    """Which live session adapters to run inside the daemon."""
+
+    opencode: bool = True
+    claude_code: bool = True
+    claude_code_idle_timeout: float = 300.0
+    claude_code_poll_interval: float = 2.0
+
+
 class Config(BaseModel):
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     llm: LLMBackendConfig = Field(default_factory=LLMBackendConfig)
@@ -86,6 +95,7 @@ class Config(BaseModel):
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)
+    adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
 
     @model_validator(mode="after")
     def _validate_config(self) -> Config:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -545,30 +546,57 @@ def daemon(
     else:
         click.echo("  Workers:  disabled")
 
-    # Adapter
-    adapter_instance = None
+    # Adapters: OpenCode SSE + Claude Code JSONL tailer. Each is
+    # independently gated by --no-adapter and the [adapters] config.
+    adapter_instances: list[Any] = []
     if not no_adapter:
-        from llm_mem.adapters.opencode import OpenCodeAdapter
+        if config.adapters.opencode:
+            from llm_mem.adapters.opencode import OpenCodeAdapter
 
-        adapter_instance = OpenCodeAdapter(
-            engine, opencode_url=opencode_url
-        )
+            oc = OpenCodeAdapter(engine, opencode_url=opencode_url)
+            adapter_instances.append(oc)
 
-        def _run_adapter() -> None:
-            try:
-                assert adapter_instance is not None
-                adapter_instance.run()
-            except Exception:
-                pass
+            def _run_oc(adapter: OpenCodeAdapter = oc) -> None:
+                import contextlib
+                with contextlib.suppress(Exception):
+                    adapter.run()
 
-        t = threading.Thread(
-            target=_run_adapter, daemon=True, name="llm-mem-adapter"
-        )
-        t.start()
-        threads.append(t)
-        click.echo(f"  Adapter:  {opencode_url}")
+            t = threading.Thread(
+                target=_run_oc, daemon=True, name="llm-mem-opencode-adapter",
+            )
+            t.start()
+            threads.append(t)
+            click.echo(f"  OpenCode: {opencode_url}")
+        else:
+            click.echo("  OpenCode: disabled (config)")
+
+        if config.adapters.claude_code:
+            from llm_mem.adapters.claude_code import ClaudeCodeAdapter
+
+            cc = ClaudeCodeAdapter(
+                engine,
+                project_path=project.resolve(),
+                poll_interval=config.adapters.claude_code_poll_interval,
+                idle_timeout=config.adapters.claude_code_idle_timeout,
+            )
+            adapter_instances.append(cc)
+
+            def _run_cc(adapter: ClaudeCodeAdapter = cc) -> None:
+                import contextlib
+                with contextlib.suppress(Exception):
+                    adapter.run()
+
+            t = threading.Thread(
+                target=_run_cc, daemon=True,
+                name="llm-mem-claude-code-adapter",
+            )
+            t.start()
+            threads.append(t)
+            click.echo(f"  Claude:   {cc.cc_dir}")
+        else:
+            click.echo("  Claude:   disabled (config)")
     else:
-        click.echo("  Adapter:  disabled")
+        click.echo("  Adapters: disabled (--no-adapter)")
 
     click.echo(
         f"  UI:       http://{actual_host}:{actual_port}"
@@ -582,8 +610,8 @@ def daemon(
     def _shutdown(sig: int, frame: object) -> None:
         click.echo("\nShutting down...")
         stop_event.set()
-        if adapter_instance is not None:
-            adapter_instance.stop()
+        for a in adapter_instances:
+            a.stop()
         if worker_runner is not None:
             worker_runner.stop()
 
@@ -602,8 +630,8 @@ def daemon(
         pass
     finally:
         stop_event.set()
-        if adapter_instance is not None:
-            adapter_instance.stop()
+        for a in adapter_instances:
+            a.stop()
         if worker_runner is not None:
             worker_runner.stop()
         for t in threads:
@@ -614,7 +642,7 @@ def daemon(
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option(
     "--source",
-    type=click.Choice(["opencode"]),
+    type=click.Choice(["opencode", "claude-code"]),
     required=True,
     help="Source to import from.",
 )
@@ -650,10 +678,6 @@ def import_cmd(
         _show_import_status(project)
         return
 
-    from llm_mem.adapters.opencode_import import (
-        DEFAULT_DB_PATH,
-        import_sessions,
-    )
     from llm_mem.core.config import load_config
     from llm_mem.core.database import Database
     from llm_mem.core.engine import MemoryEngine
@@ -663,15 +687,6 @@ def import_cmd(
     if not db_path.exists():
         click.echo(f"No llm-mem database found at {db_path}")
         click.echo("Run 'llm-mem init' first.")
-        return
-
-    oc_db = opencode_db if opencode_db is not None else DEFAULT_DB_PATH
-    click.echo(f"Reading {source} sessions from {oc_db}...")
-
-    if background and not dry_run:
-        _run_background_import(
-            project, source, oc_db, session_id, project_path,
-        )
         return
 
     db = Database(db_path)
@@ -689,9 +704,10 @@ def import_cmd(
         progress_updates.append(update)
         phase = update.get("phase", "")
         if phase == "discovery":
+            est = update.get("total_events_estimate")
+            est_str = f" (~{est} events)" if est is not None else ""
             click.echo(
-                f"  Discovered {update['total_sessions']} sessions "
-                f"(~{update['total_events_estimate']} events)"
+                f"  Discovered {update['total_sessions']} sessions{est_str}"
             )
         elif phase == "importing":
             idx = update["session_index"]
@@ -701,22 +717,58 @@ def import_cmd(
             pct = idx / total if total else 0
             filled = int(20 * pct)
             bar = "\u2588" * filled + "\u2591" * (20 - filled)
+            events_so_far = update.get("total_events_so_far", 0)
+            skipped = " [skip]" if update.get("skipped") else ""
             click.echo(
                 f"  [{bar}] {idx}/{total} sessions "
-                f"({update['total_events_so_far']} events) "
-                f"— {title} ({events} events)"
+                f"({events_so_far} events) "
+                f"— {title} ({events} events){skipped}"
             )
 
-    results = import_sessions(
-        engine,
-        db_path=oc_db,
-        session_id=session_id,
-        project_path=project_path,
-        import_all=import_all,
-        dry_run=dry_run,
-        progress_callback=_on_progress,
-        project=project,
-    )
+    if source == "claude-code":
+        from llm_mem.adapters.claude_code_import import (
+            import_sessions as cc_import_sessions,
+        )
+
+        click.echo(f"Reading Claude Code transcripts for {project.resolve()}...")
+        if background and not dry_run:
+            _run_background_import(
+                project, source, None, session_id, project_path,
+            )
+            return
+
+        results = cc_import_sessions(
+            engine,
+            project_path=project.resolve(),
+            progress_callback=_on_progress,
+            project=project,
+            dry_run=dry_run,
+        )
+    else:
+        from llm_mem.adapters.opencode_import import (
+            DEFAULT_DB_PATH,
+            import_sessions,
+        )
+
+        oc_db = opencode_db if opencode_db is not None else DEFAULT_DB_PATH
+        click.echo(f"Reading {source} sessions from {oc_db}...")
+
+        if background and not dry_run:
+            _run_background_import(
+                project, source, oc_db, session_id, project_path,
+            )
+            return
+
+        results = import_sessions(
+            engine,
+            db_path=oc_db,
+            session_id=session_id,
+            project_path=project_path,
+            import_all=import_all,
+            dry_run=dry_run,
+            progress_callback=_on_progress,
+            project=project,
+        )
 
     if not results:
         click.echo("No sessions found.")
@@ -804,7 +856,7 @@ def _show_import_status(project: Path) -> None:
 def _run_background_import(
     project: Path,
     source: str,
-    oc_db: Path,
+    oc_db: Path | None,
     session_id: str | None,
     project_path: str | None,
 ) -> None:
@@ -817,9 +869,10 @@ def _run_background_import(
         "import",
         "--source", source,
         "--project", str(project),
-        "--opencode-db", str(oc_db),
         "--all",
     ]
+    if source == "opencode" and oc_db is not None:
+        cmd.extend(["--opencode-db", str(oc_db)])
     if session_id:
         cmd.extend(["--session-id", session_id])
     if project_path:
