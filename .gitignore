@@ -45,9 +45,13 @@ llm_mem.db-wal
 llm_mem.db-shm
 
 .callmem/SESSION.*.md
+.callmem/config.toml        # user's local config — use config.toml.example as a template
 .callmem/config.toml.bak
 .callmem/import.lock
 .callmem/import_progress.json
+
+# Legacy config path
+.llm-mem/config.toml
 
 # Testing
 .pytest_cache/
