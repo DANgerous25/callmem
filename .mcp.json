@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "llm-mem": {
+      "command": "python3",
+      "args": [
+        "-m",
+        "llm_mem.mcp.server",
+        "--project",
+        "."
+      ]
+    }
+  }
+}

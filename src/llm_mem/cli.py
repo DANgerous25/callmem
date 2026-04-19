@@ -200,6 +200,54 @@ def _ensure_opencode_instructions(project: Path) -> None:
         oc_path.write_text(json.dumps(oc_config, indent=2) + "\n", encoding="utf-8")
 
 
+def _ensure_claude_code_mcp(project: Path) -> None:
+    """Ensure .mcp.json has llm-mem MCP server configured for Claude Code.
+
+    Claude Code uses a split command/args schema (different from OpenCode's
+    single-array command). Preserves any other MCP servers in the file.
+    """
+    import json
+
+    mcp_path = project / ".mcp.json"
+
+    config: dict = {}
+    if mcp_path.exists():
+        try:
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            click.echo(f"  Warning: could not parse {mcp_path.name}, leaving unchanged")
+            return
+
+    detected = _detect_mcp_command(project)
+    command, args = detected[0], detected[1:]
+
+    servers = config.get("mcpServers") or {}
+    existing = servers.get("llm-mem", {})
+    if existing.get("command") == command and existing.get("args") == args:
+        click.echo("  .mcp.json already has llm-mem MCP server")
+        return
+
+    servers["llm-mem"] = {"command": command, "args": args}
+    config["mcpServers"] = servers
+
+    mcp_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    action = "Updated" if existing else "Added"
+    click.echo(f"  {action} llm-mem MCP server in .mcp.json")
+
+
+def _claude_md_is_separate_file(claude_path: Path, agents_path: Path) -> bool:
+    """True if CLAUDE.md exists as a separate file (not a symlink to AGENTS.md)."""
+    if not claude_path.exists() and not claude_path.is_symlink():
+        return False
+    if claude_path.is_symlink():
+        try:
+            target = claude_path.resolve(strict=False)
+            return target != agents_path.resolve(strict=False)
+        except OSError:
+            return True
+    return True
+
+
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 def setup(project: Path) -> None:
@@ -248,8 +296,14 @@ def init(project: Path) -> None:
 
     _ensure_agents_session_summary(agents_path)
     _ensure_agents_mcp_block(agents_path)
+
+    claude_path = project / "CLAUDE.md"
+    if _claude_md_is_separate_file(claude_path, agents_path):
+        _ensure_agents_mcp_block(claude_path)
+
     _ensure_opencode_instructions(project)
     _ensure_opencode_plugin(project)
+    _ensure_claude_code_mcp(project)
 
     click.echo(f"Initialized llm-mem in {llm_mem_dir}")
     click.echo(f"  Database: {db_path}")
