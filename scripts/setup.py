@@ -217,6 +217,53 @@ def find_opencode_config(project: Path) -> Path | None:
     return None
 
 
+def find_claude_mcp_config(project: Path) -> Path | None:
+    p = project / ".mcp.json"
+    return p if p.exists() else None
+
+
+def _claude_md_is_separate_file(claude_path: Path, agents_path: Path) -> bool:
+    """True if CLAUDE.md exists as a separate file (not a symlink to AGENTS.md)."""
+    if not claude_path.exists() and not claude_path.is_symlink():
+        return False
+    if claude_path.is_symlink():
+        try:
+            target = claude_path.resolve(strict=False)
+            return target != agents_path.resolve(strict=False)
+        except OSError:
+            return True
+    return True
+
+
+def _ensure_claude_code_mcp(project: Path) -> None:
+    """Ensure .mcp.json has llm-mem MCP server configured for Claude Code."""
+    mcp_path = project / ".mcp.json"
+
+    config: dict = {}
+    if mcp_path.exists():
+        try:
+            config = json.loads(mcp_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            print(f"  Warning: could not parse {mcp_path.name}, leaving unchanged")
+            return
+
+    detected = _detect_mcp_command(project)
+    command, args = detected[0], detected[1:]
+
+    servers = config.get("mcpServers") or {}
+    existing = servers.get("llm-mem", {})
+    if existing.get("command") == command and existing.get("args") == args:
+        print(f"  {mcp_path.name} already has llm-mem MCP server")
+        return
+
+    servers["llm-mem"] = {"command": command, "args": args}
+    config["mcpServers"] = servers
+
+    mcp_path.write_text(json.dumps(config, indent=2) + "\n")
+    action = "Updated" if existing else "Wrote"
+    print(f"  {action} llm-mem MCP server in {mcp_path.name}")
+
+
 def _detect_mcp_command(project: Path) -> list[str]:
     """Detect the best command to run the llm-mem MCP server.
 
@@ -778,6 +825,9 @@ def main() -> None:
         print()
         print("── Ollama configuration ──")
         print()
+        print("  TIP: If using a VPN that blocks localhost access from other tools,")
+        print("       use your LAN IP (e.g. http://192.168.1.100:11434).")
+        print()
         ollama_endpoint = ask("Ollama endpoint", ollama_endpoint)
         ollama_ok, available_models, model_details = check_ollama(ollama_endpoint)
 
@@ -1095,25 +1145,59 @@ vault_mode = "{vault_mode}"
     # ── Session import ───────────────────────────────────────────
     _offer_session_import(project, db_path)
 
-    # ── AGENTS.md — ensure SESSION_SUMMARY.md reference ──────────
-    _ensure_agents_session_summary(project / "AGENTS.md")
-    _ensure_agents_mcp_block(project / "AGENTS.md")
+    # ── AGENTS.md / CLAUDE.md — ensure SESSION_SUMMARY + MCP reference ──
+    agents_path = project / "AGENTS.md"
+    claude_path = project / "CLAUDE.md"
+    _ensure_agents_session_summary(agents_path)
+    _ensure_agents_mcp_block(agents_path)
+    if _claude_md_is_separate_file(claude_path, agents_path):
+        _ensure_agents_session_summary(claude_path)
+        _ensure_agents_mcp_block(claude_path)
 
     # ── Generate initial briefing ────────────────────────────────
     _generate_initial_briefing(project, db_path)
 
-    # ── OpenCode MCP ──────────────────────────────────────────────
+    # ── Coding tool integration ──────────────────────────────────
     print()
-    print("── OpenCode MCP integration ──")
+    print("── Coding tool integration ──")
     print()
 
     oc_config_path = find_opencode_config(project)
-    if oc_config_path:
-        print(f"  Found {oc_config_path.name}")
+    claude_config_path = find_claude_mcp_config(project)
+    has_claude_md = _claude_md_is_separate_file(claude_path, agents_path)
 
-    configure_mcp = ask_bool("Configure OpenCode to use llm-mem MCP server?", default=True)
+    oc_detected = oc_config_path is not None
+    claude_detected = claude_config_path is not None or has_claude_md
 
-    if configure_mcp:
+    if oc_detected and claude_detected:
+        default_tool = "both"
+    elif oc_detected:
+        default_tool = "opencode"
+    elif claude_detected:
+        default_tool = "claude"
+    else:
+        default_tool = "both"
+
+    def _label(base: str, detected: bool) -> str:
+        return f"{base} [detected]" if detected else base
+
+    tool_choice = ask_choice(
+        "Which coding tools do you use?",
+        [
+            ("opencode", _label("OpenCode only", oc_detected)),
+            ("claude", _label("Claude Code only", claude_detected)),
+            ("both", "Both OpenCode and Claude Code"),
+            ("skip", "Skip (manual integration)"),
+        ],
+        default=default_tool,
+    )
+
+    configure_opencode = tool_choice in ("opencode", "both")
+    configure_claude = tool_choice in ("claude", "both")
+
+    if configure_opencode:
+        print()
+        print("── OpenCode MCP ──")
         if oc_config_path is None:
             oc_config_path = project / "opencode.json"
 
@@ -1137,7 +1221,6 @@ vault_mode = "{vault_mode}"
         if old_cmd is not None and old_cmd != detected_cmd:
             print("  Updated MCP server command in opencode.json")
 
-        # Ensure SESSION_SUMMARY.md is loaded into context at startup
         instructions = oc_config.get("instructions", [])
         if "SESSION_SUMMARY.md" not in instructions:
             instructions.append("SESSION_SUMMARY.md")
@@ -1147,8 +1230,16 @@ vault_mode = "{vault_mode}"
         oc_config_path.write_text(json.dumps(oc_config, indent=2) + "\n")
         print(f"  Wrote MCP config to {oc_config_path.name}")
 
-    # ── OpenCode plugin + command ────────────────────────────────
-    _ensure_opencode_plugin(project)
+        _ensure_opencode_plugin(project)
+
+    if configure_claude:
+        print()
+        print("── Claude Code MCP ──")
+        _ensure_claude_code_mcp(project)
+
+    if tool_choice == "skip":
+        print("  Skipped coding tool integration.")
+        print("  To configure later, re-run setup or edit opencode.json / .mcp.json manually.")
 
     # ── Autostart ─────────────────────────────────────────────────
     _offer_systemd_service(project, ui_host, ui_port)
