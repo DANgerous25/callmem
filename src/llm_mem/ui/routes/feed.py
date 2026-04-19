@@ -190,6 +190,7 @@ async def feed(request: Request) -> HTMLResponse:
 
     engine = request.app.state.engine
     project_name = engine.config.project.name or "default"
+    include_stale = request.query_params.get("include_stale") == "true"
 
     conn = engine.db.connect()
     try:
@@ -199,7 +200,7 @@ async def feed(request: Request) -> HTMLResponse:
     finally:
         conn.close()
 
-    items = _build_feed_items(engine)
+    items = _build_feed_items(engine, include_stale=include_stale)
 
     conn2 = engine.db.connect()
     try:
@@ -221,6 +222,7 @@ async def feed(request: Request) -> HTMLResponse:
         active_type=None,
         active_query=None,
         active_order="desc",
+        include_stale=include_stale,
     )
 
 

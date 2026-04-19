@@ -15,15 +15,24 @@
 
 {% if entities %}
 <table>
-    <thead><tr><th>Title</th><th>Content</th><th>Status</th><th>Priority</th><th>Pinned</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Title</th><th>Content</th><th>Status</th><th>Priority</th><th>Flags</th><th>Actions</th></tr></thead>
     <tbody>
     {% for e in entities %}
-    <tr id="entity-{{ e.id }}">
-        <td>{{ e.title }}</td>
+    <tr id="entity-{{ e.id }}"{% if e.stale %} style="opacity:0.55"{% endif %}>
+        <td>
+            {% if e.stale %}<s>{{ e.title }}</s>{% else %}{{ e.title }}{% endif %}
+        </td>
         <td>{{ (e.content or "")[:60] }}</td>
         <td>{{ e.status or "-" }}</td>
         <td>{{ e.priority or "-" }}</td>
-        <td>{% if e.pinned %}Pinned{% endif %}</td>
+        <td>
+            {% if e.pinned %}<span class="feed-card-pinned">pinned</span>{% endif %}
+            {% if e.stale %}
+            <span class="feed-card-stale" title="{{ e.staleness_reason or 'stale' }}">
+                stale{% if e.staleness_reason %} · {{ e.staleness_reason }}{% endif %}
+            </span>
+            {% endif %}
+        </td>
         <td>
             {% if not e.pinned %}
             <button hx-post="/entities/{{ e.id }}/pin"
@@ -33,6 +42,16 @@
             <button hx-post="/entities/{{ e.id }}/unpin"
                     hx-target="#entity-{{ e.id }} td:last-child"
                     hx-swap="innerHTML">Unpin</button>
+            {% endif %}
+            {% if not e.stale %}
+            <button hx-post="/entities/{{ e.id }}/stale?reason=manual"
+                    hx-confirm="Mark this entity as stale?"
+                    hx-swap="none"
+                    hx-on::after-request="location.reload()">Mark stale</button>
+            {% else %}
+            <button hx-post="/entities/{{ e.id }}/current"
+                    hx-swap="none"
+                    hx-on::after-request="location.reload()">Mark current</button>
             {% endif %}
         </td>
     </tr>

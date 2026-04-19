@@ -409,6 +409,36 @@ class TestUIEndpoints:
         row = engine.repo.get_entity(eid)
         assert row["stale"] == 0
 
+    def test_feed_partial_hides_stale_by_default(
+        self, tmp_path: Path,
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from llm_mem.ui.app import create_app
+
+        engine = _make_engine(tmp_path)
+        _insert_entity(
+            engine.repo, engine.project_id,
+            "decision", "current title",
+            "current content for visibility",
+        )
+        stale_id = _insert_entity(
+            engine.repo, engine.project_id,
+            "decision", "stale title",
+            "superseded content for visibility",
+        )
+        engine.mark_stale(stale_id, reason="superseded")
+        client = TestClient(create_app(engine))
+
+        hidden = client.get("/partials/feed").text
+        assert "current title" in hidden
+        assert "stale title" not in hidden
+
+        shown = client.get("/partials/feed?include_stale=true").text
+        assert "stale title" in shown
+        assert "is-stale" in shown
+        assert "feed-card-stale" in shown
+
 
 class TestCli:
     def test_stale_list_empty(self, tmp_path: Path) -> None:
