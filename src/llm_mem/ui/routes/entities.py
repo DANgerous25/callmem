@@ -10,19 +10,24 @@ router = APIRouter()
 
 @router.get("/entities/{entity_type}")
 async def entities_by_type(
-    request: Request, entity_type: str
+    request: Request, entity_type: str,
 ) -> HTMLResponse:
     from llm_mem.ui.app import render_template
 
     engine = request.app.state.engine
     status = request.query_params.get("status")
-    entities = engine.get_entities(type=entity_type, status=status, limit=100)
+    include_stale = request.query_params.get("include_stale") == "true"
+    entities = engine.get_entities(
+        type=entity_type, status=status, limit=100,
+        include_stale=include_stale,
+    )
     return render_template(
         request.app,
         "entities.html",
         entity_type=entity_type,
         entities=entities,
         current_status=status,
+        include_stale=include_stale,
     )
 
 

@@ -1,6 +1,6 @@
 {% if items %}
 {% for item in items %}
-<details class="feed-card{% if item.kind == 'session' %} feed-card-compact{% endif %}">
+<details class="feed-card{% if item.kind == 'session' %} feed-card-compact{% endif %}{% if item.stale %} is-stale{% endif %}" id="card-{{ item.id }}">
   <summary class="feed-card-header">
     <span class="feed-card-chevron">&#9654;</span>
     <span class="badge badge-{{ item.category }}">{{ item.category | upper }}</span>
@@ -60,11 +60,36 @@
     {% if item.pinned %}
     <span class="feed-card-pinned">pinned</span>
     {% endif %}
+    {% if item.stale %}
+    <span class="feed-card-stale" title="Hidden from briefings and default search">
+      stale{% if item.staleness_reason %} · {{ item.staleness_reason }}{% endif %}
+    </span>
+    {% endif %}
     {% if item.files %}
     <span class="feed-card-files">
       {% for f in item.files[:3] %}
       <span class="file-tag">{{ f.file_path | replace("\\", "/") | basename }}</span>
       {% endfor %}
+    </span>
+    {% endif %}
+    {% if item.kind == 'entity' %}
+    <span class="feed-card-actions" style="margin-left:auto;display:inline-flex;gap:0.3rem">
+      {% if item.stale %}
+      <button class="feed-card-action"
+              hx-post="/entities/{{ item.id }}/current"
+              hx-swap="none"
+              hx-on::after-request="document.getElementById('card-{{ item.id }}').classList.remove('is-stale'); this.outerHTML=''">
+        Mark current
+      </button>
+      {% else %}
+      <button class="feed-card-action"
+              hx-post="/entities/{{ item.id }}/stale?reason=manual"
+              hx-swap="none"
+              hx-confirm="Mark this entity as stale? It will stop appearing in briefings and default search."
+              hx-on::after-request="document.getElementById('card-{{ item.id }}').classList.add('is-stale')">
+        Mark stale
+      </button>
+      {% endif %}
     </span>
     {% endif %}
   </div>

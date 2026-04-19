@@ -196,6 +196,61 @@
             color: #e9d5ff;
             opacity: 1;
         }
+        .feed-card.is-stale {
+            opacity: 0.55;
+        }
+        .feed-card.is-stale .feed-card-title-inline {
+            text-decoration: line-through;
+            text-decoration-color: #fca5a5;
+            text-decoration-thickness: 1px;
+        }
+        .feed-card-stale {
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            background: #7f1d1d;
+            color: #fecaca;
+            border: 1px solid #991b1b;
+        }
+        .feed-card-stale-reason {
+            font-size: 0.65rem;
+            opacity: 0.8;
+            margin-left: 0.3rem;
+            font-style: italic;
+        }
+        .feed-card-action {
+            padding: 0.1rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            font-weight: 500;
+            background: #1e293b;
+            color: #cbd5e1;
+            border: 1px solid #475569;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .feed-card-action:hover {
+            background: #334155;
+            border-color: #64748b;
+        }
+        .feed-filter-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            background: #1e293b;
+            border: 1px solid #475569;
+            color: #cbd5e1;
+            cursor: pointer;
+        }
+        .feed-filter-toggle.active {
+            background: #7f1d1d;
+            border-color: #991b1b;
+            color: #fecaca;
+        }
         .feed-empty {
             text-align: center;
             opacity: 0.5;

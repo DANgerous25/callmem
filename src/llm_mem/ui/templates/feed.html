@@ -33,6 +33,12 @@
             style="padding:0.25rem 0.5rem;border-radius:0.375rem;border:1px solid #475569;background:transparent;color:#cbd5e1;font-size:0.8rem;cursor:pointer;">
         {% if active_order == 'desc' %}&#x2193; Newest{% else %}&#x2191; Oldest{% endif %}
     </button>
+    <button class="feed-filter-toggle {% if include_stale %}active{% endif %}"
+            title="Toggle display of entities marked stale by the auto-detector"
+            hx-get="/partials/feed?include_stale={% if include_stale %}false{% else %}true{% endif %}{% if active_type %}&type={{ active_type }}{% endif %}{% if active_query %}&q={{ active_query }}{% endif %}{% if active_order %}&order={{ active_order }}{% endif %}"
+            hx-target="#feed-content" hx-swap="innerHTML">
+        {% if include_stale %}✓ Showing stale{% else %}Show stale{% endif %}
+    </button>
 </div>
 
 <div id="feed-content">
