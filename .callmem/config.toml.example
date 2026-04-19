@@ -1,0 +1,45 @@
+# callmem configuration — example template.
+#
+# Copy this file to `.callmem/config.toml` in your project root and customise.
+# The live `config.toml` is gitignored so your local tweaks (model choice,
+# port, etc.) stay out of source control.
+#
+# All keys are optional. See docs/config.md for the full reference.
+
+[project]
+# Human-readable name shown in the UI and in briefings.
+name = "my-project"
+
+# LLM backend for memory maintenance (entity extraction, summarization,
+# sensitive scan). Options: "ollama", "openai_compat", "none".
+[llm]
+backend = "ollama"
+
+[ollama]
+model = "qwen3:8b"
+endpoint = "http://localhost:11434"
+timeout = 120
+# num_ctx = 8192  # Uncomment to cap context window (reduces VRAM usage).
+
+# Uncomment to use an OpenAI-compatible endpoint instead.
+# [openai_compat]
+# endpoint = "https://open.bigmodel.cn/api/paas/v4"
+# model = "glm-4-flash"
+# api_key_env = "CALLMEM_API_KEY"  # name of the env var holding the key
+
+[briefing]
+max_tokens = 2000
+
+[compaction]
+enabled = true
+schedule = "on_session_end"
+chunk_size = 20
+cross_session_interval = 5
+
+[ui]
+port = 9090
+host = "0.0.0.0"    # accessible on LAN / Tailscale; set to 127.0.0.1 for localhost only
+
+[sensitive_data]
+enabled = true
+vault_mode = "auto"
