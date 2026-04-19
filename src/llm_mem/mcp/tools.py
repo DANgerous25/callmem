@@ -98,6 +98,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": "Maximum results to return (default 20)",
                     "default": 20,
                 },
+                "include_stale": {
+                    "type": "boolean",
+                    "description": (
+                        "Include entities flagged as stale. Defaults to "
+                        "false so superseded/contradicted items don't "
+                        "pollute results."
+                    ),
+                    "default": False,
+                },
             },
         },
     },
@@ -268,6 +277,50 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "mem_mark_stale",
+        "description": (
+            "Flag an entity as stale so it stops appearing in briefings "
+            "and search. Use when a decision/fact/TODO has been "
+            "superseded or no longer reflects the project."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["entity_id", "reason"],
+            "properties": {
+                "entity_id": {
+                    "type": "string",
+                    "description": "Entity to mark as stale",
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["superseded", "contradicted", "outdated", "manual"],
+                    "description": "Why the entity is stale",
+                },
+                "superseded_by": {
+                    "type": "string",
+                    "description": "Optional ID of the entity that replaces this one",
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_mark_current",
+        "description": (
+            "Clear a previously-set stale flag. Use to undo a "
+            "false-positive staleness decision."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["entity_id"],
+            "properties": {
+                "entity_id": {
+                    "type": "string",
+                    "description": "Entity to unmark",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -351,7 +404,8 @@ def handle_ingest(engine: MemoryEngine, args: dict[str, Any]) -> list[TextConten
 def handle_search(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
     query = args.get("query", "")
     limit = args.get("limit", 20)
-    results = engine.search(query, limit=limit)
+    include_stale = bool(args.get("include_stale", False))
+    results = engine.search(query, limit=limit, include_stale=include_stale)
     return _make_result({"results": results})
 
 
@@ -489,6 +543,42 @@ def handle_vault_review(
     return _make_result({"vault_id": vault_id, "status": "false_positive"})
 
 
+def handle_mark_stale(
+    engine: MemoryEngine, args: dict[str, Any],
+) -> list[TextContent]:
+    entity_id = args.get("entity_id", "")
+    reason = args.get("reason", "manual")
+    if not entity_id:
+        return _make_error("entity_id is required")
+    entity = engine.mark_stale(
+        entity_id, reason=reason,
+        superseded_by=args.get("superseded_by"),
+    )
+    if entity is None:
+        return _make_error(f"Entity not found: {entity_id}")
+    return _make_result({
+        "entity_id": entity_id,
+        "stale": bool(entity.get("stale", 0)),
+        "reason": entity.get("staleness_reason"),
+        "superseded_by": entity.get("superseded_by"),
+    })
+
+
+def handle_mark_current(
+    engine: MemoryEngine, args: dict[str, Any],
+) -> list[TextContent]:
+    entity_id = args.get("entity_id", "")
+    if not entity_id:
+        return _make_error("entity_id is required")
+    entity = engine.mark_current(entity_id)
+    if entity is None:
+        return _make_error(f"Entity not found: {entity_id}")
+    return _make_result({
+        "entity_id": entity_id,
+        "stale": bool(entity.get("stale", 0)),
+    })
+
+
 _HANDLERS: dict[str, Any] = {
     "mem_session_start": handle_session_start,
     "mem_session_end": handle_session_end,
@@ -502,4 +592,6 @@ _HANDLERS: dict[str, Any] = {
     "mem_get_entities": handle_get_entities,
     "mem_search_by_file": handle_search_by_file,
     "mem_vault_review": handle_vault_review,
+    "mem_mark_stale": handle_mark_stale,
+    "mem_mark_current": handle_mark_current,
 }

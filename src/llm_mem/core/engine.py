@@ -272,6 +272,7 @@ class MemoryEngine:
         types: list[str] | None = None,
         session_id: str | None = None,
         limit: int = 20,
+        include_stale: bool = False,
     ) -> list[dict[str, Any]]:
         """Search memories using the retrieval engine."""
         from llm_mem.core.retrieval import RetrievalEngine
@@ -283,6 +284,7 @@ class MemoryEngine:
             types=types,
             session_id=session_id,
             limit=limit,
+            include_stale=include_stale,
         )
         return [
             {
@@ -357,15 +359,42 @@ class MemoryEngine:
         type: str | None = None,
         status: str | None = None,
         limit: int = 50,
+        include_stale: bool = False,
     ) -> list[dict[str, Any]]:
         """Retrieve entities, optionally filtered by type and status."""
         return self.repo.get_entities(
-            self.project_id, type=type, status=status, limit=limit
+            self.project_id, type=type, status=status, limit=limit,
+            include_stale=include_stale,
         )
 
     def set_pinned(self, entity_id: str, pinned: bool = True) -> dict[str, Any]:
         """Toggle the pinned status of an entity."""
         return self.repo.set_pinned(entity_id, pinned)
+
+    def mark_stale(
+        self, entity_id: str, reason: str,
+        superseded_by: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Flag an entity as stale. Returns the updated entity row."""
+        changed = self.repo.mark_stale(entity_id, reason, superseded_by)
+        if not changed:
+            return self.repo.get_entity(entity_id)
+        self._publish("entity_marked_stale", {
+            "entity_id": entity_id,
+            "reason": reason,
+            "superseded_by": superseded_by,
+        })
+        return self.repo.get_entity(entity_id)
+
+    def mark_current(self, entity_id: str) -> dict[str, Any] | None:
+        """Clear the stale flag. Returns the updated entity row."""
+        changed = self.repo.mark_current(entity_id)
+        if changed:
+            self._publish("entity_marked_current", {"entity_id": entity_id})
+        return self.repo.get_entity(entity_id)
+
+    def list_stale_entities(self, limit: int = 200) -> list[dict[str, Any]]:
+        return self.repo.list_stale_entities(self.project_id, limit=limit)
 
     def mark_false_positive(self, vault_id: str) -> dict[str, Any]:
         """Mark a vault entry as false positive and un-redact the event content."""

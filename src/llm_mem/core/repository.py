@@ -290,6 +290,7 @@ class Repository:
         type: str | None = None,
         status: str | None = None,
         limit: int = 50,
+        include_stale: bool = False,
     ) -> list[dict[str, Any]]:
         from llm_mem.models.entities import Entity
 
@@ -303,6 +304,8 @@ class Repository:
             if status is not None:
                 clauses.append("status = ?")
                 params.append(status)
+            if not include_stale:
+                clauses.append("stale = 0")
 
             where = " AND ".join(clauses)
             params.append(limit)
@@ -313,6 +316,74 @@ class Repository:
                 params,
             ).fetchall()
             return [dict(Entity.from_row(dict(r)).to_row()) for r in rows]
+        finally:
+            conn.close()
+
+    def mark_stale(
+        self,
+        entity_id: str,
+        reason: str,
+        superseded_by: str | None = None,
+    ) -> bool:
+        """Flag an entity as stale. Returns True if a row was modified."""
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities "
+                "SET stale = 1, staleness_reason = ?, superseded_by = ?, "
+                "    updated_at = datetime('now') "
+                "WHERE id = ? AND stale = 0",
+                (reason, superseded_by, entity_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def mark_current(self, entity_id: str) -> bool:
+        """Clear the stale flag on an entity. Returns True if modified."""
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities "
+                "SET stale = 0, staleness_reason = NULL, superseded_by = NULL, "
+                "    updated_at = datetime('now') "
+                "WHERE id = ? AND stale = 1",
+                (entity_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def list_stale_entities(
+        self, project_id: str, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        from llm_mem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM entities "
+                "WHERE project_id = ? AND stale = 1 "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+            return [dict(Entity.from_row(dict(r)).to_row()) for r in rows]
+        finally:
+            conn.close()
+
+    def get_entity(self, entity_id: str) -> dict[str, Any] | None:
+        from llm_mem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM entities WHERE id = ?", (entity_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(Entity.from_row(dict(row)).to_row())
         finally:
             conn.close()
 

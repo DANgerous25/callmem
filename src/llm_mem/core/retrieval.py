@@ -44,10 +44,17 @@ def _recency_factor(timestamp: str, now: str | None = None) -> float:
     if not timestamp:
         return 1.0
     try:
-        ts = datetime.fromisoformat(timestamp)
-    except (ValueError, TypeError):
+        ts = datetime.fromisoformat(timestamp.replace(" ", "T"))
+    except (ValueError, TypeError, AttributeError):
         return 1.0
+    # SQLite's datetime('now') returns naive strings — treat naive as UTC
+    # so SET-queries (mark_stale, set_pinned, resolve_entity) can coexist
+    # with timezone-aware timestamps written by Python.
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
     reference = datetime.fromisoformat(now) if now else datetime.now(UTC)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=UTC)
     age_days = max(0.0, (reference - ts).total_seconds() / 86400)
     return math.exp(-0.693 * age_days / RECENCY_HALF_LIFE_DAYS)
 
@@ -72,6 +79,7 @@ class RetrievalEngine:
         session_id: str | None = None,
         limit: int = 20,
         include_archived: bool = False,
+        include_stale: bool = False,
         strategies: list[str] | None = None,
     ) -> list[SearchResult]:
         """Search across events and entities using multiple strategies."""
@@ -85,7 +93,8 @@ class RetrievalEngine:
 
         if "entities" in active_strategies:
             self._search_entities(
-                project_id, query, types, session_id, limit, results
+                project_id, query, types, session_id, limit, results,
+                include_stale=include_stale,
             )
 
         ranked = sorted(results.values(), key=lambda r: r.score, reverse=True)
@@ -171,6 +180,7 @@ class RetrievalEngine:
         session_id: str | None,
         limit: int,
         results: dict[str, SearchResult],
+        include_stale: bool = False,
     ) -> None:
         conn = self.repo.db.connect()
         try:
@@ -181,6 +191,9 @@ class RetrievalEngine:
                 placeholders = ",".join("?" for _ in types)
                 clauses.append(f"type IN ({placeholders})")
                 params.extend(types)
+
+            if not include_stale:
+                clauses.append("stale = 0")
 
             where = " AND ".join(clauses)
             rows = conn.execute(
@@ -203,7 +216,8 @@ class RetrievalEngine:
 
             recency = _recency_factor(r["updated_at"], now)
             pin_boost = 1.5 if r["pinned"] else 1.0
-            score = 0.8 * recency * pin_boost
+            stale_penalty = 0.3 if r["stale"] else 1.0
+            score = 0.8 * recency * pin_boost * stale_penalty
 
             results[r["id"]] = SearchResult(
                 id=r["id"],
@@ -214,5 +228,11 @@ class RetrievalEngine:
                 score=score,
                 timestamp=r["updated_at"],
                 session_id=None,
-                metadata={"status": r["status"], "priority": r["priority"]},
+                metadata={
+                    "status": r["status"],
+                    "priority": r["priority"],
+                    "stale": bool(r["stale"]),
+                    "superseded_by": r["superseded_by"],
+                    "staleness_reason": r["staleness_reason"],
+                },
             )
