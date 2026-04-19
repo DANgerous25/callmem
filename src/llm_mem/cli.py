@@ -643,8 +643,8 @@ def daemon(
 @click.option(
     "--source",
     type=click.Choice(["opencode", "claude-code"]),
-    required=True,
-    help="Source to import from.",
+    default=None,
+    help="Source to import from. Required unless --status is set.",
 )
 @click.option("--session-id", default=None, help="Import a specific session ID.")
 @click.option(
@@ -664,7 +664,7 @@ def daemon(
 @click.option("--status", "show_status", is_flag=True, help="Show import progress/status.")
 def import_cmd(
     project: Path,
-    source: str,
+    source: str | None,
     session_id: str | None,
     opencode_db: Path | None,
     project_path: str | None,
@@ -677,6 +677,11 @@ def import_cmd(
     if show_status:
         _show_import_status(project)
         return
+
+    if source is None:
+        raise click.UsageError(
+            "Missing option '--source'. Choose from: opencode, claude-code."
+        )
 
     from llm_mem.core.config import load_config
     from llm_mem.core.database import Database
