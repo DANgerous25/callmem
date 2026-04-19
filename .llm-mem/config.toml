@@ -9,9 +9,10 @@ name = "llm-mem"
 backend = "ollama"
 
 [ollama]
-model = "qwen3:14b"
+model = "gemma4:26b"
 endpoint = "http://localhost:11434"
 timeout = 120
+num_ctx = 8192
 
 [openai_compat]
 endpoint = "https://open.bigmodel.cn/api/paas/v4"
@@ -31,7 +32,7 @@ chunk_size = 20
 cross_session_interval = 5
 
 [ui]
-port = 9093
+port = 9097
 host = "0.0.0.0"
 
 [sensitive_data]

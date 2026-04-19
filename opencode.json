@@ -4,9 +4,7 @@
     "llm-mem": {
       "type": "local",
       "command": [
-        "uv",
-        "run",
-        "python",
+        "python3",
         "-m",
         "llm_mem.mcp.server",
         "--project",
