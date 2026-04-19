@@ -78,6 +78,30 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
     return text[:max_chars - 3] + "..."
 
 
+def _short_id(full_id: str | None) -> str:
+    """Return a short, display-friendly ID suffix.
+
+    ULIDs share a timestamp prefix when created in the same millisecond,
+    so we use the random suffix to avoid display collisions. The briefing
+    advertises this as the ID form, and mem_get_entities accepts it via
+    LIKE matching.
+    """
+    if not full_id:
+        return ""
+    return full_id[-8:]
+
+
+def _session_hook(session: dict[str, Any], max_chars: int = 70) -> str:
+    """Extract a single-line session hook from the summary field."""
+    summary = (session.get("summary") or "").strip()
+    if not summary:
+        return ""
+    first_line = summary.split("\n", 1)[0].strip()
+    if len(first_line) > max_chars:
+        first_line = first_line[: max_chars - 1].rstrip() + "\u2026"
+    return first_line
+
+
 class BriefingGenerator:
     def __init__(
         self,
@@ -224,18 +248,30 @@ class BriefingGenerator:
         parts.append(f"  {sep.join(legend_parts)}")
         parts.append("")
 
-        # ── Latest session summary (prioritized at top) ──
-        if last_session and last_session.get("summary"):
-            started = (last_session.get("started_at") or "")[:10]
-            parts.append(
-                f"{_BOX_H * 3} Latest Session ({started}) "
-                f"{_BOX_H * (w - 23 - len(started))}"
+        # ── How to use this ──
+        parts.append(
+            f"{_BOX_H * 3} How to use this {_BOX_H * (w - 20)}"
+        )
+        parts.append("")
+        parts.append(
+            "  This index is usually enough to understand past work."
+        )
+        parts.append(
+            "  For full content: mem_get_entities(ids=[\"F5AVDQ25\"])"
+        )
+        parts.append(
+            "  For past research/bugs/decisions: mem_search(query=...)"
+        )
+        parts.append(
+            "  Trust this index over re-reading code for past decisions."
+        )
+        parts.append("")
+
+        # ── Latest session: narrative block (prioritized at top) ──
+        if last_session:
+            self._append_latest_session_block(
+                parts, last_session, sessions, w,
             )
-            parts.append("")
-            summary = last_session["summary"]
-            for line in summary.strip().split("\n"):
-                parts.append(f"  {line}")
-            parts.append("")
 
         # ── Open TODOs and failures (high priority) ──
         todos = [
@@ -256,13 +292,15 @@ class BriefingGenerator:
             )
             parts.append("")
             for e in failures:
+                eid = _short_id(e.get("id"))
                 title = e.get("title") or e.get("content", "")[:60]
-                parts.append(f"  \u274c  {title}")
+                parts.append(f"  #{eid}  \u274c  {title}")
             for e in todos:
+                eid = _short_id(e.get("id"))
                 title = e.get("title") or e.get("content", "")[:60]
                 priority = e.get("priority", "")
                 flag = f" [{priority}]" if priority else ""
-                parts.append(f"  \U0001f4cb  {title}{flag}")
+                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}")
             parts.append("")
 
         # ── Observations by date ──
@@ -278,9 +316,10 @@ class BriefingGenerator:
             for session_header, session_entities in by_session:
                 parts.append(f"  {_ARROW} {session_header}")
                 for e in session_entities:
+                    eid = _short_id(e.get("id"))
                     emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
                     title = e.get("title") or ""
-                    parts.append(f"    {emoji}  {title}")
+                    parts.append(f"    #{eid}  {emoji}  {title}")
                 parts.append("")
 
         # ── Footer ──
@@ -379,6 +418,91 @@ class BriefingGenerator:
         finally:
             conn.close()
 
+    def _append_latest_session_block(
+        self,
+        parts: list[str],
+        last_session: dict[str, Any],
+        sessions: list[dict[str, Any]],
+        w: int,
+    ) -> None:
+        started = (last_session.get("started_at") or "")[:10]
+        sid = last_session.get("id") or ""
+        hook = _session_hook(last_session)
+        header_label = f" Latest Session #{sid[:8]} ({started}) "
+        pad = max(1, w - 3 - len(header_label))
+        parts.append(f"{_BOX_H * 3}{header_label}{_BOX_H * pad}")
+        parts.append("")
+
+        if hook:
+            parts.append(f"  {hook}")
+            parts.append("")
+
+        session_entities = self._fetch_entities_for_session(sid)
+
+        investigated = [
+            e for e in session_entities
+            if e.get("type") in ("research", "discovery")
+        ]
+        learned = [
+            e for e in session_entities
+            if e.get("type") in ("fact", "decision")
+        ]
+        completed = [
+            e for e in session_entities
+            if e.get("type") in ("feature", "change")
+            or (e.get("type") == "bugfix"
+                and e.get("status") == "resolved")
+        ]
+        next_steps = [
+            e for e in session_entities
+            if e.get("type") in ("todo", "failure")
+            and e.get("status") != "resolved"
+        ]
+
+        def _render_section(label: str, items: list[dict[str, Any]]) -> None:
+            if not items:
+                return
+            parts.append(f"  {label}:")
+            for e in items[:5]:
+                eid = _short_id(e.get("id"))
+                emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
+                title = e.get("title") or ""
+                parts.append(f"    #{eid}  {emoji}  {title}")
+            if len(items) > 5:
+                parts.append(f"    \u2026 ({len(items) - 5} more)")
+            parts.append("")
+
+        if not session_entities:
+            summary = last_session.get("summary") or ""
+            if summary and "\n" in summary:
+                for line in summary.strip().split("\n")[1:]:
+                    parts.append(f"  {line}")
+                parts.append("")
+            return
+
+        _render_section("Investigated", investigated)
+        _render_section("Learned", learned)
+        _render_section("Completed", completed)
+        _render_section("Next steps", next_steps)
+
+    def _fetch_entities_for_session(
+        self, session_id: str,
+    ) -> list[dict[str, Any]]:
+        if not session_id:
+            return []
+        conn = self.repo.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.* FROM entities e "
+                "JOIN events ev ON ev.id = e.source_event_id "
+                "WHERE ev.session_id = ? AND e.stale = 0 "
+                "ORDER BY e.pinned DESC, e.created_at DESC",
+                (session_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def _group_entities_by_date(
         self, entities: list[dict[str, Any]]
     ) -> dict[str, list[dict[str, Any]]]:
@@ -432,7 +556,13 @@ class BriefingGenerator:
             s_info = session_map.get(sid, {})
             started = (s_info.get("started_at") or "")[:10]
             status = s_info.get("status") or "unknown"
-            header = f"#S{sid[:8]} Session ({started}, {status})"
+            hook = _session_hook(s_info)
+            if hook:
+                header = (
+                    f"#S{sid[:8]} {hook} ({started}, {status})"
+                )
+            else:
+                header = f"#S{sid[:8]} Session ({started}, {status})"
             result.append((header, by_session[sid]))
 
         if ungrouped:

@@ -10,6 +10,7 @@ import pytest
 from llm_mem.core.engine import MemoryEngine
 from llm_mem.mcp.tools import (
     TOOL_DEFINITIONS,
+    handle_get_entities,
     handle_get_tasks,
     handle_ingest,
     handle_pin,
@@ -167,6 +168,70 @@ class TestGetTasks:
         result = handle_get_tasks(engine, {})
         data = _parse_result(result)
         assert data["tasks"] == []
+
+
+class TestGetEntities:
+    def _seed_entity(self, memory_db: Database) -> str:
+        engine = _make_engine(memory_db)
+        handle_session_start(engine, {})
+        handle_ingest(engine, {
+            "events": [{
+                "type": "decision",
+                "content": "Pick SQLite for local storage",
+            }],
+        })
+        from llm_mem.models.entities import Entity
+        entity = Entity(
+            project_id=engine.project_id,
+            type="decision",
+            title="Use SQLite",
+            content="Pick SQLite for local storage",
+        )
+        conn = memory_db.connect()
+        try:
+            row = entity.to_row()
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"],
+                    row["resolved_at"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return entity.id
+
+    def test_get_by_full_id(self, memory_db: Database) -> None:
+        eid = self._seed_entity(memory_db)
+        engine = _make_engine(memory_db)
+        result = handle_get_entities(engine, {"ids": [eid]})
+        data = _parse_result(result)
+        assert data["count"] == 1
+        assert data["entities"][0]["id"] == eid
+
+    def test_get_by_short_suffix(self, memory_db: Database) -> None:
+        eid = self._seed_entity(memory_db)
+        engine = _make_engine(memory_db)
+        result = handle_get_entities(engine, {"ids": [eid[-8:]]})
+        data = _parse_result(result)
+        assert data["count"] == 1
+        assert data["entities"][0]["id"] == eid
+
+    def test_get_strips_leading_hash(self, memory_db: Database) -> None:
+        eid = self._seed_entity(memory_db)
+        engine = _make_engine(memory_db)
+        result = handle_get_entities(engine, {"ids": [f"#{eid[-8:]}"]})
+        data = _parse_result(result)
+        assert data["count"] == 1
 
 
 class TestPin:
