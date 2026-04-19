@@ -2,48 +2,28 @@
 
 This document explains the reasoning behind each norm in `AGENTS.md`. The norms are opinionated and optimized for a specific workflow: one human designer/product owner, AI agents doing implementation via GLM/OpenCode, incremental work orders.
 
-## Bootstrap Memory
+## Memory is the DB
 
-### Why it matters
+llm-mem captures every event and extracts entities into `.llm-mem/memory.db`. The daemon rewrites `SESSION_SUMMARY.md` on each extraction pass, and `mem_get_briefing` serves the same data via MCP.
 
-Without persistent memory, every new OpenCode session starts from zero. The agent re-reads files, re-discovers architecture, repeats mistakes, and loses track of what was decided yesterday. This is the exact problem llm-mem solves — but we need a working solution while building it.
+The old flat memory files (`.llm-mem/SESSION.md`, `TODO.md`, `DECISIONS.md`) were retired once the daemon proved reliable. The DB is the source of truth; the briefing is a rendering of it.
 
-### How it works
+### Why the DB over flat files
 
-Three flat markdown files in `.llm-mem/`:
+- The daemon keeps it in sync automatically — no "update memory at session end" discipline required
+- Entities are structured and queryable (by type, status, date, file, session) rather than free-form markdown
+- Session boundaries, event lineage, and file attribution are preserved
+- Briefings can be compressed, focused, and token-budgeted on demand
 
-| File | Purpose | Who writes it | When |
-|---|---|---|---|
-| `SESSION.md` | What happened in the last session | Agent (manual or via script) | End of each session |
-| `DECISIONS.md` | Append-only design decision log | Agent when a choice is made | During sessions |
-| `TODO.md` | Current task list and WO progress | Agent when tasks change | During sessions |
+### What still takes a manual `mem_ingest`
 
-These files are intentionally simple — they're markdown that any LLM can read without tooling. They're committed to git so they persist across environments.
-
-### The scripts
-
-- `scripts/session_save.py` — Two modes:
-  - `--from-git`: Auto-generates a summary from recent git commits and test status. Fast, but needs manual editing to add context.
-  - Interactive (default): Prompts you through each section. Better quality but requires human input.
-- `scripts/session_load.py` — Prints all memory files. The `--json` flag outputs structured data that could be piped to other tools.
-
-### Why not just use AGENTS.md for everything?
-
-AGENTS.md is static instructions — it tells the agent how to behave. The bootstrap memory files are dynamic state — they change every session. Mixing the two would make AGENTS.md noisy and hard to maintain.
-
-### Graduation plan
-
-Once WO-05 (MCP server) and WO-07 (briefing) are implemented, the bootstrap memory becomes redundant. At that point:
-1. Import the DECISIONS.md entries as pinned facts in llm-mem
-2. Import TODO.md as entities
-3. Replace the "read SESSION.md" instruction with "call mem_get_briefing"
-4. Keep the files as a fallback for when llm-mem's MCP server isn't running
+The extractor is good at decisions/todos/bugfixes inside conversation, but it can't see the intent behind what you chose *not* to do. If you want something remembered verbatim — an architectural rationale, a gotcha, a priority ordering — call `mem_ingest` explicitly with the right type.
 
 ## Git Discipline
 
 ### Why commit often
 
-GLM/OpenCode sessions can crash, timeout, or hit rate limits. Uncommitted work is lost. Small, frequent commits create natural checkpoints. They also make `session_save.py --from-git` more useful — it can reconstruct what happened from the commit log.
+Sessions can crash, timeout, or hit rate limits. Uncommitted work is lost. Small, frequent commits create natural checkpoints and give the extractor a clean per-commit boundary to attribute work against.
 
 ### Why push immediately
 
@@ -51,13 +31,13 @@ Same reason: pushed commits survive session loss. Additionally, if you're workin
 
 ### Why conventional commits
 
-They're parseable. A future tool (or llm-mem itself) could scan commit messages to extract decisions, TODOs, and progress automatically. They also make git log readable at a glance:
+They're parseable, and llm-mem attributes extracted entities to commits where possible. They also make git log readable at a glance:
 
 ```
 feat(WO-04): implement event ingest pipeline
 test(WO-04): add FTS5 population verification
 fix: handle dedup window edge case with identical timestamps
-docs: update SESSION.md after WO-04 completion
+docs: clarify retention policy in coding-norms
 ```
 
 ### Why no branches for now
@@ -93,11 +73,7 @@ AI agents have a tendency to write broad `except Exception` blocks or swallow er
 
 ### Why "read before write"
 
-The single most common failure mode with coding agents is: the agent doesn't read existing code before writing new code, and produces something incompatible with what exists. The AGENTS.md instructions to read memory files first and read target files before modifying them directly address this.
-
-### Why "update memory files at session end"
-
-If you don't make this a required step, it doesn't happen. And then the next session starts with stale or missing context. By making it part of the workflow checklist (and automating it with `session_save.py`), it becomes a habit.
+The single most common failure mode with coding agents is: the agent doesn't read existing code before writing new code, and produces something incompatible with what exists. The AGENTS.md instruction to read `SESSION_SUMMARY.md` / call `mem_get_briefing` first, and read target files before modifying them, directly addresses this.
 
 ## Anti-patterns to Watch For
 
