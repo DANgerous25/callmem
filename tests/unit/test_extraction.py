@@ -296,7 +296,7 @@ class TestIngestQueuesExtraction:
 class TestAutoResolution:
     def test_bugfix_resolves_matching_todo(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)
-        session = engine.start_session()
+        engine.start_session()
 
         from llm_mem.models.entities import Entity
 
@@ -354,7 +354,7 @@ class TestAutoResolution:
 
     def test_feature_resolves_matching_todo(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)
-        session = engine.start_session()
+        engine.start_session()
 
         from llm_mem.models.entities import Entity
 
@@ -409,7 +409,7 @@ class TestAutoResolution:
 
     def test_no_resolve_when_unrelated(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)
-        session = engine.start_session()
+        engine.start_session()
 
         from llm_mem.models.entities import Entity
 

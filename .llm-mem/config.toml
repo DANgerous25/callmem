@@ -9,7 +9,7 @@ name = "llm-mem"
 backend = "ollama"
 
 [ollama]
-model = "gemma4:e4b"
+model = "qwen3:14b"
 endpoint = "http://localhost:11434"
 timeout = 120
 
@@ -31,7 +31,7 @@ chunk_size = 20
 cross_session_interval = 5
 
 [ui]
-port = 9090
+port = 9093
 host = "0.0.0.0"
 
 [sensitive_data]
