@@ -147,7 +147,69 @@ class EntityExtractor:
                 if self.event_bus is not None:
                     self.event_bus.publish("entity_created", entity.to_row())
 
+        if entities:
+            self._auto_resolve(project_id, entities)
+
         return entities
+
+    def _auto_resolve(
+        self, project_id: str, new_entities: list[Entity]
+    ) -> int:
+        """Auto-resolve open TODOs/failures that match new bugfixes/features/changes.
+
+        When a new bugfix/feature/change is extracted, search for open TODOs
+        or unresolved failures with similar titles and mark them as done/resolved.
+        Returns the number of entities auto-resolved.
+        """
+        resolution_types = {"bugfix", "feature", "change"}
+        resolvable_types = {"todo", "failure"}
+        new_titles: list[tuple[str, str]] = []
+
+        for e in new_entities:
+            if e.type in resolution_types and e.title:
+                new_titles.append((e.title, e.type))
+
+        if not new_titles:
+            return 0
+
+        from llm_mem.core.repository import Repository
+
+        repo = Repository(self.db)
+        resolved = 0
+
+        for title, _source_type in new_titles:
+            words = [w for w in title.split() if len(w) > 3 and w.lower() not in {
+                "implement", "update", "add", "fix", "create", "remove",
+                "build", "write", "setup", "configure", "install", "test",
+                "also", "with", "from", "that", "this", "which", "where",
+            }]
+            if len(words) < 2:
+                continue
+
+            open_statuses = ["open", "unresolved"]
+            matches = repo.find_open_entities_by_keywords(
+                project_id=project_id,
+                entity_types=list(resolvable_types),
+                statuses=open_statuses,
+                keywords=words,
+                limit=3,
+            )
+
+            for match in matches:
+                resolved_status = (
+                    "done" if match["type"] == "todo" else "resolved"
+                )
+                if repo.resolve_entity(match["id"], resolved_status):
+                    resolved += 1
+                    logger.info(
+                        "Auto-resolved %s '%s' -> %s (matched by '%s')",
+                        match["type"],
+                        match["title"][:60],
+                        resolved_status,
+                        title[:60],
+                    )
+
+        return resolved
 
     def _fetch_events(
         self, event_ids: list[str]
