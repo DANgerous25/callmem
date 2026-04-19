@@ -17,6 +17,52 @@ ENTITY_TYPES = [
 ]
 
 
+def _resolve_event_session_map(
+    engine: Any, source_event_ids: list[str],
+) -> dict[str, dict[str, str | None]]:
+    """Batch-resolve source_event_id -> {session_id, model_name}."""
+    if not source_event_ids:
+        return {}
+
+    event_to_session: dict[str, str | None] = {}
+    session_model_cache: dict[str, str | None] = {}
+
+    conn = engine.db.connect()
+    try:
+        placeholders = ",".join("?" for _ in source_event_ids)
+        rows = conn.execute(
+            f"SELECT id, session_id FROM events WHERE id IN ({placeholders})",
+            source_event_ids,
+        ).fetchall()
+        for row in rows:
+            event_to_session[row["id"]] = row["session_id"]
+    finally:
+        conn.close()
+
+    session_ids = {sid for sid in event_to_session.values() if sid}
+    if session_ids:
+        conn = engine.db.connect()
+        try:
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = conn.execute(
+                f"SELECT id, model_name FROM sessions WHERE id IN ({placeholders})",
+                list(session_ids),
+            ).fetchall()
+            for row in rows:
+                session_model_cache[row["id"]] = row["model_name"]
+        finally:
+            conn.close()
+
+    result: dict[str, dict[str, str | None]] = {}
+    for eid in source_event_ids:
+        sid = event_to_session.get(eid)
+        result[eid] = {
+            "session_id": sid,
+            "model_name": session_model_cache.get(sid) if sid else None,
+        }
+    return result
+
+
 def _build_feed_items(
     engine: Any,
     entity_type: str | None = None,
@@ -30,11 +76,15 @@ def _build_feed_items(
     if query:
         results = engine.search(query, limit=100)
         entity_ids = set()
+        source_event_ids: list[str] = []
         for r in results:
             eid = r.get("id", "")
             if entity_type and r.get("type") != entity_type:
                 continue
             entity_ids.add(eid)
+            seid = r.get("source_event_id")
+            if seid:
+                source_event_ids.append(seid)
             items.append({
                 "kind": "entity",
                 "category": r.get("type", "unknown"),
@@ -48,14 +98,26 @@ def _build_feed_items(
                 "priority": r.get("priority"),
                 "pinned": False,
                 "agent_name": None,
+                "model_name": None,
+                "session_id": None,
                 "project_name": project_name,
                 "files": [],
             })
     else:
         type_filter = entity_type if entity_type else None
         entities = engine.get_entities(type=type_filter, limit=100)
+        source_event_ids = []
+        for e in entities:
+            seid = e.get("source_event_id")
+            if seid:
+                source_event_ids.append(seid)
+
+        event_session_map = _resolve_event_session_map(engine, source_event_ids)
+
         for e in entities:
             files = engine.repo.get_files_for_entity(e["id"])
+            seid = e.get("source_event_id")
+            es_map = event_session_map.get(seid, {}) if seid else {}
             items.append({
                 "kind": "entity",
                 "category": e["type"],
@@ -69,6 +131,8 @@ def _build_feed_items(
                 "priority": e.get("priority"),
                 "pinned": e.get("pinned", False),
                 "agent_name": None,
+                "model_name": es_map.get("model_name"),
+                "session_id": es_map.get("session_id"),
                 "project_name": project_name,
                 "files": files,
             })
@@ -88,6 +152,7 @@ def _build_feed_items(
                     "priority": None,
                     "pinned": False,
                     "agent_name": s.agent_name,
+                    "model_name": s.model_name,
                     "project_name": project_name,
                 })
 
@@ -104,6 +169,7 @@ def _build_feed_items(
                 "priority": None,
                 "pinned": False,
                 "agent_name": s.agent_name,
+                "model_name": s.model_name,
                 "project_name": project_name,
             })
 

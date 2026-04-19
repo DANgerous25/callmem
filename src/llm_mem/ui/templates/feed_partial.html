@@ -7,6 +7,9 @@
     {% if item.agent_name %}
     <span class="badge badge-agent">{{ item.agent_name | upper }}</span>
     {% endif %}
+    {% if item.model_name %}
+    <span class="badge badge-model">{{ item.model_name }}</span>
+    {% endif %}
     <span class="feed-card-title-inline">{{ item.title }}</span>
     <span class="feed-project">{{ item.project_name }}</span>
     <span class="feed-card-time-inline" title="{{ item.timestamp[:19] | replace('T', ' ') }}">{{ item.timestamp | relative_time }}</span>
@@ -45,6 +48,9 @@
       #{{ item.id[:8] }}
       {% endif %}
     </span>
+    {% if item.kind == 'entity' and item.session_id %}
+    <a href="/sessions/{{ item.session_id }}#events" class="feed-card-source-link">source events</a>
+    {% endif %}
     {% if item.status and item.kind == 'entity' %}
     <span class="feed-card-status status-{{ item.status }}">{{ item.status }}</span>
     {% endif %}
