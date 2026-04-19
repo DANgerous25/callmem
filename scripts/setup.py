@@ -101,6 +101,20 @@ def _restart_service(svc_name: str) -> None:
         )
 
 
+def _is_service_active(svc_name: str) -> bool:
+    """Check if a systemd user service is currently active."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", svc_name],
+            capture_output=True, text=True,
+        )
+        return result.stdout.strip() == "active"
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return False
+
+
 def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
     """Scan other llm-mem projects for their configured UI ports.
 
@@ -1139,6 +1153,20 @@ vault_mode = "{vault_mode}"
     # ── Autostart ─────────────────────────────────────────────────
     _offer_systemd_service(project, ui_host, ui_port)
 
+    # ── Restart daemon if service exists ──────────────────────────
+    svc_name = _service_name(project)
+    svc_was_active = _is_service_active(svc_name)
+
+    # If we stopped the service for the port check, make sure it's restarted
+    if stopped_service:
+        _restart_service(stopped_service)
+
+    # If the service is installed (active or was active before port check), restart it
+    unit_path = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
+    if unit_path.exists() and (svc_was_active or stopped_service):
+        _restart_service(svc_name)
+        print(f"  Restarted {svc_name} to pick up config changes.")
+
     # ── Summary ───────────────────────────────────────────────────
     print()
     print("=" * 56)
@@ -1158,6 +1186,10 @@ vault_mode = "{vault_mode}"
         print()
     print(f"  Web UI:       http://{ui_host}:{ui_port}")
     print(f"  Vault:        {vault_mode}")
+
+    daemon_active = _is_service_active(svc_name)
+    if daemon_active:
+        print(f"  Daemon:       {svc_name} (running)")
     print()
     print("  Next steps:")
     print()
@@ -1171,31 +1203,24 @@ vault_mode = "{vault_mode}"
         print(f"      export {oai_key_env}=your-key-here")
         print()
 
-    print("    Start everything (UI + workers + adapter):")
-    print(f"      llm-mem daemon --project {project}")
-    print()
-    print("    Or start individually:")
-    print(f"      llm-mem ui --project {project}")
-    if backend != "none":
-        print(f"      llm-mem workers --project {project}")
-    print(f"      llm-mem adapter --project {project}")
-    print()
-    print("    Import existing sessions (if not done above):")
-    print(
-        f"      llm-mem import --source opencode --all"
-        f" --project {project}"
-    )
-    print()
+    if not daemon_active and not unit_path.exists():
+        print("    Start everything (UI + workers + adapter):")
+        print(f"      llm-mem daemon --project {project}")
+        print()
+
+    if not daemon_active:
+        print("    Import existing sessions (if not done above):")
+        print(
+            f"      llm-mem import --source opencode --all"
+            f" --project {project}"
+        )
+        print()
+
     print("    Start coding with memory:")
     print(f"      cd {project} && opencode")
     print()
     print("  Re-run this wizard anytime: make setup")
     print()
-
-    # If we stopped the service for the port check, make sure it's restarted
-    if stopped_service:
-        _restart_service(stopped_service)
-        print(f"  Restarted {stopped_service}")
 
 
 if __name__ == "__main__":
