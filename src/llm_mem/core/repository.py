@@ -343,6 +343,59 @@ class Repository:
         finally:
             conn.close()
 
+    def resolve_entity(self, entity_id: str, status: str) -> bool:
+        """Update an entity's status. Returns True if updated."""
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities SET status = ?, updated_at = datetime('now') "
+                "WHERE id = ? AND status != ?",
+                (status, entity_id, status),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def find_open_entities_by_keywords(
+        self,
+        project_id: str,
+        entity_types: list[str],
+        statuses: list[str],
+        keywords: list[str],
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Find open entities whose titles contain enough of the given keywords."""
+        conn = self.db.connect()
+        try:
+            type_placeholders = ",".join("?" for _ in entity_types)
+            status_placeholders = ",".join("?" for _ in statuses)
+            rows = conn.execute(
+                f"SELECT id, type, title, status FROM entities "
+                f"WHERE project_id = ? "
+                f"AND type IN ({type_placeholders}) "
+                f"AND status IN ({status_placeholders}) "
+                f"ORDER BY created_at DESC LIMIT 200",
+                [project_id, *entity_types, *statuses],
+            ).fetchall()
+
+            scored: list[tuple[int, dict[str, Any]]] = []
+            kw_lower = [k.lower() for k in keywords if len(k) > 3]
+            if not kw_lower:
+                return []
+
+            for r in rows:
+                title_lower = r["title"].lower()
+                match_count = sum(1 for k in kw_lower if k in title_lower)
+                threshold = max(2, len(kw_lower) // 2)
+                if match_count >= threshold:
+                    scored.append((match_count, dict(r)))
+
+            scored.sort(key=lambda x: -x[0])
+            return [item[1] for item in scored[:limit]]
+        finally:
+            conn.close()
+
     # ── Vault ─────────────────────────────────────────────────────────
 
     def insert_vault_entry(

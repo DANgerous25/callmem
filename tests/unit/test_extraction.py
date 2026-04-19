@@ -26,6 +26,18 @@ def _setup_engine_and_extractor(
     return engine, extractor
 
 
+def _assert_pending_job(db: Database, job_type: str) -> None:
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT id FROM jobs WHERE type = ? AND status = 'pending' LIMIT 1",
+            (job_type,),
+        ).fetchone()
+        assert row is not None, f"No pending {job_type} job found"
+    finally:
+        conn.close()
+
+
 class TestEntityExtractor:
     def test_extracts_decisions(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)
@@ -279,3 +291,172 @@ class TestIngestQueuesExtraction:
         job = queue.dequeue("extract_entities")
         assert job is not None
         assert len(job.payload["event_ids"]) == 2
+
+
+class TestAutoResolution:
+    def test_bugfix_resolves_matching_todo(self, memory_db: Database) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        session = engine.start_session()
+
+        from llm_mem.models.entities import Entity
+
+        todo = Entity(
+            project_id=engine.project_id,
+            type="todo",
+            title="Fix copy button clipboard fallback",
+            content="The copy button fails on non-HTTPS",
+            status="open",
+            priority="high",
+        )
+        conn = memory_db.connect()
+        row = todo.to_row()
+        conn.execute(
+            "INSERT INTO entities "
+            "(id, project_id, source_event_id, type, title, content, "
+            "status, priority, pinned, created_at, updated_at, "
+            "resolved_at, metadata, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row["project_id"], row["source_event_id"],
+                row["type"], row["title"], row["content"],
+                row["status"], row["priority"], row["pinned"],
+                row["created_at"], row["updated_at"],
+                row["resolved_at"], row["metadata"], row["archived_at"],
+            ),
+        )
+        conn.commit()
+
+        engine.ingest_one("note", "Fixed the copy button clipboard fallback")
+
+        _assert_pending_job(memory_db, "extract_entities")
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], "features": [], '
+            '"bugfixes": [{"title": "Fixed copy button clipboard fallback", '
+            '"content": "Added fallback copy mechanism", '
+            '"key_points": ["navigator.clipboard fails on non-HTTPS"], '
+            '"synopsis": "Fixed by adding execCommand fallback"}], '
+            '"research": [], "changes": []}'
+        )
+
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        assert entities[0].type == "bugfix"
+
+        updated = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo.id,)
+        ).fetchone()
+        conn.close()
+        assert updated["status"] == "done"
+
+    def test_feature_resolves_matching_todo(self, memory_db: Database) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        session = engine.start_session()
+
+        from llm_mem.models.entities import Entity
+
+        todo = Entity(
+            project_id=engine.project_id,
+            type="todo",
+            title="Implement analysis history selector",
+            content="Need a dropdown to pick past analysis runs",
+            status="open",
+            priority="medium",
+        )
+        conn = memory_db.connect()
+        row = todo.to_row()
+        conn.execute(
+            "INSERT INTO entities "
+            "(id, project_id, source_event_id, type, title, content, "
+            "status, priority, pinned, created_at, updated_at, "
+            "resolved_at, metadata, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row["project_id"], row["source_event_id"],
+                row["type"], row["title"], row["content"],
+                row["status"], row["priority"], row["pinned"],
+                row["created_at"], row["updated_at"],
+                row["resolved_at"], row["metadata"], row["archived_at"],
+            ),
+        )
+        conn.commit()
+
+        engine.ingest_one("note", "Built the analysis history selector")
+
+        _assert_pending_job(memory_db, "extract_entities")
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], '
+            '"features": [{"title": "Analysis history selector implemented", '
+            '"content": "Dropdown to pick past runs", '
+            '"key_points": ["Uses analysis_results table"], '
+            '"synopsis": "Implemented UI component"}], '
+            '"bugfixes": [], "research": [], "changes": []}'
+        )
+
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            extractor.process_pending()
+
+        updated = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo.id,)
+        ).fetchone()
+        conn.close()
+        assert updated["status"] == "done"
+
+    def test_no_resolve_when_unrelated(self, memory_db: Database) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        session = engine.start_session()
+
+        from llm_mem.models.entities import Entity
+
+        todo = Entity(
+            project_id=engine.project_id,
+            type="todo",
+            title="Configure Redis caching layer",
+            content="Set up Redis for session storage",
+            status="open",
+            priority="medium",
+        )
+        conn = memory_db.connect()
+        row = todo.to_row()
+        conn.execute(
+            "INSERT INTO entities "
+            "(id, project_id, source_event_id, type, title, content, "
+            "status, priority, pinned, created_at, updated_at, "
+            "resolved_at, metadata, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row["project_id"], row["source_event_id"],
+                row["type"], row["title"], row["content"],
+                row["status"], row["priority"], row["pinned"],
+                row["created_at"], row["updated_at"],
+                row["resolved_at"], row["metadata"], row["archived_at"],
+            ),
+        )
+        conn.commit()
+
+        engine.ingest_one("note", "Fixed the copy button clipboard fallback")
+        _assert_pending_job(memory_db, "extract_entities")
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], "features": [], '
+            '"bugfixes": [{"title": "Fixed copy button clipboard fallback", '
+            '"content": "Added fallback copy mechanism", '
+            '"key_points": ["navigator.clipboard fails"], '
+            '"synopsis": "Fixed"}], '
+            '"research": [], "changes": []}'
+        )
+
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            extractor.process_pending()
+
+        updated = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo.id,)
+        ).fetchone()
+        conn.close()
+        assert updated["status"] == "open"
