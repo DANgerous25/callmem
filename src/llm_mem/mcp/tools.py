@@ -225,7 +225,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "mem_get_entities",
         "description": (
             "Layer 3 — Full entity details. Returns complete content "
-            "for specific entity IDs. Use after search_index/timeline."
+            "for specific entity IDs. Use after search_index/timeline "
+            "or to resolve the short IDs shown in the startup briefing. "
+            "Accepts full ULIDs or the 8-char short IDs from the "
+            "briefing (with or without leading '#')."
         ),
         "inputSchema": {
             "type": "object",
@@ -234,7 +237,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Entity IDs to fetch",
+                    "description": (
+                        "Entity IDs to fetch. Full ULIDs or the short "
+                        "form shown in briefings (e.g. 'F5AVDQ25')."
+                    ),
                 },
             },
         },
@@ -502,18 +508,29 @@ def handle_get_entities(
 ) -> list[TextContent]:
     ids = args.get("ids", [])
     results = []
-    for eid in ids:
+    for raw_eid in ids:
+        eid = (raw_eid or "").lstrip("#").strip()
+        if not eid:
+            continue
         conn = engine.db.connect()
         try:
             row = conn.execute(
                 "SELECT * FROM entities WHERE id = ?", (eid,)
             ).fetchone()
+            if row is None and len(eid) < 26:
+                row = conn.execute(
+                    "SELECT * FROM entities "
+                    "WHERE id LIKE ? OR id LIKE ? "
+                    "LIMIT 2",
+                    (f"{eid}%", f"%{eid}"),
+                ).fetchone()
         finally:
             conn.close()
         if row:
             from llm_mem.models.entities import Entity
             entity = Entity.from_row(dict(row))
-            files = engine.repo.get_files_for_entity(eid)
+            full_id = row["id"]
+            files = engine.repo.get_files_for_entity(full_id)
             d = entity.to_row()
             d["files"] = files
             results.append(d)
