@@ -42,9 +42,25 @@ Track work order progress and ad-hoc tasks here.
 | WO-33 | Queue status indicator — live SSE badge in header | **Complete** |
 | WO-34 | Feed filtering — type pills, search, ordering | **Complete** |
 | WO-04c | Auto-patch AGENTS.md with MCP tool instructions | **Complete** |
+| WO-35 | One-command installer | **Complete** |
+| WO-36 | Claude Code MCP integration | **Complete** |
+| WO-37 | Entity staleness detection | **Complete** |
+| WO-38 | Concept tags | Not started |
+| WO-39 | Refactor entity_type | Not started |
+| WO-40 | Date-range column on FTS | Not started |
+| WO-41 | Tool filtering | Not started |
+| WO-42 | File-read gate | Not started |
+| WO-43 | Endless mode | Not started |
+| WO-44 | Mode system | Not started |
+| WO-45 | Messaging integrations | Not started |
+| WO-46 | Multi-agent tracking | Not started |
+| WO-47 | Vector / semantic search | Not started |
+| WO-48 | Claude Code session ingestion (live tailer + batch import) | **Complete** |
 
 ## Ad-hoc Tasks
 
 - [x] Verify WO-01 acceptance criteria are fully met before moving on
 - [ ] Consider adding a `py.typed` marker for PEP 561
 - [ ] Set up `ruff` pre-commit hook
+- [ ] Pre-existing lint: `SIM108` in `cli.py:1152` (eta ternary) — not from WO-37.
+- [ ] Pre-existing lint: `F541` / `F401` in `scripts/setup.py` (gpu_scan imports, f-string).
