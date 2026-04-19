@@ -82,15 +82,15 @@ class TestForegroundImportPassesProjectPath:
             return []
 
         monkeypatch.setattr(
-            "llm_mem.adapters.opencode_import.discover_sessions",
+            "callmem.adapters.opencode_import.discover_sessions",
             _fake_discover,
         )
         monkeypatch.setattr(
-            "llm_mem.adapters.opencode_import.import_sessions",
+            "callmem.adapters.opencode_import.import_sessions",
             _fake_import_sessions,
         )
         monkeypatch.setattr(
-            "llm_mem.adapters.opencode_import.DEFAULT_DB_PATH",
+            "callmem.adapters.opencode_import.DEFAULT_DB_PATH",
             tmp_path / "opencode.db",
         )
         (tmp_path / "opencode.db").write_bytes(b"")
@@ -100,19 +100,19 @@ class TestForegroundImportPassesProjectPath:
 
         project = tmp_path / "proj"
         project.mkdir()
-        db_path = project / ".llm-mem" / "memory.db"
+        db_path = project / ".callmem" / "memory.db"
         db_path.parent.mkdir(parents=True)
         db_path.write_bytes(b"")
 
         monkeypatch.setattr(
-            "llm_mem.core.config.load_config", lambda _p: _StubConfig()
+            "callmem.core.config.load_config", lambda _p: _StubConfig()
         )
         monkeypatch.setattr(
-            "llm_mem.core.database.Database",
+            "callmem.core.database.Database",
             lambda _p: _StubDB(),
         )
         monkeypatch.setattr(
-            "llm_mem.core.engine.MemoryEngine",
+            "callmem.core.engine.MemoryEngine",
             lambda _db, _cfg: object(),
         )
 

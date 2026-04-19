@@ -6,13 +6,13 @@ Add "refactor" as an entity type so code refactoring work is tracked distinctly 
 
 ## Background
 
-claude-mem has a "refactor" observation type. llm-mem currently has: decision, todo, fact, failure, discovery, feature, bugfix, research, change. Refactoring is conceptually different from a feature (no new behaviour) and from a change (implies structural improvement, not just modification).
+claude-mem has a "refactor" observation type. callmem currently has: decision, todo, fact, failure, discovery, feature, bugfix, research, change. Refactoring is conceptually different from a feature (no new behaviour) and from a change (implies structural improvement, not just modification).
 
 ## Deliverables
 
 ### 1. Add type to `EntityType` literal
 
-In `src/llm_mem/models/entities.py`:
+In `src/callmem/models/entities.py`:
 
 ```python
 EntityType = Literal[

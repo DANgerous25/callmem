@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_mem.core.redaction import (
+from callmem.core.redaction import (
     DEFAULT_ALLOWLIST,
     Detection,
     PatternScanner,

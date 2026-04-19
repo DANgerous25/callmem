@@ -9,14 +9,14 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from llm_mem.core.config import (
+from callmem.core.config import (
     _deep_merge,
     _parse_env_value,
     _set_nested,
     generate_default_config,
     load_config,
 )
-from llm_mem.models.config import Config
+from callmem.models.config import Config
 
 
 class TestConfigDefaults:
@@ -72,7 +72,7 @@ class TestConfigValidation:
 
 class TestConfigTomlOverride:
     def test_project_config_overrides_defaults(self, tmp_path: Path) -> None:
-        config_dir = tmp_path / ".llm-mem"
+        config_dir = tmp_path / ".callmem"
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
         config_file.write_text('[ollama]\nmodel = "llama3.1:8b"\n')
@@ -80,7 +80,7 @@ class TestConfigTomlOverride:
         assert config.ollama.model == "llama3.1:8b"
 
     def test_project_config_partial_override(self, tmp_path: Path) -> None:
-        config_dir = tmp_path / ".llm-mem"
+        config_dir = tmp_path / ".callmem"
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
         config_file.write_text('[briefing]\nmax_tokens = 500\n')
@@ -99,39 +99,39 @@ class TestConfigTomlOverride:
 
 class TestConfigEnvOverride:
     def test_env_overrides_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LLM_MEM_OLLAMA__MODEL", "gemma2:9b")
+        monkeypatch.setenv("CALLMEM_OLLAMA__MODEL", "gemma2:9b")
         config = load_config()
         assert config.ollama.model == "gemma2:9b"
 
     def test_env_overrides_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        config_dir = tmp_path / ".llm-mem"
+        config_dir = tmp_path / ".callmem"
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
         config_file.write_text('[ollama]\nmodel = "llama3.1:8b"\n')
 
-        monkeypatch.setenv("LLM_MEM_OLLAMA__MODEL", "gemma2:9b")
+        monkeypatch.setenv("CALLMEM_OLLAMA__MODEL", "gemma2:9b")
         config = load_config(tmp_path)
         assert config.ollama.model == "gemma2:9b"
 
     def test_env_bool_parsing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LLM_MEM_COMPACTION__ENABLED", "false")
+        monkeypatch.setenv("CALLMEM_COMPACTION__ENABLED", "false")
         config = load_config()
         assert config.compaction.enabled is False
 
     def test_env_int_parsing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LLM_MEM_UI__PORT", "8080")
+        monkeypatch.setenv("CALLMEM_UI__PORT", "8080")
         config = load_config()
         assert config.ui.port == 8080
 
     def test_env_multiple_sections(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LLM_MEM_OLLAMA__MODEL", "m1")
-        monkeypatch.setenv("LLM_MEM_BRIEFING__MAX_TOKENS", "500")
+        monkeypatch.setenv("CALLMEM_OLLAMA__MODEL", "m1")
+        monkeypatch.setenv("CALLMEM_BRIEFING__MAX_TOKENS", "500")
         config = load_config()
         assert config.ollama.model == "m1"
         assert config.briefing.max_tokens == 500
 
     def test_env_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("LLM_MEM_OLLAMA__MODEL", raising=False)
+        monkeypatch.delenv("CALLMEM_OLLAMA__MODEL", raising=False)
         config = load_config()
         assert config.ollama.model == "qwen3:8b"
 

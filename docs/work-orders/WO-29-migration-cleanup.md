@@ -6,9 +6,9 @@ Migration 002 adds `scan_status` column to the `events` table. However, the engi
 
 ## Files to Modify
 
-- `src/llm_mem/core/engine.py` — write `scan_status` to the column instead of (or in addition to) metadata
-- `src/llm_mem/core/repository.py` — update `insert_event` to accept and store `scan_status`
-- `src/llm_mem/core/migrations/` — optionally add migration 007 to note the fix (or document in 002)
+- `src/callmem/core/engine.py` — write `scan_status` to the column instead of (or in addition to) metadata
+- `src/callmem/core/repository.py` — update `insert_event` to accept and store `scan_status`
+- `src/callmem/core/migrations/` — optionally add migration 007 to note the fix (or document in 002)
 
 ## Approach
 

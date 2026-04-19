@@ -1,4 +1,4 @@
-// Auto-displays llm-mem briefing when an OpenCode session starts.
+// Auto-displays callmem briefing when an OpenCode session starts.
 // Listens for session.created and injects a prompt to present SESSION_SUMMARY.md.
 //
 // Known issue: session.created may not fire reliably for plugins (OpenCode #14808).

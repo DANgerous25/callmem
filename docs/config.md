@@ -5,9 +5,9 @@
 Configuration is resolved in this order (later overrides earlier):
 
 1. **Built-in defaults** — Sensible defaults baked into the code
-2. **Global config** — `~/.config/llm-mem/config.toml`
-3. **Project config** — `.llm-mem/config.toml` in the project root
-4. **Environment variables** — `LLM_MEM_*` prefix
+2. **Global config** — `~/.config/callmem/config.toml`
+3. **Project config** — `.callmem/config.toml` in the project root
+4. **Environment variables** — `CALLMEM_*` prefix
 5. **CLI flags** — Command-line arguments
 
 ## Config file format
@@ -17,15 +17,15 @@ TOML. Chosen over JSON because it supports comments, and over YAML because it's 
 ### Full example
 
 ```toml
-# ~/.config/llm-mem/config.toml  (global)
-# or .llm-mem/config.toml        (per-project)
+# ~/.config/callmem/config.toml  (global)
+# or .callmem/config.toml        (per-project)
 
 [project]
 name = "my-project"
 root_path = "."                    # Resolved to absolute path at runtime
 
 [database]
-path = ".llm-mem/memory.db"       # Relative to project root
+path = ".callmem/memory.db"       # Relative to project root
 wal_mode = true                    # SQLite WAL mode for concurrent access
 busy_timeout_ms = 5000
 
@@ -37,7 +37,7 @@ max_retries = 3
 enabled = true                     # Set false to skip all background LLM work
 
 [interactive]
-# These describe the interactive coding model — llm-mem doesn't call it,
+# These describe the interactive coding model — callmem doesn't call it,
 # but uses this info for token estimation and briefing sizing.
 provider = "anthropic"             # anthropic, openai, ollama, google, etc.
 model = "claude-sonnet-4-5-20250514"
@@ -113,7 +113,7 @@ allowlist = ["test@example.com", "127.0.0.1", "localhost"]
 
 [vault]
 mode = "auto"                      # "auto" or "passphrase"
-# passphrase read from LLM_MEM_VAULT_PASSPHRASE env var when mode = "passphrase"
+# passphrase read from CALLMEM_VAULT_PASSPHRASE env var when mode = "passphrase"
 
 [embeddings]
 # v2 configuration — ignored in v1
@@ -128,7 +128,7 @@ batch_size = 32
 [ui]
 host = "127.0.0.1"
 port = 9090
-open_browser = true                # Auto-open browser on `llm-mem ui`
+open_browser = true                # Auto-open browser on `callmem ui`
 
 [mcp]
 transport = "stdio"                # stdio or sse
@@ -137,48 +137,48 @@ sse_port = 9091
 
 [logging]
 level = "INFO"                     # DEBUG, INFO, WARNING, ERROR
-file = ".llm-mem/llm-mem.log"     # Relative to project root
+file = ".callmem/callmem.log"     # Relative to project root
 max_size_mb = 10
 backup_count = 3
 ```
 
 ## Environment variables
 
-Every config key maps to an environment variable with `LLM_MEM_` prefix and `__` as separator:
+Every config key maps to an environment variable with `CALLMEM_` prefix and `__` as separator:
 
 | Config key | Environment variable |
 |---|---|
-| `ollama.model` | `LLM_MEM_OLLAMA__MODEL` |
-| `ollama.endpoint` | `LLM_MEM_OLLAMA__ENDPOINT` |
-| `database.path` | `LLM_MEM_DATABASE__PATH` |
-| `briefing.max_tokens` | `LLM_MEM_BRIEFING__MAX_TOKENS` |
-| `ui.port` | `LLM_MEM_UI__PORT` |
-| `mcp.transport` | `LLM_MEM_MCP__TRANSPORT` |
+| `ollama.model` | `CALLMEM_OLLAMA__MODEL` |
+| `ollama.endpoint` | `CALLMEM_OLLAMA__ENDPOINT` |
+| `database.path` | `CALLMEM_DATABASE__PATH` |
+| `briefing.max_tokens` | `CALLMEM_BRIEFING__MAX_TOKENS` |
+| `ui.port` | `CALLMEM_UI__PORT` |
+| `mcp.transport` | `CALLMEM_MCP__TRANSPORT` |
 
 ## CLI flags
 
 ```bash
 # Override project root
-llm-mem serve --project /path/to/project
+callmem serve --project /path/to/project
 
 # Override Ollama model
-llm-mem serve --ollama-model qwen3:14b
+callmem serve --ollama-model qwen3:14b
 
 # Override database path
-llm-mem serve --db /custom/path/memory.db
+callmem serve --db /custom/path/memory.db
 
 # Override UI port
-llm-mem ui --port 8080
+callmem ui --port 8080
 
 # Override MCP transport
-llm-mem serve --transport sse --sse-port 9091
+callmem serve --transport sse --sse-port 9091
 
 # Disable background workers (ingest-only mode)
-llm-mem serve --no-workers
+callmem serve --no-workers
 
 # Verbose logging
-llm-mem serve -v  # INFO
-llm-mem serve -vv # DEBUG
+callmem serve -v  # INFO
+callmem serve -vv # DEBUG
 ```
 
 ## Safe defaults
@@ -187,7 +187,7 @@ The default configuration is designed to be safe and useful without any user con
 
 | Setting | Default | Why |
 |---|---|---|
-| Database path | `.llm-mem/memory.db` | In the project directory, git-ignorable |
+| Database path | `.callmem/memory.db` | In the project directory, git-ignorable |
 | Ollama model | `qwen3:8b` | Good balance of quality and speed on modest hardware |
 | Compaction | Enabled, on session end | Prevents unbounded growth |
 | Briefing budget | 2000 tokens | Leaves room for coding context |
@@ -202,15 +202,15 @@ The default configuration is designed to be safe and useful without any user con
 Add to your project's `.gitignore`:
 
 ```gitignore
-# llm-mem
-.llm-mem/
+# callmem
+.callmem/
 ```
 
-The entire `.llm-mem/` directory (database, logs, config) is local to each developer's machine. It should not be committed.
+The entire `.callmem/` directory (database, logs, config) is local to each developer's machine. It should not be committed.
 
 ## Config validation
 
-On startup, llm-mem validates:
+On startup, callmem validates:
 1. Ollama endpoint is reachable (warn if not — don't fail)
 2. Database path is writable
 3. All config values are within acceptable ranges

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from llm_mem.cli import main
+from callmem.cli import main
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -132,7 +132,7 @@ class TestImportCommand:
             main,
             ["import", "--source", "opencode", "--project", str(tmp_path)],
         )
-        assert "No llm-mem database" in result.output
+        assert "No callmem database" in result.output
 
     def test_no_sessions_found(self, tmp_path: Path) -> None:
         runner = CliRunner()

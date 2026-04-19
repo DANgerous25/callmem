@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Interactive setup for llm-mem in a project.
+"""Interactive setup for callmem in a project.
 
 Run from any project root:
     uv run python scripts/setup.py
     make setup
-    llm-mem setup
+    callmem setup
 
 Safe to run multiple times — never wipes data. On repeat runs:
 - Reads existing config and shows current values as defaults
@@ -140,10 +140,10 @@ def _is_service_active(svc_name: str) -> bool:
         return False
 
 
-def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
-    """Scan other llm-mem projects for their configured UI ports.
+def _find_other_callmem_ports(current_project: Path) -> dict[int, str]:
+    """Scan other callmem projects for their configured UI ports.
 
-    Looks at sibling llm-mem service files to find their
+    Looks at sibling callmem service files to find their
     WorkingDirectory, then reads the config.toml for the port.
     Returns {port: project_name}.
     """
@@ -152,7 +152,12 @@ def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
     if not systemd_dir.is_dir():
         return used
 
-    for unit in systemd_dir.glob("llm-mem-*.service"):
+    # Include legacy llm-mem-*.service units so ports on pre-rename installs
+    # still count as "in use" when picking a port for the new project.
+    units = list(systemd_dir.glob("callmem-*.service")) + list(
+        systemd_dir.glob("llm-mem-*.service")
+    )
+    for unit in units:
         try:
             content = unit.read_text()
             for line in content.splitlines():
@@ -160,7 +165,10 @@ def _find_other_llm_mem_ports(current_project: Path) -> dict[int, str]:
                     proj_path = Path(line.split("=", 1)[1].strip())
                     if proj_path.resolve() == current_project.resolve():
                         continue
-                    cfg = proj_path / ".llm-mem" / "config.toml"
+                    # Prefer .callmem/ config; fall back to legacy .llm-mem/
+                    cfg = proj_path / ".callmem" / "config.toml"
+                    if not cfg.exists():
+                        cfg = proj_path / ".llm-mem" / "config.toml"
                     if cfg.exists():
                         other = load_existing_config(cfg)
                         p = other.get("ui", {}).get("port")
@@ -261,7 +269,7 @@ def _claude_md_is_separate_file(claude_path: Path, agents_path: Path) -> bool:
 
 
 def _ensure_claude_code_mcp(project: Path) -> None:
-    """Ensure .mcp.json has llm-mem MCP server configured for Claude Code."""
+    """Ensure .mcp.json has callmem MCP server configured for Claude Code."""
     mcp_path = project / ".mcp.json"
 
     config: dict = {}
@@ -276,66 +284,66 @@ def _ensure_claude_code_mcp(project: Path) -> None:
     command, args = detected[0], detected[1:]
 
     servers = config.get("mcpServers") or {}
-    existing = servers.get("llm-mem", {})
+    existing = servers.get("callmem", {})
     if existing.get("command") == command and existing.get("args") == args:
-        print(f"  {mcp_path.name} already has llm-mem MCP server")
+        print(f"  {mcp_path.name} already has callmem MCP server")
         return
 
-    servers["llm-mem"] = {"command": command, "args": args}
+    servers["callmem"] = {"command": command, "args": args}
     config["mcpServers"] = servers
 
     mcp_path.write_text(json.dumps(config, indent=2) + "\n")
     action = "Updated" if existing else "Wrote"
-    print(f"  {action} llm-mem MCP server in {mcp_path.name}")
+    print(f"  {action} callmem MCP server in {mcp_path.name}")
 
 
 def _detect_mcp_command(project: Path) -> list[str]:
-    """Detect the best command to run the llm-mem MCP server.
+    """Detect the best command to run the callmem MCP server.
 
     Checks in order:
-    1. System Python can import llm_mem → use python3 directly.
-    2. We're inside the llm-mem project itself → use uv run.
-    3. Find llm-mem install path → use uv run --directory.
+    1. System Python can import callmem → use python3 directly.
+    2. We're inside the callmem project itself → use uv run.
+    3. Find callmem install path → use uv run --directory.
     4. Fallback → use python3 (best-effort).
     """
     import subprocess
 
-    # 1. Check if llm_mem is importable from system Python
+    # 1. Check if callmem is importable from system Python
     try:
         result = subprocess.run(
-            ["python3", "-c", "import llm_mem"],
+            ["python3", "-c", "import callmem"],
             capture_output=True, timeout=5,
         )
         if result.returncode == 0:
-            return ["python3", "-m", "llm_mem.mcp.server", "--project", "."]
+            return ["python3", "-m", "callmem.mcp.server", "--project", "."]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    # 2. Check if we're in the llm-mem project itself
-    if (project / "src" / "llm_mem").is_dir():
-        return ["uv", "run", "python", "-m", "llm_mem.mcp.server", "--project", "."]
+    # 2. Check if we're in the callmem project itself
+    if (project / "src" / "callmem").is_dir():
+        return ["uv", "run", "python", "-m", "callmem.mcp.server", "--project", "."]
 
-    # 3. Fall back to uv with --directory pointing to llm-mem source
+    # 3. Fall back to uv with --directory pointing to callmem source
     try:
         result = subprocess.run(
             [
                 "python3", "-c",
-                "import llm_mem; from pathlib import Path; "
-                "print(Path(llm_mem.__file__).parent.parent.parent)",
+                "import callmem; from pathlib import Path; "
+                "print(Path(callmem.__file__).parent.parent.parent)",
             ],
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            llm_mem_dir = result.stdout.strip()
+            callmem_dir = result.stdout.strip()
             return [
-                "uv", "run", "--directory", llm_mem_dir,
-                "python", "-m", "llm_mem.mcp.server", "--project", ".",
+                "uv", "run", "--directory", callmem_dir,
+                "python", "-m", "callmem.mcp.server", "--project", ".",
             ]
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
     # 4. Ultimate fallback
-    return ["python3", "-m", "llm_mem.mcp.server", "--project", "."]
+    return ["python3", "-m", "callmem.mcp.server", "--project", "."]
 
 
 # ── Session import ───────────────────────────────────────────────────
@@ -344,7 +352,7 @@ def _detect_mcp_command(project: Path) -> list[str]:
 def _offer_session_import(project: Path, db_path: Path) -> None:
     """Check for existing OpenCode sessions and offer to import them."""
     try:
-        from llm_mem.adapters.opencode_import import (
+        from callmem.adapters.opencode_import import (
             DEFAULT_DB_PATH,
             discover_sessions,
             import_sessions,
@@ -382,14 +390,14 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
 
     print()
     do_import = ask_bool(
-        "Import these sessions into llm-mem?",
+        "Import these sessions into callmem?",
         default=True,
     )
 
     if not do_import:
         print("  Skipped. You can import later with:")
         print(
-            f"    llm-mem import --source opencode --all "
+            f"    callmem import --source opencode --all "
             f"--project {project} --project-path {project}"
         )
         return
@@ -397,7 +405,7 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
     if not db_path.exists():
         print("  Database not ready — skipping import.")
         print(
-            f"  Run: llm-mem import --source opencode --all "
+            f"  Run: callmem import --source opencode --all "
             f"--project {project} --project-path {project}"
         )
         return
@@ -418,9 +426,9 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
     try:
         import time
 
-        from llm_mem.core.config import load_config
-        from llm_mem.core.database import Database
-        from llm_mem.core.engine import MemoryEngine
+        from callmem.core.config import load_config
+        from callmem.core.database import Database
+        from callmem.core.engine import MemoryEngine
 
         config = load_config(project)
         db = Database(db_path)
@@ -480,7 +488,7 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
     except Exception as exc:
         print(f"  Import failed: {exc}")
         print(
-            f"  You can retry: llm-mem import --source opencode --all "
+            f"  You can retry: callmem import --source opencode --all "
             f"--project {project} --project-path {project}"
         )
 
@@ -491,7 +499,7 @@ def _run_setup_background_import(project: Path, oc_db: Path) -> None:
     import sys
 
     cmd = [
-        sys.executable, "-m", "llm_mem.cli",
+        sys.executable, "-m", "callmem.cli",
         "import",
         "--source", "opencode",
         "--project", str(project),
@@ -509,7 +517,7 @@ def _run_setup_background_import(project: Path, oc_db: Path) -> None:
 
     print()
     print(f"  Import running in background (PID {proc.pid}).")
-    print("  Check progress: llm-mem import --status")
+    print("  Check progress: callmem import --status")
     print("  Extraction will begin automatically once events are ingested.")
     print("  You can open OpenCode now — new memories will appear as they're processed.")
 
@@ -519,7 +527,7 @@ def _run_setup_background_import(project: Path, oc_db: Path) -> None:
 
 def _service_name(project: Path) -> str:
     """Derive a systemd service name from the project path."""
-    return f"llm-mem-{project.name}"
+    return f"callmem-{project.name}"
 
 
 def _offer_systemd_service(
@@ -539,7 +547,7 @@ def _offer_systemd_service(
     print("── Autostart ──")
     print()
     print(
-        "  llm-mem can install a systemd user service so the"
+        "  callmem can install a systemd user service so the"
         " daemon"
     )
     print(
@@ -553,29 +561,29 @@ def _offer_systemd_service(
     )
     if not install:
         print("  Skipped. Start manually with:")
-        print(f"    llm-mem daemon --project {project}")
+        print(f"    callmem daemon --project {project}")
         return
 
     svc_name = _service_name(project)
     unit_path = systemd_dir / f"{svc_name}.service"
 
-    # Find the llm-mem binary
-    llm_mem_bin = shutil.which("llm-mem")
-    if llm_mem_bin is None:
+    # Find the callmem binary
+    callmem_bin = shutil.which("callmem")
+    if callmem_bin is None:
         # Fall back to uv run
-        llm_mem_bin = f"{shutil.which('uv') or 'uv'} run llm-mem"
+        callmem_bin = f"{shutil.which('uv') or 'uv'} run callmem"
 
     # Collect env vars the service needs
     env_lines = [
         f"Environment=PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}",
     ]
     # Pass through API key env vars if set
-    config_path = project / ".llm-mem" / "config.toml"
+    config_path = project / ".callmem" / "config.toml"
     if config_path.exists():
         cfg = load_existing_config(config_path)
         key_env = cfg.get(
             "openai_compat", {}
-        ).get("api_key_env", "LLM_MEM_API_KEY")
+        ).get("api_key_env", "CALLMEM_API_KEY")
         key_val = os.environ.get(key_env, "")
         if key_val:
             env_lines.append(f"Environment={key_env}={key_val}")
@@ -587,13 +595,13 @@ def _offer_systemd_service(
     env_block = "\n".join(env_lines)
 
     unit_content = f"""[Unit]
-Description=llm-mem daemon for {project.name}
+Description=callmem daemon for {project.name}
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory={project}
-ExecStart={llm_mem_bin} daemon --project {project}
+ExecStart={callmem_bin} daemon --project {project}
 Restart=on-failure
 RestartSec=5
 {env_block}
@@ -694,8 +702,8 @@ def _ensure_agents_session_summary(agents_path: Path) -> None:
 
 _MCP_BLOCK_SNIPPET = (
 
-    "\n## Memory (llm-mem)\n\n"
-    "This project uses llm-mem for persistent memory via MCP tools.\n\n"
+    "\n## Memory (callmem)\n\n"
+    "This project uses callmem for persistent memory via MCP tools.\n\n"
     "**Start of session:**\n"
     "1. Read `SESSION_SUMMARY.md` (if it exists) for an auto-generated briefing\n"
     "2. Call `mem_session_start` to register this session\n"
@@ -716,20 +724,20 @@ _MCP_BLOCK_SNIPPET = (
     "- The system captures raw events automatically — focus on recording decisions and TODOs\n"
 )
 
-_MCP_SENTINELS = ("## Memory (llm-mem)", "mem_ingest", "mem_session_start")
+_MCP_SENTINELS = ("## Memory (callmem)", "mem_ingest", "mem_session_start")
 
 
 def _ensure_agents_mcp_block(agents_path: Path) -> None:
-    """Patch an existing AGENTS.md with llm-mem MCP tool usage instructions."""
+    """Patch an existing AGENTS.md with callmem MCP tool usage instructions."""
     if not agents_path.exists():
         return
     content = agents_path.read_text(encoding="utf-8")
     if any(s in content for s in _MCP_SENTINELS):
-        print("  AGENTS.md already has llm-mem instructions")
+        print("  AGENTS.md already has callmem instructions")
         return
     content += _MCP_BLOCK_SNIPPET
     agents_path.write_text(content, encoding="utf-8")
-    print("  Patched AGENTS.md with llm-mem MCP tool instructions")
+    print("  Patched AGENTS.md with callmem MCP tool instructions")
 
 
 # ── OpenCode plugin / command provisioning ─────────────────────────
@@ -803,10 +811,10 @@ def _generate_initial_briefing(project: Path, db_path: Path) -> None:
     if not db_path.exists():
         return
     try:
-        from llm_mem.core.briefing import BriefingGenerator
-        from llm_mem.core.config import load_config
-        from llm_mem.core.database import Database
-        from llm_mem.core.engine import MemoryEngine
+        from callmem.core.briefing import BriefingGenerator
+        from callmem.core.config import load_config
+        from callmem.core.database import Database
+        from callmem.core.engine import MemoryEngine
 
         config = load_config(project)
         db = Database(db_path)
@@ -823,7 +831,7 @@ def _generate_initial_briefing(project: Path, db_path: Path) -> None:
         print(f"  Wrote SESSION_SUMMARY.md ({briefing.token_count} tokens)")
     except Exception as exc:
         print(f"  Could not generate SESSION_SUMMARY.md: {exc}")
-        print("  Generate manually: llm-mem briefing --write -p .")
+        print("  Generate manually: callmem briefing --write -p .")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -832,7 +840,7 @@ def _generate_initial_briefing(project: Path, db_path: Path) -> None:
 def main() -> None:
     print()
     print("=" * 56)
-    print("  llm-mem setup")
+    print("  callmem setup")
     print("=" * 56)
     print()
 
@@ -845,13 +853,13 @@ def main() -> None:
         print(f"  Error: {project} is not a directory")
         sys.exit(1)
 
-    llm_mem_dir = project / ".llm-mem"
-    config_path = llm_mem_dir / "config.toml"
+    callmem_dir = project / ".callmem"
+    config_path = callmem_dir / "config.toml"
     existing = load_existing_config(config_path)
     is_rerun = bool(existing)
 
     if is_rerun:
-        print(f"  Existing setup found in {llm_mem_dir}")
+        print(f"  Existing setup found in {callmem_dir}")
         print("  Current values shown as defaults. Data is never wiped.")
     else:
         print(f"  New setup in {project}")
@@ -899,7 +907,7 @@ def main() -> None:
         if ollama_ok:
             print(f"  Connected to Ollama at {ollama_endpoint}")
 
-            from llm_mem.core.gpu_scan import (
+            from callmem.core.gpu_scan import (
                 ModelInfo,
                 SystemInfo,
                 detect_system,
@@ -967,7 +975,7 @@ def main() -> None:
                         f"— leaving ~{rec.free_after_mb} MB for context."
                     )
                     print(
-                        "  llm-mem extraction batches are small, "
+                        "  callmem extraction batches are small, "
                         "so a reduced context window works fine."
                     )
                     print()
@@ -991,7 +999,7 @@ def main() -> None:
     # ── OpenAI-compatible config ──────────────────────────────────
     oai_endpoint = existing.get("openai_compat", {}).get("endpoint", "https://open.bigmodel.cn/api/paas/v4")
     oai_model = existing.get("openai_compat", {}).get("model", "glm-4-flash")
-    oai_key_env = existing.get("openai_compat", {}).get("api_key_env", "LLM_MEM_API_KEY")
+    oai_key_env = existing.get("openai_compat", {}).get("api_key_env", "CALLMEM_API_KEY")
     oai_timeout = existing.get("openai_compat", {}).get("timeout", 120)
     oai_ok = False
 
@@ -1041,10 +1049,10 @@ def main() -> None:
     if stopped_service:
         print(f"  Stopped {stopped_service} for port check (will restart after setup)")
 
-    # Check what ports other llm-mem projects are using
-    other_ports = _find_other_llm_mem_ports(project)
+    # Check what ports other callmem projects are using
+    other_ports = _find_other_callmem_ports(project)
     if other_ports:
-        print("  Ports used by other llm-mem projects:")
+        print("  Ports used by other callmem projects:")
         for p, name in sorted(other_ports.items()):
             print(f"    {p} — {name}")
         # Auto-suggest a free port if default conflicts with a *different*
@@ -1106,8 +1114,8 @@ def main() -> None:
         vault_mode = ask_choice(
             "Vault mode (how to encrypt detected secrets):",
             [
-                ("auto", "Random key stored in .llm-mem/vault.key (simplest)"),
-                ("passphrase", "Key derived from LLM_MEM_VAULT_PASSPHRASE env var"),
+                ("auto", "Random key stored in .callmem/vault.key (simplest)"),
+                ("passphrase", "Key derived from CALLMEM_VAULT_PASSPHRASE env var"),
                 ("disabled", "Detect but don't encrypt (not recommended)"),
             ],
             default=vault_mode,
@@ -1125,11 +1133,11 @@ def main() -> None:
     print("── Writing configuration ──")
     print()
 
-    llm_mem_dir.mkdir(exist_ok=True)
+    callmem_dir.mkdir(exist_ok=True)
 
-    config_content = f"""# llm-mem configuration
+    config_content = f"""# callmem configuration
 # See docs/config.md for all options
-# Re-run 'make setup' or 'llm-mem setup' to change these safely
+# Re-run 'make setup' or 'callmem setup' to change these safely
 
 [project]
 name = "{project_name}"
@@ -1185,18 +1193,18 @@ vault_mode = "{vault_mode}"
     print(f"  Wrote {config_path}")
 
     # ── Database ──────────────────────────────────────────────────
-    db_path = llm_mem_dir / "memory.db"
+    db_path = callmem_dir / "memory.db"
     if db_path.exists():
         print(f"  Database exists: {db_path} (preserved)")
     else:
         try:
-            from llm_mem.core.database import Database
+            from callmem.core.database import Database
             db = Database(db_path)
             db.initialize()
             print(f"  Created database: {db_path} (schema v{db.get_schema_version()})")
         except ImportError:
-            print("  Skipping DB init — llm-mem not installed.")
-            print(f"  Run: llm-mem init --project {project}")
+            print("  Skipping DB init — callmem not installed.")
+            print(f"  Run: callmem init --project {project}")
 
     # ── .gitignore ────────────────────────────────────────────────
     gitignore_path = project / ".gitignore"
@@ -1206,7 +1214,7 @@ vault_mode = "{vault_mode}"
         missing = [e for e in vault_entries if e not in content]
         if missing:
             with open(gitignore_path, "a") as f:
-                f.write("\n# llm-mem vault secrets\n")
+                f.write("\n# callmem vault secrets\n")
                 for entry in missing:
                     f.write(f"{entry}\n")
             print(f"  Added {', '.join(missing)} to .gitignore")
@@ -1283,8 +1291,8 @@ vault_mode = "{vault_mode}"
             oc_config["mcp"] = {}
 
         detected_cmd = _detect_mcp_command(project)
-        old_cmd = oc_config["mcp"].get("llm-mem", {}).get("command")
-        oc_config["mcp"]["llm-mem"] = {
+        old_cmd = oc_config["mcp"].get("callmem", {}).get("command")
+        oc_config["mcp"]["callmem"] = {
             "type": "local",
             "command": detected_cmd,
             "enabled": True,
@@ -1368,13 +1376,13 @@ vault_mode = "{vault_mode}"
 
     if not daemon_active and not unit_path.exists():
         print("    Start everything (UI + workers + adapter):")
-        print(f"      llm-mem daemon --project {project}")
+        print(f"      callmem daemon --project {project}")
         print()
 
     if not daemon_active:
         print("    Import existing sessions (if not done above):")
         print(
-            f"      llm-mem import --source opencode --all"
+            f"      callmem import --source opencode --all"
             f" --project {project} --project-path {project}"
         )
         print()

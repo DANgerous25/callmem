@@ -6,7 +6,7 @@ Detect and suppress outdated entities from briefings and search results so the a
 
 ## Background
 
-As a project evolves, earlier entities become stale. claude-mem handles this by marking observations as superseded. llm-mem currently returns all entities by recency, which can surface outdated decisions or facts that have since been reversed.
+As a project evolves, earlier entities become stale. claude-mem handles this by marking observations as superseded. callmem currently returns all entities by recency, which can surface outdated decisions or facts that have since been reversed.
 
 ## Deliverables
 
@@ -64,9 +64,9 @@ Add to web UI entity cards:
 ### 6. CLI command
 
 ```bash
-llm-mem stale -p .              # list stale entities
-llm-mem stale --check -p .      # run staleness check now
-llm-mem stale --reset ID -p .   # unmark a stale entity
+callmem stale -p .              # list stale entities
+callmem stale --check -p .      # run staleness check now
+callmem stale --reset ID -p .   # unmark a stale entity
 ```
 
 ## Constraints

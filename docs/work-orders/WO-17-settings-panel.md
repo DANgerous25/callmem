@@ -4,7 +4,7 @@
 
 ## Objective
 
-Add a settings page to the web UI where users can view and edit llm-mem configuration, with a live preview showing exactly what will be injected into OpenCode's context at session start.
+Add a settings page to the web UI where users can view and edit callmem configuration, with a live preview showing exactly what will be injected into OpenCode's context at session start.
 
 ## Reference
 
@@ -58,7 +58,7 @@ Group settings into sections:
 
 ### Implementation
 
-Create `src/llm_mem/ui/routes/settings.py`:
+Create `src/callmem/ui/routes/settings.py`:
 
 - `GET /settings` — render settings form with current values from `config.toml`
 - `POST /settings` — validate, update `config.toml`, reload config in memory
@@ -107,14 +107,14 @@ For proposed (unsaved) settings, send them as query params:
 
 ### Files to Create
 
-- `src/llm_mem/ui/routes/settings.py` — settings page + POST handler + preview partial
-- `src/llm_mem/ui/templates/settings.html` — form + preview layout
+- `src/callmem/ui/routes/settings.py` — settings page + POST handler + preview partial
+- `src/callmem/ui/templates/settings.html` — form + preview layout
 
 ### Files to Modify
 
-- `src/llm_mem/ui/app.py` — register settings router
-- `src/llm_mem/ui/templates/base.html` — add "Settings" to nav, CSS for terminal preview
-- `src/llm_mem/models/config.py` — add any missing config fields (briefing.entity_types, etc.)
+- `src/callmem/ui/app.py` — register settings router
+- `src/callmem/ui/templates/base.html` — add "Settings" to nav, CSS for terminal preview
+- `src/callmem/models/config.py` — add any missing config fields (briefing.entity_types, etc.)
 
 ---
 

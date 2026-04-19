@@ -6,10 +6,10 @@ Add a live-updating queue status badge in the UI header showing pending/processi
 
 ## Files to Modify
 
-- `src/llm_mem/core/workers.py` — publish queue events after job complete/fail
-- `src/llm_mem/ui/templates/base.html` — add queue badge in nav header
-- `src/llm_mem/ui/routes/sse.py` — no changes needed (EventBus already relays)
-- `src/llm_mem/ui/templates/feed.html` — add JS listener for queue events
+- `src/callmem/core/workers.py` — publish queue events after job complete/fail
+- `src/callmem/ui/templates/base.html` — add queue badge in nav header
+- `src/callmem/ui/routes/sse.py` — no changes needed (EventBus already relays)
+- `src/callmem/ui/templates/feed.html` — add JS listener for queue events
 
 ## Approach
 

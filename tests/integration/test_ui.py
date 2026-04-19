@@ -8,12 +8,12 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.models.config import Config
-from llm_mem.ui.app import create_app
+from callmem.core.engine import MemoryEngine
+from callmem.models.config import Config
+from callmem.ui.app import create_app
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
 
 
 def _get_html(response: object) -> str:
@@ -28,7 +28,7 @@ class TestDashboard:
     def test_dashboard_loads(self, ui_client: TestClient) -> None:
         response = ui_client.get("/stats")
         assert response.status_code == 200
-        assert "llm-mem" in response.text
+        assert "callmem" in response.text
 
     def test_dashboard_shows_stats(self, ui_client_with_data: TestClient) -> None:
         response = ui_client_with_data.get("/stats")
@@ -40,7 +40,7 @@ class TestFeed:
     def test_feed_loads(self, ui_client: TestClient) -> None:
         response = ui_client.get("/")
         assert response.status_code == 200
-        assert "llm-mem" in response.text
+        assert "callmem" in response.text
 
     def test_feed_shows_stats(self, ui_client_with_data: TestClient) -> None:
         response = ui_client_with_data.get("/")
@@ -219,7 +219,7 @@ class TestEntities:
         config = Config(sensitive_data={"enabled": False, "llm_scan": False})
         engine = MemoryEngine(memory_db, config)
 
-        from llm_mem.models.entities import Entity
+        from callmem.models.entities import Entity
 
         entity = Entity(
             project_id=engine.project_id,

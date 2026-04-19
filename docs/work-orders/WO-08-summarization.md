@@ -6,14 +6,14 @@ Implement the summarization system: chunk-level summaries, session-level summari
 
 ## Files to create
 
-- `src/llm_mem/core/summarization.py` — Summary generation at all levels
+- `src/callmem/core/summarization.py` — Summary generation at all levels
 - `tests/unit/test_summarization.py`
 
 ## Files to modify
 
-- `src/llm_mem/core/prompts.py` — Add summarization prompt templates
-- `src/llm_mem/core/engine.py` — Trigger summarization on session end and on chunk thresholds
-- `src/llm_mem/core/queue.py` — Add `generate_summary` job type handling
+- `src/callmem/core/prompts.py` — Add summarization prompt templates
+- `src/callmem/core/engine.py` — Trigger summarization on session end and on chunk thresholds
+- `src/callmem/core/queue.py` — Add `generate_summary` job type handling
 
 ## Constraints
 

@@ -1,8 +1,10 @@
-# llm-mem
+# callmem
+
+> **Renamed from `llm-mem` in v0.2.0.** Existing installs keep working — the `llm-mem` console script, the `python -m llm_mem.mcp.server` entry point, the `.llm-mem/` config dir, and the `LLM_MEM_*` env vars are all honored as aliases. Run `callmem migrate` in a project to update its names to the new canonical forms.
 
 **Persistent memory for LLM coding agents.**
 
-llm-mem gives coding agents a durable, searchable memory that survives across sessions. It captures what happened, compresses it in the background using a local LLM, and serves a compact briefing when the next session starts — so the agent picks up where you left off without manual context management.
+callmem gives coding agents a durable, searchable memory that survives across sessions. It captures what happened, compresses it in the background using a local LLM, and serves a compact briefing when the next session starts — so the agent picks up where you left off without manual context management.
 
 Works with **OpenCode** and **Claude Code** side by side. Both tools write to the same memory database, so you can rate-limit-swap between them mid-project without losing context. The extraction LLM is also swappable at any time — switch models in `config.toml` and restart the daemon; prior memories stay intact and keep being usable.
 
@@ -13,10 +15,10 @@ Inspired by [claude-mem](https://github.com/anthropics/claude-mem), but built fr
 ## Key Features
 
 ### Automatic Context at Startup
-When a new session begins, llm-mem generates a structured briefing with context economics, an emoji-coded observation timeline, and a session summary. This is written to `SESSION_SUMMARY.md` in your project root, where your coding agent picks it up automatically — no manual context management needed.
+When a new session begins, callmem generates a structured briefing with context economics, an emoji-coded observation timeline, and a session summary. This is written to `SESSION_SUMMARY.md` in your project root, where your coding agent picks it up automatically — no manual context management needed.
 
 ### Real-Time Capture and Extraction
-During the session, llm-mem ingests prompts, responses, tool calls, and file changes from your coding agent — either via **OpenCode's SSE stream** or by **tailing Claude Code's JSONL transcripts** at `~/.claude/projects/<slug>/*.jsonl`. Both run concurrently, so a project using both agents sees unified history. A background worker runs entity extraction through your local LLM, pulling out decisions, facts, TODOs, bugs, features, and discoveries. New observations appear in the web UI within milliseconds via Server-Sent Events.
+During the session, callmem ingests prompts, responses, tool calls, and file changes from your coding agent — either via **OpenCode's SSE stream** or by **tailing Claude Code's JSONL transcripts** at `~/.claude/projects/<slug>/*.jsonl`. Both run concurrently, so a project using both agents sees unified history. A background worker runs entity extraction through your local LLM, pulling out decisions, facts, TODOs, bugs, features, and discoveries. New observations appear in the web UI within milliseconds via Server-Sent Events.
 
 ### Layered Compression
 Raw events are compressed through multiple layers to keep token usage in check:
@@ -32,7 +34,7 @@ Each observation has two representations:
 - **Synopsis** — flowing prose paragraph (~200-400 tokens), loaded on demand
 
 ### Pluggable LLM Backend
-llm-mem doesn't care which model you use for coding. It uses a separate local model for memory maintenance:
+callmem doesn't care which model you use for coding. It uses a separate local model for memory maintenance:
 - **Ollama** (recommended) — fully local, zero API cost, works offline
 - **OpenAI-compatible** — any `/v1/chat/completions` API (LM Studio, vLLM, etc.)
 - **None** — pattern-only mode when no LLM is available
@@ -97,11 +99,11 @@ curl -fsSL https://ollama.com/install.sh | sh
 ollama pull qwen3:8b
 ```
 
-### 2. Install llm-mem
+### 2. Install callmem
 
 ```bash
-git clone https://github.com/DANgerous25/llm-mem.git
-cd llm-mem
+git clone https://github.com/DANgerous25/callmem.git
+cd callmem
 
 # Install with uv (recommended)
 uv sync
@@ -113,7 +115,7 @@ pip install -e .
 ### 3. Run the Setup Wizard
 
 ```bash
-uv run llm-mem setup
+uv run callmem setup
 ```
 
 The wizard walks you through:
@@ -132,7 +134,7 @@ The setup script is safe to re-run — it reconfigures without wiping data and b
 # All-in-one: web UI + background workers + OpenCode SSE adapter
 # + Claude Code JSONL tailer. Each adapter is independently gated
 # by [adapters].opencode / [adapters].claude_code in config.toml.
-uv run llm-mem daemon
+uv run callmem daemon
 
 # Or via make
 make daemon
@@ -147,25 +149,25 @@ make start
 make restart          # this project (preferred)
 make logs             # tail journalctl for the service
 
-# Or raw systemctl — the unit is named llm-mem-<project-dir-name>:
-systemctl --user restart llm-mem-<project>.service
-systemctl --user status  llm-mem-<project>.service
+# Or raw systemctl — the unit is named callmem-<project-dir-name>:
+systemctl --user restart callmem-<project>.service
+systemctl --user status  callmem-<project>.service
 ```
 
-Each project that ran `llm-mem setup` with systemd enabled has its own unit, so restart the one matching your project directory.
+Each project that ran `callmem setup` with systemd enabled has its own unit, so restart the one matching your project directory.
 
 ### 5. Configure Your Coding Agent
 
-`llm-mem setup` and `llm-mem init` both write the right config file(s) automatically. If you prefer to wire it up by hand:
+`callmem setup` and `callmem init` both write the right config file(s) automatically. If you prefer to wire it up by hand:
 
 **OpenCode** — add to `opencode.json` in your project:
 
 ```json
 {
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
-      "command": ["python3", "-m", "llm_mem.mcp.server", "--project", "."],
+      "command": ["python3", "-m", "callmem.mcp.server", "--project", "."],
       "enabled": true
     }
   }
@@ -177,9 +179,9 @@ Each project that ran `llm-mem setup` with systemd enabled has its own unit, so 
 ```json
 {
   "mcpServers": {
-    "llm-mem": {
+    "callmem": {
       "command": "python3",
-      "args": ["-m", "llm_mem.mcp.server", "--project", "."]
+      "args": ["-m", "callmem.mcp.server", "--project", "."]
     }
   }
 }
@@ -199,7 +201,7 @@ Navigate to `http://localhost:9090` (or your configured host:port).
 
 ```
 ┌─────────────────┐   SSE        ┌─────────────────┐   Extract      ┌──────────────┐
-│  OpenCode       │ ──────────▶  │   llm-mem       │ ─────────────▶ │  Local LLM   │
+│  OpenCode       │ ──────────▶  │   callmem       │ ─────────────▶ │  Local LLM   │
 └─────────────────┘              │   Adapters      │                │  (Ollama or  │
 ┌─────────────────┐   JSONL      │  (opencode +    │                │  OpenAI-like)│
 │  Claude Code    │ ──────────▶  │   claude_code)  │                └──────────────┘
@@ -229,17 +231,17 @@ Navigate to `http://localhost:9090` (or your configured host:port).
 ## CLI Reference
 
 ```bash
-llm-mem setup              # Interactive setup wizard
-llm-mem daemon             # Start UI + workers + adapter in one process
-llm-mem ui                 # Start web UI only
-llm-mem serve              # Start MCP server only
-llm-mem import --source opencode     --all  # Import OpenCode sessions from SQLite
-llm-mem import --source claude-code  --all  # Import Claude Code transcripts (JSONL)
-llm-mem import --status                     # Show current/last import progress
-llm-mem status             # Show service status
-llm-mem search <query>     # Search memories from the command line
-llm-mem briefing           # Generate and print a briefing
-llm-mem briefing --write   # Write briefing to SESSION_SUMMARY.md
+callmem setup              # Interactive setup wizard
+callmem daemon             # Start UI + workers + adapter in one process
+callmem ui                 # Start web UI only
+callmem serve              # Start MCP server only
+callmem import --source opencode     --all  # Import OpenCode sessions from SQLite
+callmem import --source claude-code  --all  # Import Claude Code transcripts (JSONL)
+callmem import --status                     # Show current/last import progress
+callmem status             # Show service status
+callmem search <query>     # Search memories from the command line
+callmem briefing           # Generate and print a briefing
+callmem briefing --write   # Write briefing to SESSION_SUMMARY.md
 
 make restart               # Restart the systemd unit for this project
 make logs                  # Tail journalctl for the service
@@ -249,7 +251,7 @@ make logs                  # Tail journalctl for the service
 
 ## Entity Categories
 
-llm-mem extracts these observation types, each with a colour-coded badge in the UI:
+callmem extracts these observation types, each with a colour-coded badge in the UI:
 
 | Category | Icon | Description |
 |----------|------|-------------|
@@ -267,7 +269,7 @@ llm-mem extracts these observation types, each with a colour-coded badge in the 
 
 ## Configuration
 
-All settings live in `.llm-mem/config.toml` in your project root. Key options:
+All settings live in `.callmem/config.toml` in your project root. Key options:
 
 ```toml
 [llm]
@@ -314,8 +316,8 @@ Vector embeddings are a planned enhancement for semantic retrieval when keyword 
 ## Project Structure
 
 ```
-llm-mem/
-├── src/llm_mem/
+callmem/
+├── src/callmem/
 │   ├── adapters/       # OpenCode SSE + import, Claude Code live tailer + import
 │   ├── core/           # Engine, extraction, briefing, compression, event bus
 │   ├── mcp/            # MCP server and tool definitions
@@ -363,7 +365,7 @@ See [docs/roadmap.md](docs/roadmap.md) for the full plan. Highlights:
 
 ## Acknowledgements
 
-llm-mem was inspired by [claude-mem](https://github.com/anthropics/claude-mem) by Alex Newman. We share the same goal — giving coding agents persistent memory — but llm-mem is built from scratch with a focus on model-agnostic operation, local-first architecture, and pluggable LLM backends.
+callmem was inspired by [claude-mem](https://github.com/anthropics/claude-mem) by Alex Newman. We share the same goal — giving coding agents persistent memory — but callmem is built from scratch with a focus on model-agnostic operation, local-first architecture, and pluggable LLM backends.
 
 ---
 
@@ -376,7 +378,7 @@ An OpenCode plugin (`.opencode/plugins/auto-briefing.js`) is installed during se
 The Claude Code adapter maps user prompts, assistant text, and `tool_use` blocks into the memory feed. `tool_result` blocks (system-side responses to tool calls) and `thinking` blocks are skipped in the current release to keep signal-to-noise high. A follow-up will revisit this — until then, a tool call appears in the feed but its outcome does not.
 
 ### Python 3.10 compatibility shims
-llm-mem supports Python 3.10+ but requires `tomli` (backport of `tomllib`) and `typing_extensions` on Python 3.10. These are installed automatically as conditional dependencies. On Python 3.11+, the stdlib equivalents are used.
+callmem supports Python 3.10+ but requires `tomli` (backport of `tomllib`) and `typing_extensions` on Python 3.10. These are installed automatically as conditional dependencies. On Python 3.11+, the stdlib equivalents are used.
 
 ---
 

@@ -9,14 +9,14 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from llm_mem.adapters.claude_code import ClaudeCodeAdapter
-from llm_mem.adapters.claude_code_import import (
+from callmem.adapters.claude_code import ClaudeCodeAdapter
+from callmem.adapters.claude_code_import import (
     claude_project_dir,
 )
-from llm_mem.cli import main
-from llm_mem.core.config import load_config
-from llm_mem.core.database import Database
-from llm_mem.core.engine import MemoryEngine
+from callmem.cli import main
+from callmem.core.config import load_config
+from callmem.core.database import Database
+from callmem.core.engine import MemoryEngine
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -27,7 +27,7 @@ def _make_engine(project: Path) -> MemoryEngine:
     result = runner.invoke(main, ["init", "--project", str(project)])
     assert result.exit_code == 0
     config = load_config(project)
-    db = Database(project / ".llm-mem" / "memory.db")
+    db = Database(project / ".callmem" / "memory.db")
     db.initialize()
     return MemoryEngine(db, config)
 
@@ -40,7 +40,7 @@ def _append_records(path: Path, records: list[dict]) -> None:
 
 
 def _count_events(project: Path, agent_name: str = "claude-code") -> int:
-    db_path = project / ".llm-mem" / "memory.db"
+    db_path = project / ".callmem" / "memory.db"
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         return conn.execute(
@@ -54,7 +54,7 @@ def _count_events(project: Path, agent_name: str = "claude-code") -> int:
 
 
 def _session_status(project: Path, source_id: str) -> str | None:
-    db_path = project / ".llm-mem" / "memory.db"
+    db_path = project / ".callmem" / "memory.db"
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         rows = conn.execute(

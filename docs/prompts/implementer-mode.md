@@ -5,25 +5,25 @@ Use this prompt when giving a work order to a coding agent (GLM/OpenCode) for im
 ## Standard implementation prompt
 
 ```
-You are implementing a work order for the llm-mem project.
+You are implementing a work order for the callmem project.
 
 ## Project overview
-llm-mem is a persistent memory system for coding agents. Python backend, SQLite + FTS5 for storage, local Ollama for background LLM work, MCP server for agent integration.
+callmem is a persistent memory system for coding agents. Python backend, SQLite + FTS5 for storage, local Ollama for background LLM work, MCP server for agent integration.
 
 ## Key files to understand first
 - README.md — Project overview
 - docs/architecture.md — System design
 - docs/schema.md — Database schema
 - pyproject.toml — Dependencies and project config
-- src/llm_mem/core/database.py — Database module
-- src/llm_mem/models/ — Data models
+- src/callmem/core/database.py — Database module
+- src/callmem/models/ — Data models
 
 ## Work order
 {paste work order content}
 
 ## Implementation rules
 1. Follow the file list in the work order exactly — create/modify only those files
-2. Use the existing data models from src/llm_mem/models/
+2. Use the existing data models from src/callmem/models/
 3. Use the existing Database class for all SQL operations
 4. All SQL must use parameterized queries (never string formatting)
 5. All new functions must have type hints
@@ -47,7 +47,7 @@ llm-mem is a persistent memory system for coding agents. Python backend, SQLite 
 For work orders that build on previous work:
 
 ```
-You are continuing implementation of the llm-mem project. Previous work orders have been completed.
+You are continuing implementation of the callmem project. Previous work orders have been completed.
 
 ## What exists already
 {list completed WOs or key files}
@@ -71,7 +71,7 @@ You are continuing implementation of the llm-mem project. Previous work orders h
 For when you want the agent to implement just one specific function or class:
 
 ```
-Implement the following in the llm-mem project:
+Implement the following in the callmem project:
 
 File: {file_path}
 Class/Function: {name}

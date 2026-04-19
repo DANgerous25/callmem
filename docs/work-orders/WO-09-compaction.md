@@ -6,13 +6,13 @@ Implement the compaction worker that manages memory growth by archiving old even
 
 ## Files to create
 
-- `src/llm_mem/core/compaction.py` — Compaction worker with age-based policies
+- `src/callmem/core/compaction.py` — Compaction worker with age-based policies
 - `tests/unit/test_compaction.py`
 
 ## Files to modify
 
-- `src/llm_mem/core/engine.py` — Trigger compaction on session end or schedule
-- `src/llm_mem/core/queue.py` — Add `compact` job type
+- `src/callmem/core/engine.py` — Trigger compaction on session end or schedule
+- `src/callmem/core/queue.py` — Add `compact` job type
 
 ## Constraints
 

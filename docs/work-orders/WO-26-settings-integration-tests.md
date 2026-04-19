@@ -2,7 +2,7 @@
 
 ## Summary
 
-The settings route (`/settings`, `POST /settings`, `/partials/briefing-preview`) is fully implemented in `src/llm_mem/ui/routes/settings.py` but has **zero integration tests**. This work order adds comprehensive test coverage.
+The settings route (`/settings`, `POST /settings`, `/partials/briefing-preview`) is fully implemented in `src/callmem/ui/routes/settings.py` but has **zero integration tests**. This work order adds comprehensive test coverage.
 
 ## Files to Modify
 

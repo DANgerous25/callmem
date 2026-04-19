@@ -4,19 +4,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from llm_mem.core.retrieval import RetrievalEngine, _recency_factor
+from callmem.core.retrieval import RetrievalEngine, _recency_factor
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
 def _seed_data(memory_db: Database) -> str:
-    from llm_mem.core.repository import Repository
-    from llm_mem.models.entities import Entity
-    from llm_mem.models.events import Event
-    from llm_mem.models.projects import Project
-    from llm_mem.models.sessions import Session
+    from callmem.core.repository import Repository
+    from callmem.models.entities import Entity
+    from callmem.models.events import Event
+    from callmem.models.projects import Project
+    from callmem.models.sessions import Session
 
     repo = Repository(memory_db)
 
@@ -120,11 +120,11 @@ class TestFTS5Search:
     def test_search_returns_matching_events(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.search(project_id, "pagination")
@@ -134,11 +134,11 @@ class TestFTS5Search:
     def test_search_returns_empty_for_no_match(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.search(project_id, "xyzzy_nonexistent")
@@ -147,11 +147,11 @@ class TestFTS5Search:
 
 class TestStructuredSearch:
     def test_search_by_type_todo(self, memory_db: Database) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.search(project_id, "", types=["todo"])
@@ -163,11 +163,11 @@ class TestEntitySearch:
     def test_search_finds_entities_by_query(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.search(project_id, "Redis")
@@ -177,11 +177,11 @@ class TestEntitySearch:
 
 class TestDeduplication:
     def test_no_duplicate_ids(self, memory_db: Database) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.search(project_id, "pagination")
@@ -193,11 +193,11 @@ class TestRecencyRanking:
     def test_recent_results_score_higher(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.search(project_id, "")
@@ -209,11 +209,11 @@ class TestGetRecent:
     def test_get_recent_returns_events(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         project_id = _seed_data(memory_db)
         repo = __import__(
-            "llm_mem.core.repository", fromlist=["Repository"]
+            "callmem.core.repository", fromlist=["Repository"]
         ).Repository(memory_db)
         engine = RetrievalEngine(repo, Config())
         results = engine.get_recent(project_id, limit=10)

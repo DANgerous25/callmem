@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}callmem — {{ entity_type|capitalize }}s{% endblock %}
+{% block content %}
+<h2>{{ entity_type|capitalize }}s</h2>
+
+<nav>
+    <ul>
+        <li><a href="/entities/todo">TODOs</a></li>
+        <li><a href="/entities/decision">Decisions</a></li>
+        <li><a href="/entities/fact">Facts</a></li>
+        <li><a href="/entities/failure">Failures</a></li>
+        <li><a href="/entities/discovery">Discoveries</a></li>
+    </ul>
+</nav>
+
+{% if entities %}
+<table>
+    <thead><tr><th>Title</th><th>Content</th><th>Status</th><th>Priority</th><th>Flags</th><th>Actions</th></tr></thead>
+    <tbody>
+    {% for e in entities %}
+    <tr id="entity-{{ e.id }}"{% if e.stale %} style="opacity:0.55"{% endif %}>
+        <td>
+            {% if e.stale %}<s>{{ e.title }}</s>{% else %}{{ e.title }}{% endif %}
+        </td>
+        <td>{{ (e.content or "")[:60] }}</td>
+        <td>{{ e.status or "-" }}</td>
+        <td>{{ e.priority or "-" }}</td>
+        <td>
+            {% if e.pinned %}<span class="feed-card-pinned">pinned</span>{% endif %}
+            {% if e.stale %}
+            <span class="feed-card-stale" title="{{ e.staleness_reason or 'stale' }}">
+                stale{% if e.staleness_reason %} · {{ e.staleness_reason }}{% endif %}
+            </span>
+            {% endif %}
+        </td>
+        <td>
+            {% if not e.pinned %}
+            <button hx-post="/entities/{{ e.id }}/pin"
+                    hx-target="#entity-{{ e.id }} td:last-child"
+                    hx-swap="innerHTML">Pin</button>
+            {% else %}
+            <button hx-post="/entities/{{ e.id }}/unpin"
+                    hx-target="#entity-{{ e.id }} td:last-child"
+                    hx-swap="innerHTML">Unpin</button>
+            {% endif %}
+            {% if not e.stale %}
+            <button hx-post="/entities/{{ e.id }}/stale?reason=manual"
+                    hx-confirm="Mark this entity as stale?"
+                    hx-swap="none"
+                    hx-on::after-request="location.reload()">Mark stale</button>
+            {% else %}
+            <button hx-post="/entities/{{ e.id }}/current"
+                    hx-swap="none"
+                    hx-on::after-request="location.reload()">Mark current</button>
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No {{ entity_type }}s found.</p>
+{% endif %}
+{% endblock %}

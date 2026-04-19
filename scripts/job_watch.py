@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watch llm-mem job queue progress with live ETA."""
+"""Watch callmem job queue progress with live ETA."""
 
 from __future__ import annotations
 
@@ -60,13 +60,13 @@ def show_progress(db_path: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Watch llm-mem job queue progress")
+    parser = argparse.ArgumentParser(description="Watch callmem job queue progress")
     parser.add_argument("--project", "-p", type=str, default=".", help="Project root directory")
     parser.add_argument("--interval", "-n", type=int, default=30, help="Refresh interval in seconds")
     parser.add_argument("--once", action="store_true", help="Show once and exit (no watch loop)")
     args = parser.parse_args()
 
-    db_path = str(Path(args.project).resolve() / ".llm-mem" / "memory.db")
+    db_path = str(Path(args.project).resolve() / ".callmem" / "memory.db")
     if not Path(db_path).exists():
         print(f"Database not found: {db_path}", file=sys.stderr)
         sys.exit(1)
@@ -79,7 +79,7 @@ def main() -> None:
         while True:
             # Clear screen for watch effect
             print("\033[2J\033[H", end="")
-            print(f"llm-mem job queue — {datetime.now().strftime('%H:%M:%S')}")
+            print(f"callmem job queue — {datetime.now().strftime('%H:%M:%S')}")
             print()
             show_progress(db_path)
             time.sleep(args.interval)

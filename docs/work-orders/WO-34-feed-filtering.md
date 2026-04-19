@@ -6,10 +6,10 @@ The feed has no working filters. Project filter pills are dead code. No type fil
 
 ## Files to Modify
 
-- `src/llm_mem/ui/routes/feed.py` — accept and use filter parameters
-- `src/llm_mem/ui/templates/feed.html` — add type filter pills, search input, order toggle
-- `src/llm_mem/ui/templates/feed_partial.html` — no changes (items already have type badges)
-- `src/llm_mem/core/engine.py` — support type list filtering in `get_entities()`
+- `src/callmem/ui/routes/feed.py` — accept and use filter parameters
+- `src/callmem/ui/templates/feed.html` — add type filter pills, search input, order toggle
+- `src/callmem/ui/templates/feed_partial.html` — no changes (items already have type badges)
+- `src/callmem/core/engine.py` — support type list filtering in `get_entities()`
 
 ## Approach
 

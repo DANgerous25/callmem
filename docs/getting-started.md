@@ -1,6 +1,6 @@
-# Getting Started — Your First Session with OpenCode + llm-mem
+# Getting Started — Your First Session with OpenCode + callmem
 
-This is a concrete, step-by-step walkthrough for getting llm-mem running on your machine and executing your first work order with OpenCode/GLM.
+This is a concrete, step-by-step walkthrough for getting callmem running on your machine and executing your first work order with OpenCode/GLM.
 
 ## Prerequisites
 
@@ -8,13 +8,13 @@ You need:
 - **Python 3.11+** with `uv` (recommended) or `pip`
 - **Ollama** running locally with a model pulled (e.g. `qwen3:8b`)
 - **OpenCode** installed and configured with your GLM API key
-- **Git** configured with push access to `DANgerous25/llm-mem`
+- **Git** configured with push access to `DANgerous25/callmem`
 
 ## Step 1 — Clone and install
 
 ```bash
-git clone https://github.com/DANgerous25/llm-mem.git
-cd llm-mem
+git clone https://github.com/DANgerous25/callmem.git
+cd callmem
 
 # Install with uv (preferred)
 uv sync --extra dev
@@ -30,12 +30,12 @@ Verify the install:
 pytest tests/ -v
 
 # Check the CLI loads
-python -m llm_mem.cli --help
+python -m callmem.cli --help
 ```
 
 ## Step 2 — Pull an Ollama model
 
-llm-mem uses a local Ollama model for memory maintenance (summarization, entity extraction, sensitive data classification). This is separate from your interactive coding model (GLM).
+callmem uses a local Ollama model for memory maintenance (summarization, entity extraction, sensitive data classification). This is separate from your interactive coding model (GLM).
 
 ```bash
 # Pull the recommended model
@@ -49,11 +49,11 @@ If you have a GPU with enough VRAM, `qwen3:30b` gives better extraction quality.
 
 ## Step 3 — Load the startup briefing
 
-llm-mem maintains its own persistent memory in `.llm-mem/memory.db`. The daemon auto-writes `SESSION_SUMMARY.md` on each extraction pass, so the latest state is always available:
+callmem maintains its own persistent memory in `.callmem/memory.db`. The daemon auto-writes `SESSION_SUMMARY.md` on each extraction pass, so the latest state is always available:
 
 ```bash
 # Regenerate on demand
-uv run llm-mem briefing --write
+uv run callmem briefing --write
 
 # Or just read the current file
 cat SESSION_SUMMARY.md
@@ -70,9 +70,9 @@ In your `opencode.json`:
 ```json
 {
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
-      "command": ["python", "-m", "llm_mem.mcp.server"],
+      "command": ["python", "-m", "callmem.mcp.server"],
       "enabled": false
     }
   }
@@ -83,10 +83,10 @@ Set `"enabled": false` for now. Flip it to `true` once WO-05 is complete and the
 
 ## Step 5 — Start your first work order
 
-Open your terminal, `cd` into the llm-mem directory, and start OpenCode:
+Open your terminal, `cd` into the callmem directory, and start OpenCode:
 
 ```bash
-cd ~/llm-mem
+cd ~/callmem
 opencode
 ```
 
@@ -145,7 +145,7 @@ Always end with:
 Run pytest tests/ -v to make sure everything passes. Commit everything and push.
 ```
 
-Memory is captured automatically by the llm-mem daemon — no manual files to update.
+Memory is captured automatically by the callmem daemon — no manual files to update.
 
 ### When the agent makes a design decision
 
@@ -186,15 +186,15 @@ Make sure you installed with dev dependencies: `pip install -e ".[dev]"` or `uv 
 ### Ollama connection errors
 The Ollama integration (WO-06) isn't built yet. If you see Ollama errors before WO-06, something is calling it prematurely — check which work order you're on.
 
-### OpenCode can't find llm-mem CLI
+### OpenCode can't find callmem CLI
 Make sure you installed in the same Python environment OpenCode uses. If using `uv`, activate the virtual environment: `source .venv/bin/activate`.
 
 ### Agent forgets context mid-session
-This is exactly the problem llm-mem solves. Call `mem_get_briefing` or re-read `SESSION_SUMMARY.md` to reload state.
+This is exactly the problem callmem solves. Call `mem_get_briefing` or re-read `SESSION_SUMMARY.md` to reload state.
 
 ## What a working setup looks like
 
-1. OpenCode / Claude Code starts → llm-mem MCP server is available as a subprocess
+1. OpenCode / Claude Code starts → callmem MCP server is available as a subprocess
 2. Agent reads `SESSION_SUMMARY.md` or calls `mem_get_briefing` for recent context
 3. During coding, events are automatically captured and extracted into entities
 4. Background Ollama model summarizes sessions and compresses older memory

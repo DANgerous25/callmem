@@ -6,8 +6,8 @@
 
 ## Files to Modify
 
-- `src/llm_mem/mcp/tools.py` — add `mem_vault_review` tool definition and handler
-- `src/llm_mem/mcp/server.py` — register new tool (if needed)
+- `src/callmem/mcp/tools.py` — add `mem_vault_review` tool definition and handler
+- `src/callmem/mcp/server.py` — register new tool (if needed)
 - `tests/integration/test_mcp_server.py` — add tests for all untested tools
 
 ## New Tool: `mem_vault_review`

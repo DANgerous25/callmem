@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from llm_mem.adapters.opencode import OpenCodeAdapter
-from llm_mem.models.config import Config
+from callmem.adapters.opencode import OpenCodeAdapter
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
 def _make_engine(memory_db: Database) -> tuple:
-    from llm_mem.core.engine import MemoryEngine
+    from callmem.core.engine import MemoryEngine
 
     config = Config(sensitive_data={"enabled": False, "llm_scan": False})
     engine = MemoryEngine(memory_db, config)

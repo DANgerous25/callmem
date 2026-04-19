@@ -2,7 +2,7 @@
 
 ## System overview
 
-llm-mem is composed of five subsystems that communicate through a shared SQLite database and an internal event bus.
+callmem is composed of five subsystems that communicate through a shared SQLite database and an internal event bus.
 
 ```mermaid
 graph TB
@@ -10,7 +10,7 @@ graph TB
         A[Interactive LLM]
     end
 
-    subgraph "llm-mem MCP Server"
+    subgraph "callmem MCP Server"
         B[MCP Tool Handler]
         C[Ingest Pipeline]
         D[Retrieval Engine]
@@ -54,7 +54,7 @@ graph TB
 
 ## Subsystem descriptions
 
-### 1. MCP Server (`src/llm_mem/mcp/`)
+### 1. MCP Server (`src/callmem/mcp/`)
 
 The external interface. Exposes MCP tools, resources, and prompts that coding agents call. Runs as a subprocess launched by OpenCode (stdio transport) or as a standalone HTTP server (SSE transport for future adapters).
 
@@ -66,7 +66,7 @@ Responsibilities:
 
 The MCP server is stateless — all state lives in SQLite.
 
-### 2. Ingest Pipeline (`src/llm_mem/core/ingest.py`)
+### 2. Ingest Pipeline (`src/callmem/core/ingest.py`)
 
 Receives raw events and normalizes them into the database.
 
@@ -102,7 +102,7 @@ Event types:
 
 Raw events (`prompt`, `response`, `tool_call`, `file_change`) are ingested directly. Structured types (`decision`, `failure`, `todo`, `discovery`, `fact`) are extracted asynchronously by the entity extractor.
 
-### 3. Retrieval Engine (`src/llm_mem/core/retrieval.py`)
+### 3. Retrieval Engine (`src/callmem/core/retrieval.py`)
 
 Combines three retrieval strategies in a ranked pipeline:
 
@@ -143,7 +143,7 @@ graph LR
 
 Results from all strategies are merged, deduplicated by event ID, and ranked by a weighted score combining recency, relevance, and type priority.
 
-### 4. Background Workers (`src/llm_mem/core/workers.py`)
+### 4. Background Workers (`src/callmem/core/workers.py`)
 
 Background jobs that maintain memory quality. These run asynchronously and use the local Ollama model — never the interactive coding model.
 
@@ -184,7 +184,7 @@ Age > 30 days:   Keep cross-session summaries + pinned items + facts
 
 Compaction never deletes pinned events, active TODOs, or facts. Compaction thresholds are configurable.
 
-### 5. Briefing Generator (`src/llm_mem/core/briefing.py`)
+### 5. Briefing Generator (`src/callmem/core/briefing.py`)
 
 Produces the startup context block served at the beginning of each coding session.
 

@@ -1,4 +1,4 @@
-"""Shared test fixtures for llm-mem."""
+"""Shared test fixtures for callmem."""
 
 from __future__ import annotations
 
@@ -12,13 +12,13 @@ if TYPE_CHECKING:
 
 from fastapi.testclient import TestClient
 
-from llm_mem.core.database import Database
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.core.event_bus import EventBus
-from llm_mem.core.extraction import EntityExtractor
-from llm_mem.core.ollama import OllamaClient
-from llm_mem.core.repository import Repository
-from llm_mem.models.config import Config
+from callmem.core.database import Database
+from callmem.core.engine import MemoryEngine
+from callmem.core.event_bus import EventBus
+from callmem.core.extraction import EntityExtractor
+from callmem.core.ollama import OllamaClient
+from callmem.core.repository import Repository
+from callmem.models.config import Config
 
 
 @pytest.fixture
@@ -83,7 +83,7 @@ def ui_client(memory_db: Database) -> TestClient:
     """TestClient for the FastAPI web UI with sensitive data disabled."""
     config = Config(sensitive_data={"enabled": False, "llm_scan": False})
     engine = MemoryEngine(memory_db, config)
-    from llm_mem.ui.app import create_app
+    from callmem.ui.app import create_app
 
     return TestClient(create_app(engine))
 
@@ -98,7 +98,7 @@ def ui_client_with_data(memory_db: Database) -> TestClient:
     engine.ingest_one("note", "Redis caching for auth module")
     engine.end_session(session.id)
 
-    from llm_mem.models.entities import Entity
+    from callmem.models.entities import Entity
 
     entity = Entity(
         project_id=engine.project_id,
@@ -130,7 +130,7 @@ def ui_client_with_data(memory_db: Database) -> TestClient:
     finally:
         conn.close()
 
-    from llm_mem.ui.app import create_app
+    from callmem.ui.app import create_app
 
     return TestClient(create_app(engine))
 
@@ -138,7 +138,7 @@ def ui_client_with_data(memory_db: Database) -> TestClient:
 @pytest.fixture
 def project_dir(tmp_path: Path) -> Path:
     """Create a project directory with initialized database."""
-    llm_dir = tmp_path / ".llm-mem"
+    llm_dir = tmp_path / ".callmem"
     llm_dir.mkdir()
     db = Database(llm_dir / "memory.db")
     db.initialize()
@@ -148,6 +148,6 @@ def project_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def mcp_server(project_dir: Path) -> object:
     """MCP server instance backed by project_dir."""
-    from llm_mem.mcp.server import create_server
+    from callmem.mcp.server import create_server
 
     return create_server(project_dir)

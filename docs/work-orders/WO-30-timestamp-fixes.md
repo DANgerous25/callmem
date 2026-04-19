@@ -9,12 +9,12 @@ Three timestamp problems:
 
 ## Files to Modify
 
-- `src/llm_mem/models/events.py` — add optional `timestamp` to `EventInput`
-- `src/llm_mem/core/engine.py` — use `EventInput.timestamp` if provided, else default
-- `src/llm_mem/adapters/opencode_import.py` — pass original timestamps through `EventInput`
-- `src/llm_mem/ui/templates/feed_partial.html` — relative time formatting
-- `src/llm_mem/ui/templates/feed.html` — relative time in SSE prepend JS
-- `src/llm_mem/ui/templates/session_detail.html` — local time display
+- `src/callmem/models/events.py` — add optional `timestamp` to `EventInput`
+- `src/callmem/core/engine.py` — use `EventInput.timestamp` if provided, else default
+- `src/callmem/adapters/opencode_import.py` — pass original timestamps through `EventInput`
+- `src/callmem/ui/templates/feed_partial.html` — relative time formatting
+- `src/callmem/ui/templates/feed.html` — relative time in SSE prepend JS
+- `src/callmem/ui/templates/session_detail.html` — local time display
 
 ## Approach
 

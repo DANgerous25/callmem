@@ -2,7 +2,7 @@
 
 ## Goal
 
-Intercept file read tool calls and optionally return the llm-mem observation timeline for that file instead of (or alongside) the raw file content. This is claude-mem's highest-impact feature — it saves ~95% of tokens on re-reads of files the agent has already seen.
+Intercept file read tool calls and optionally return the callmem observation timeline for that file instead of (or alongside) the raw file content. This is claude-mem's highest-impact feature — it saves ~95% of tokens on re-reads of files the agent has already seen.
 
 ## Background
 
@@ -29,7 +29,7 @@ The AGENTS.md instructions tell the agent: "Before reading a file you've worked 
 ### Approach B: Tool wrapper (active)
 
 Provide a `mem_read_file` tool that:
-1. Checks if the file has observations in llm-mem
+1. Checks if the file has observations in callmem
 2. If yes: returns the observation timeline + a flag: `has_timeline: true, last_read: 2h ago`
 3. The agent decides whether the timeline is sufficient or it needs the raw content
 4. If the agent wants raw content, it calls the normal file read tool
@@ -50,7 +50,7 @@ async def file_context(
 ) -> dict:
     """Get the observation timeline for a file.
     
-    Returns what llm-mem knows about this file from past sessions:
+    Returns what callmem knows about this file from past sessions:
     changes, decisions, bugs, and current state — often sufficient
     without re-reading the full file.
     """

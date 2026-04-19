@@ -8,13 +8,13 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.core.ollama import OllamaClient
-from llm_mem.core.reextraction import ReExtractor
-from llm_mem.models.config import Config
+from callmem.core.engine import MemoryEngine
+from callmem.core.ollama import OllamaClient
+from callmem.core.reextraction import ReExtractor
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
 
 
 def _setup_with_events(memory_db: Database) -> tuple[MemoryEngine, ReExtractor]:
@@ -96,7 +96,7 @@ class TestReExtractorArchivesEntities:
             '"features": [], "bugfixes": [], "research": [], "changes": []}'
         )
 
-        from llm_mem.core.extraction import EntityExtractor
+        from callmem.core.extraction import EntityExtractor
 
         extractor = EntityExtractor(memory_db, ollama)
         with patch.object(extractor.ollama, "_generate", return_value=llm_response):
@@ -145,7 +145,7 @@ class TestReExtractorPreservesEdits:
         event = engine.ingest_one("note", "Use Redis for caching")
         assert event is not None
 
-        from llm_mem.core.extraction import EntityExtractor
+        from callmem.core.extraction import EntityExtractor
 
         extractor = EntityExtractor(memory_db, OllamaClient())
         llm_response = (
@@ -185,7 +185,7 @@ class TestReExtractorPreservesEdits:
         event = engine.ingest_one("note", "Use Redis for caching")
         assert event is not None
 
-        from llm_mem.core.extraction import EntityExtractor
+        from callmem.core.extraction import EntityExtractor
 
         extractor = EntityExtractor(memory_db, OllamaClient())
         llm_response = (
@@ -240,7 +240,7 @@ class TestReExtractorSessionFilter:
 
 class TestReExtractCLI:
     def test_dry_run(self, memory_db: Database) -> None:
-        from llm_mem.cli import main
+        from callmem.cli import main
 
         config = Config(sensitive_data={"enabled": False, "llm_scan": False})
         engine = MemoryEngine(memory_db, config)
@@ -251,12 +251,12 @@ class TestReExtractCLI:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            from llm_mem.core.database import Database
+            from callmem.core.database import Database
 
             project_dir = Path(tmpdir)
-            llm_mem_dir = project_dir / ".llm-mem"
-            llm_mem_dir.mkdir()
-            db = Database(llm_mem_dir / "memory.db")
+            callmem_dir = project_dir / ".callmem"
+            callmem_dir.mkdir()
+            db = Database(callmem_dir / "memory.db")
             db.initialize()
 
             cfg = Config(
@@ -266,12 +266,12 @@ class TestReExtractCLI:
             eng.start_session()
             eng.ingest_one("note", "test event")
 
-            config_path = llm_mem_dir / "config.toml"
+            config_path = callmem_dir / "config.toml"
             config_path.write_text(
                 '[project]\nname = "test"\n[llm]\nbackend = "ollama"\n[ollama]\nmodel = "test"\n'
             )
 
-            with patch("llm_mem.core.engine._create_llm_client") as mock_create:
+            with patch("callmem.core.engine._create_llm_client") as mock_create:
                 mock_llm = MagicMock()
                 mock_llm.is_available.return_value = True
                 mock_llm._generate.return_value = '{"decisions":[],"todos":[]}'
@@ -285,7 +285,7 @@ class TestReExtractCLI:
         assert "events" in result.output.lower() or "Sessions" in result.output
 
     def test_no_db_shows_error(self) -> None:
-        from llm_mem.cli import main
+        from callmem.cli import main
 
         runner = CliRunner()
         import tempfile
@@ -294,7 +294,7 @@ class TestReExtractCLI:
             result = runner.invoke(
                 main, ["re-extract", "--project", tmpdir]
             )
-        assert "No llm-mem database" in result.output
+        assert "No callmem database" in result.output
 
 
 class TestParseSince:

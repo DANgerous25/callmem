@@ -41,8 +41,8 @@ Context Economics
 ```
 
 ### Files to modify
-- `src/llm_mem/core/briefing.py` — add `_compute_economics()` method, include in `Briefing` dataclass
-- `src/llm_mem/core/repository.py` — add query method for total project event token count
+- `src/callmem/core/briefing.py` — add `_compute_economics()` method, include in `Briefing` dataclass
+- `src/callmem/core/repository.py` — add query method for total project event token count
 
 ---
 
@@ -55,7 +55,7 @@ Plain markdown with `### Active TODOs`, `### Recent Decisions`, etc. Functional 
 A rich text briefing designed for terminal display with category icons:
 
 ```
-[llm-mem] recent context, 2026-04-17 1:30am HKT
+[callmem] recent context, 2026-04-17 1:30am HKT
 ────────────────────────────────────────────────
 
 Legend: 🟢 feature | 🔴 bugfix | 🔵 discovery | ⚖️ decision | 📋 todo | ❌ failure | 🔬 research | 🔄 change | 📝 fact
@@ -68,16 +68,16 @@ Context Economics
 Apr 17, 2026
 
 #S3 Rewrote OpenCode import to use SQLite DB (Apr 17, 12:43 AM)
-  src/llm_mem/adapters/opencode_import.py
+  src/callmem/adapters/opencode_import.py
     #E45  12:43 AM  🟢  OpenCode import adapter rewritten for SQLite
     #E46            🔵  OpenCode stores sessions in SQLite, not JSON files
   scripts/setup.py
     #E47  12:43 AM  🔄  Setup wizard updated for SQLite-based session import
 
 #S4 Added card-based memory feed UI (Apr 17, 12:58 AM)
-  src/llm_mem/ui/routes/feed.py
+  src/callmem/ui/routes/feed.py
     #E48  12:58 AM  🟢  Memory feed route with real-time htmx polling
-  src/llm_mem/ui/templates/feed_partial.html
+  src/callmem/ui/templates/feed_partial.html
     #E49            🟢  Card layout with category badges and timestamps
 
 Latest Session Summary:
@@ -145,8 +145,8 @@ class Briefing:
 ```
 
 ### Files to modify
-- `src/llm_mem/core/briefing.py` — complete rewrite of format generation
-- `src/llm_mem/core/prompts.py` — no change (already has BRIEFING_COMPRESSION_PROMPT)
+- `src/callmem/core/briefing.py` — complete rewrite of format generation
+- `src/callmem/core/prompts.py` — no change (already has BRIEFING_COMPRESSION_PROMPT)
 
 ---
 
@@ -203,10 +203,10 @@ session_summary_filename = "SESSION_SUMMARY.md"
 The setup wizard should offer to add `SESSION_SUMMARY.md` to the project's `.gitignore` (it's ephemeral, not source code).
 
 ### Files to modify
-- `src/llm_mem/core/briefing.py` — add `write_session_summary()`
-- `src/llm_mem/models/config.py` — add `auto_write_session_summary` and `session_summary_filename` config fields
-- `src/llm_mem/core/workers.py` — call `write_session_summary()` after extraction batch
-- `src/llm_mem/adapters/opencode.py` — call on session start/end events
+- `src/callmem/core/briefing.py` — add `write_session_summary()`
+- `src/callmem/models/config.py` — add `auto_write_session_summary` and `session_summary_filename` config fields
+- `src/callmem/core/workers.py` — call `write_session_summary()` after extraction batch
+- `src/callmem/adapters/opencode.py` — call on session start/end events
 - `scripts/setup.py` — offer to add SESSION_SUMMARY.md to .gitignore
 
 ---
@@ -223,8 +223,8 @@ The existing `/briefing` page should show the formatted briefing as it would app
 - Add a "Copy to clipboard" button
 
 ### Files to modify
-- `src/llm_mem/ui/routes/briefing.py` — pass economics data + formatted content
-- `src/llm_mem/ui/templates/briefing.html` — styled preview with copy button
+- `src/callmem/ui/routes/briefing.py` — pass economics data + formatted content
+- `src/callmem/ui/templates/briefing.html` — styled preview with copy button
 
 ---
 

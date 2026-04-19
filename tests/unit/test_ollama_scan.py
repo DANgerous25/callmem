@@ -5,24 +5,24 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from llm_mem.core.ollama import OllamaClient
-from llm_mem.core.redaction import Detection
+from callmem.core.ollama import OllamaClient
+from callmem.core.redaction import Detection
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
 class TestOllamaAvailability:
     def test_available_on_200(self) -> None:
         client = OllamaClient()
-        with patch("llm_mem.core.ollama.httpx.get") as mock_get:
+        with patch("callmem.core.ollama.httpx.get") as mock_get:
             mock_get.return_value.status_code = 200
             assert client.is_available() is True
 
     def test_unavailable_on_connection_error(self) -> None:
         client = OllamaClient()
-        with patch("llm_mem.core.ollama.httpx.get") as mock_get:
+        with patch("callmem.core.ollama.httpx.get") as mock_get:
             import httpx
 
             mock_get.side_effect = httpx.ConnectError("refused")
@@ -30,7 +30,7 @@ class TestOllamaAvailability:
 
     def test_unavailable_on_timeout(self) -> None:
         client = OllamaClient()
-        with patch("llm_mem.core.ollama.httpx.get") as mock_get:
+        with patch("callmem.core.ollama.httpx.get") as mock_get:
             import httpx
 
             mock_get.side_effect = httpx.TimeoutException("timeout")
@@ -109,8 +109,8 @@ class TestConfidenceThreshold:
     def test_engine_filters_low_confidence_llm_detections(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.core.engine import MemoryEngine
-        from llm_mem.models.config import Config
+        from callmem.core.engine import MemoryEngine
+        from callmem.models.config import Config
 
         config = Config()
         config.sensitive_data.llm_scan_confidence = 0.8
@@ -150,8 +150,8 @@ class TestConfidenceThreshold:
     def test_engine_scan_status_full_when_ollama_available(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.core.engine import MemoryEngine
-        from llm_mem.models.config import Config
+        from callmem.core.engine import MemoryEngine
+        from callmem.models.config import Config
 
         engine = MemoryEngine(memory_db, Config())
 
@@ -167,8 +167,8 @@ class TestConfidenceThreshold:
     def test_engine_scan_status_pattern_only_when_ollama_down(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.core.engine import MemoryEngine
-        from llm_mem.models.config import Config
+        from callmem.core.engine import MemoryEngine
+        from callmem.models.config import Config
 
         engine = MemoryEngine(memory_db, Config())
 
@@ -205,7 +205,7 @@ class TestExtractMethod:
 class TestGenerateHttpErrors:
     def test_generate_handles_http_500(self) -> None:
         client = OllamaClient()
-        with patch("llm_mem.core.ollama.httpx.post") as mock_post:
+        with patch("callmem.core.ollama.httpx.post") as mock_post:
             import httpx
             mock_post.return_value.raise_for_status.side_effect = (
                 httpx.HTTPStatusError("500", request=httpx.Request("POST", "http://x"), response=httpx.Response(500))

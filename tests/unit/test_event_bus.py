@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from llm_mem.core.event_bus import EventBus
+from callmem.core.event_bus import EventBus
 
 
 class TestEventBus:

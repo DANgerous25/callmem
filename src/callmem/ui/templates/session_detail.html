@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}callmem — Session{% endblock %}
+{% block content %}
+{% if session %}
+<div id="session-detail-content" hx-get="/partials/sessions/{{ session.id }}" hx-trigger="every 3s" hx-swap="innerHTML">
+<h2>Session {{ session.id[:8] }}...</h2>
+<p>
+    Started: {{ session.started_at[:19] }} &middot;
+    Status: {{ session.status }} &middot;
+    Events: {{ session.event_count }}
+</p>
+
+{% if session.summary %}
+<article>
+    <header><strong>Summary</strong></header>
+    {{ session.summary }}
+</article>
+{% endif %}
+
+{% if entities %}
+<h3>Extracted Entities</h3>
+<table>
+    <thead><tr><th>Type</th><th>Title</th><th>Content</th></tr></thead>
+    <tbody>
+    {% for e in entities %}
+    <tr>
+        <td>{{ e.type }}</td>
+        <td>{{ e.title }}</td>
+        <td class="event-content-cell">
+            {% if e.content and e.content | length > 500 %}
+            <details>
+                <summary>{{ e.content[:500] }}&hellip;</summary>
+                <div class="event-full-text">{{ e.content }}</div>
+            </details>
+            {% else %}
+            {{ e.content or "" }}
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+<h3 id="events">Events</h3>
+<table>
+    <thead><tr><th>Time</th><th>Type</th><th>Content</th></tr></thead>
+    <tbody>
+    {% for ev in events %}
+    <tr>
+        <td>{{ ev.timestamp[:16] }}</td>
+        <td>{{ ev.type }}</td>
+        <td class="event-content-cell">
+            {% if ev.content and ev.content | length > 500 %}
+            <details>
+                <summary>{{ ev.content[:500] }}&hellip;</summary>
+                <div class="event-full-text">{{ ev.content }}</div>
+            </details>
+            {% else %}
+            {{ ev.content }}
+            {% endif %}
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<p>Session not found.</p>
+{% endif %}
+{% endblock %}

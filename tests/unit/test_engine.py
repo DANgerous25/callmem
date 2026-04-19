@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.models.config import Config
-from llm_mem.models.events import EventInput
+from callmem.core.engine import MemoryEngine
+from callmem.models.config import Config
+from callmem.models.events import EventInput
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
 
 
 class TestSessionLifecycle:
@@ -154,7 +154,7 @@ class TestDedup:
 
 class TestTruncation:
     def test_long_event_truncated(self, engine: MemoryEngine) -> None:
-        from llm_mem.core.engine import DEFAULT_MAX_EVENT_SIZE
+        from callmem.core.engine import DEFAULT_MAX_EVENT_SIZE
 
         engine.start_session()
         long_content = "x" * (DEFAULT_MAX_EVENT_SIZE + 1000)
@@ -258,7 +258,7 @@ class TestFTS5:
 class TestProjectAutoCreation:
     def test_project_created_on_first_use(self, engine: MemoryEngine) -> None:
         assert engine.project_id is not None
-        from llm_mem.core.repository import Repository
+        from callmem.core.repository import Repository
 
         repo = Repository(engine.db)
         project = repo.get_project(engine.project_id)
@@ -269,7 +269,7 @@ class TestProjectAutoCreation:
         config = Config(project={"name": "my-app"})
         engine = MemoryEngine(memory_db, config)
         assert engine.project_id is not None
-        from llm_mem.core.repository import Repository
+        from callmem.core.repository import Repository
 
         repo = Repository(engine.db)
         project = repo.get_project(engine.project_id)

@@ -12,7 +12,7 @@ Track which files each entity relates to, and implement a 3-layer progressive di
 
 ### Why
 
-claude-mem tracks which files were read/modified for each observation. This enables powerful queries: "What do we know about `src/auth.py`?", "What was the last change to `config.toml`?". llm-mem currently has no file associations on entities.
+claude-mem tracks which files were read/modified for each observation. This enables powerful queries: "What do we know about `src/auth.py`?", "What was the last change to `config.toml`?". callmem currently has no file associations on entities.
 
 ### Data Model
 
@@ -32,7 +32,7 @@ And add `entity_files` to `Database.ensure_schema()`.
 
 ### Extraction Changes
 
-Update `EXTRACTION_PROMPT` in `src/llm_mem/core/prompts.py` to ask the LLM to identify files:
+Update `EXTRACTION_PROMPT` in `src/callmem/core/prompts.py` to ask the LLM to identify files:
 
 ```json
 {
@@ -89,13 +89,13 @@ In the feed card footer, show associated files as small tags:
 
 ### Files to Create/Modify
 
-- `src/llm_mem/core/database.py` — add `entity_files` table to schema
-- `src/llm_mem/core/extraction.py` — parse files, insert to `entity_files`
-- `src/llm_mem/core/prompts.py` — add files to extraction prompt
-- `src/llm_mem/core/repository.py` — add `get_entities_by_file()`, `get_files_for_entity()`
-- `src/llm_mem/mcp/server.py` — add `search_by_file` tool
-- `src/llm_mem/ui/routes/feed.py` — attach files to feed items
-- `src/llm_mem/ui/templates/feed_partial.html` — show file tags in card footer
+- `src/callmem/core/database.py` — add `entity_files` table to schema
+- `src/callmem/core/extraction.py` — parse files, insert to `entity_files`
+- `src/callmem/core/prompts.py` — add files to extraction prompt
+- `src/callmem/core/repository.py` — add `get_entities_by_file()`, `get_files_for_entity()`
+- `src/callmem/mcp/server.py` — add `search_by_file` tool
+- `src/callmem/ui/routes/feed.py` — attach files to feed items
+- `src/callmem/ui/templates/feed_partial.html` — show file tags in card footer
 
 ---
 
@@ -109,7 +109,7 @@ claude-mem's MCP tools follow a 3-layer pattern that saves 75-80% of tokens vs f
 2. **Layer 2 — Timeline**: Chronological context (~100-200 tokens/result) — understand causality
 3. **Layer 3 — Full details**: Complete entity content (~500-1000 tokens/result) — deep dive
 
-llm-mem's current `search_memory` MCP tool returns full content for every result, which is expensive.
+callmem's current `search_memory` MCP tool returns full content for every result, which is expensive.
 
 ### MCP Tool Changes
 
@@ -194,9 +194,9 @@ Memory Search Pattern:
 
 ### Files to Create/Modify
 
-- `src/llm_mem/mcp/server.py` — restructure tools: `search` (compact), `timeline`, `get_entities` (full)
-- `src/llm_mem/core/repository.py` — add `get_timeline()` method, update `search()` to return compact format
-- `src/llm_mem/core/briefing.py` — include search pattern guidance in briefing
+- `src/callmem/mcp/server.py` — restructure tools: `search` (compact), `timeline`, `get_entities` (full)
+- `src/callmem/core/repository.py` — add `get_timeline()` method, update `search()` to return compact format
+- `src/callmem/core/briefing.py` — include search pattern guidance in briefing
 
 ---
 

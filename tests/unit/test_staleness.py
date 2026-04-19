@@ -7,23 +7,23 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from llm_mem.cli import main
-from llm_mem.core.config import load_config
-from llm_mem.core.database import Database
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.core.retrieval import RetrievalEngine
-from llm_mem.core.staleness import StalenessChecker, _fts_query_from
-from llm_mem.mcp.tools import (
+from callmem.cli import main
+from callmem.core.config import load_config
+from callmem.core.database import Database
+from callmem.core.engine import MemoryEngine
+from callmem.core.retrieval import RetrievalEngine
+from callmem.core.staleness import StalenessChecker, _fts_query_from
+from callmem.mcp.tools import (
     handle_mark_current,
     handle_mark_stale,
     handle_search,
 )
-from llm_mem.models.entities import Entity
+from callmem.models.entities import Entity
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from llm_mem.core.repository import Repository
+    from callmem.core.repository import Repository
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ def _make_engine(project: Path) -> MemoryEngine:
     result = runner.invoke(main, ["init", "--project", str(project)])
     assert result.exit_code == 0
     config = load_config(project)
-    db = Database(project / ".llm-mem" / "memory.db")
+    db = Database(project / ".callmem" / "memory.db")
     db.initialize()
     return MemoryEngine(db, config)
 
@@ -359,7 +359,7 @@ class TestAutomaticDetection:
 
 class TestBriefingFooter:
     def test_stale_count_in_briefing(self, tmp_path: Path) -> None:
-        from llm_mem.core.briefing import BriefingGenerator
+        from callmem.core.briefing import BriefingGenerator
 
         engine = _make_engine(tmp_path)
         _insert_entity(
@@ -385,7 +385,7 @@ class TestUIEndpoints:
     ) -> None:
         from fastapi.testclient import TestClient
 
-        from llm_mem.ui.app import create_app
+        from callmem.ui.app import create_app
 
         engine = _make_engine(tmp_path)
         eid = _insert_entity(
@@ -414,7 +414,7 @@ class TestUIEndpoints:
     ) -> None:
         from fastapi.testclient import TestClient
 
-        from llm_mem.ui.app import create_app
+        from callmem.ui.app import create_app
 
         engine = _make_engine(tmp_path)
         _insert_entity(

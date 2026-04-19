@@ -2,11 +2,11 @@
 
 ## Goal
 
-Allow llm-mem to use different extraction taxonomies depending on the type of project — coding, research, documentation, data analysis — so entity types and extraction prompts are domain-appropriate.
+Allow callmem to use different extraction taxonomies depending on the type of project — coding, research, documentation, data analysis — so entity types and extraction prompts are domain-appropriate.
 
 ## Background
 
-claude-mem has a mode system with pluggable taxonomies (code, email, law). llm-mem currently has a single hardcoded taxonomy optimized for coding projects. While coding is the primary use case, the entity types (feature, bugfix, refactor) don't make sense for a research project or documentation effort.
+claude-mem has a mode system with pluggable taxonomies (code, email, law). callmem currently has a single hardcoded taxonomy optimized for coding projects. While coding is the primary use case, the entity types (feature, bugfix, refactor) don't make sense for a research project or documentation effort.
 
 ## Deliverables
 
@@ -88,7 +88,7 @@ The `EntityType` literal becomes a runtime-validated string against the mode's t
 
 ### 4. Custom mode support
 
-If the user selects "custom", create a `modes/custom.toml` in the project's `.llm-mem/` directory where they can define their own types. Provide the coding mode as a starting template.
+If the user selects "custom", create a `modes/custom.toml` in the project's `.callmem/` directory where they can define their own types. Provide the coding mode as a starting template.
 
 ### 5. Built-in modes
 
@@ -100,7 +100,7 @@ Ship with:
 ### 6. Mode switching
 
 ```bash
-llm-mem config --mode research -p .
+callmem config --mode research -p .
 ```
 
 Changing modes does not affect existing entities — they keep their original types. New entities use the new mode's types. A migration/re-extraction can be done separately if needed.
@@ -111,8 +111,8 @@ Changing modes does not affect existing entities — they keep their original ty
 - No AI attribution
 - Backward compatible — existing projects with no mode config default to "coding"
 - Mode definitions are read-only after loading (no runtime modification)
-- Custom modes stored in `.llm-mem/modes/` (project-specific)
-- Built-in modes stored in `src/llm_mem/modes/` (package data)
+- Custom modes stored in `.callmem/modes/` (project-specific)
+- Built-in modes stored in `src/callmem/modes/` (package data)
 
 ## Acceptance criteria
 

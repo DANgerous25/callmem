@@ -6,13 +6,13 @@ Implement the worker runner that processes the job queue in the background — e
 
 ## Files to create
 
-- `src/llm_mem/core/workers.py` — Worker runner (polling loop, job dispatch)
+- `src/callmem/core/workers.py` — Worker runner (polling loop, job dispatch)
 - `tests/unit/test_workers.py`
 
 ## Files to modify
 
-- `src/llm_mem/cli.py` — Add `--no-workers` flag to `serve`, add standalone `llm-mem workers` command
-- `src/llm_mem/mcp/server.py` — Start worker thread alongside MCP server (unless `--no-workers`)
+- `src/callmem/cli.py` — Add `--no-workers` flag to `serve`, add standalone `callmem workers` command
+- `src/callmem/mcp/server.py` — Start worker thread alongside MCP server (unless `--no-workers`)
 
 ## Constraints
 
@@ -23,7 +23,7 @@ Implement the worker runner that processes the job queue in the background — e
 - Graceful shutdown: finish current job, then stop
 - Thread-safe SQLite access (WAL mode + separate connection per thread)
 - Log all job processing (start, complete, fail)
-- Optional standalone mode: `llm-mem workers` runs just the worker loop (for running separately from the MCP server)
+- Optional standalone mode: `callmem workers` runs just the worker loop (for running separately from the MCP server)
 
 ## Worker runner design
 
@@ -80,7 +80,7 @@ class WorkerRunner:
 6. Worker retries failed jobs up to `max_attempts`
 7. Worker stops cleanly when `stop()` is called
 8. Worker thread doesn't block the main MCP server thread
-9. `llm-mem workers --project .` runs the worker loop standalone
+9. `callmem workers --project .` runs the worker loop standalone
 10. `pytest tests/unit/test_workers.py` passes
 
 ## Suggested tests

@@ -7,8 +7,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.mcp.tools import (
+from callmem.core.engine import MemoryEngine
+from callmem.mcp.tools import (
     TOOL_DEFINITIONS,
     handle_get_entities,
     handle_get_tasks,
@@ -18,10 +18,10 @@ from llm_mem.mcp.tools import (
     handle_session_end,
     handle_session_start,
 )
-from llm_mem.models.config import Config
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
 
 
 def _make_engine(memory_db: Database) -> MemoryEngine:
@@ -180,7 +180,7 @@ class TestGetEntities:
                 "content": "Pick SQLite for local storage",
             }],
         })
-        from llm_mem.models.entities import Entity
+        from callmem.models.entities import Entity
         entity = Entity(
             project_id=engine.project_id,
             type="decision",

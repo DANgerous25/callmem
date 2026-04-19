@@ -2,21 +2,21 @@
 
 ## Objective
 
-Implement the MCP server that exposes llm-mem tools over the Model Context Protocol. Wire up the core tools (`mem_session_start`, `mem_ingest`, `mem_search`, `mem_get_briefing`) to the engine.
+Implement the MCP server that exposes callmem tools over the Model Context Protocol. Wire up the core tools (`mem_session_start`, `mem_ingest`, `mem_search`, `mem_get_briefing`) to the engine.
 
 ## Files to create
 
-- `src/llm_mem/mcp/__init__.py`
-- `src/llm_mem/mcp/server.py` — MCP server entry point (stdio transport)
-- `src/llm_mem/mcp/tools.py` — Tool definitions and handlers
-- `src/llm_mem/mcp/resources.py` — Resource definitions (stubs for now)
+- `src/callmem/mcp/__init__.py`
+- `src/callmem/mcp/server.py` — MCP server entry point (stdio transport)
+- `src/callmem/mcp/tools.py` — Tool definitions and handlers
+- `src/callmem/mcp/resources.py` — Resource definitions (stubs for now)
 - `tests/unit/test_mcp_tools.py`
 - `tests/integration/__init__.py`
 - `tests/integration/test_mcp_server.py`
 
 ## Files to modify
 
-- `src/llm_mem/cli.py` — Wire `llm-mem serve` to launch MCP server
+- `src/callmem/cli.py` — Wire `callmem serve` to launch MCP server
 - `pyproject.toml` — Add `mcp` dependency (`mcp>=1.0`)
 
 ## Constraints
@@ -69,7 +69,7 @@ async def handle_session_end(args):
 
 ## Acceptance criteria
 
-1. `python -m llm_mem.mcp.server --project /path` starts an MCP server on stdio
+1. `python -m callmem.mcp.server --project /path` starts an MCP server on stdio
 2. The server responds to MCP `tools/list` with all defined tools
 3. `mem_session_start` creates a session and returns its ID
 4. `mem_ingest` stores events and returns event IDs
@@ -107,18 +107,18 @@ async def test_mcp_ingest_and_search(mcp_client):
 
 ## OpenCode verification
 
-After this WO, you should be able to add llm-mem to `opencode.json`:
+After this WO, you should be able to add callmem to `opencode.json`:
 
 ```json
 {
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
-      "command": ["uv", "run", "python", "-m", "llm_mem.mcp.server", "--project", "."],
+      "command": ["uv", "run", "python", "-m", "callmem.mcp.server", "--project", "."],
       "enabled": true
     }
   }
 }
 ```
 
-And see llm-mem tools in OpenCode's `/mcp` list.
+And see callmem tools in OpenCode's `/mcp` list.

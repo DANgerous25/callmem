@@ -37,7 +37,7 @@ Extraction will continue in the background via the worker.
 
 ### Implementation
 
-#### CLI import command (`src/llm_mem/cli.py`)
+#### CLI import command (`src/callmem/cli.py`)
 
 - Use `click.progressbar()` or a simple counter that prints progress per session
 - Show: session count, event count, current session title
@@ -49,8 +49,8 @@ Extraction will continue in the background via the worker.
 - After import, print a message explaining that extraction runs in the background
 
 ### Files to modify
-- `src/llm_mem/cli.py` — add progress bar to `import` command
-- `src/llm_mem/adapters/opencode_import.py` — yield progress callbacks during import (currently returns all at once)
+- `src/callmem/cli.py` — add progress bar to `import` command
+- `src/callmem/adapters/opencode_import.py` — yield progress callbacks during import (currently returns all at once)
 - `scripts/setup.py` — progress display in `_offer_session_import()`
 
 ---
@@ -75,7 +75,7 @@ If background: fork the import to a subprocess and continue with the rest of set
 
 ```
 Import running in background (PID 12345).
-Check progress: llm-mem import --status
+Check progress: callmem import --status
 Extraction will begin automatically once events are ingested.
 You can open OpenCode now — new memories will appear as they're processed.
 ```
@@ -84,7 +84,7 @@ You can open OpenCode now — new memories will appear as they're processed.
 Add `--background` flag:
 
 ```bash
-llm-mem import --source opencode --opencode-db ~/.local/share/opencode/opencode.db --background
+callmem import --source opencode --opencode-db ~/.local/share/opencode/opencode.db --background
 ```
 
 This forks the import to a background process and returns immediately.
@@ -93,7 +93,7 @@ This forks the import to a background process and returns immediately.
 Add `--status` flag to show import progress:
 
 ```bash
-llm-mem import --status
+callmem import --status
 ```
 
 Output:
@@ -115,7 +115,7 @@ Last import: 19 sessions, 546 events (completed 2m ago)
 #### Background process
 
 Use a simple approach:
-1. Write a progress file to `.llm-mem/import_progress.json`:
+1. Write a progress file to `.callmem/import_progress.json`:
    ```json
    {
      "pid": 12345,
@@ -145,11 +145,11 @@ The import is safe to run concurrently with:
 - **Web UI** — read-only queries, no conflicts.
 - **MCP server** — read-only queries, no conflicts.
 
-The only constraint: don't run two imports simultaneously. Use a lockfile (`.llm-mem/import.lock`) to prevent this.
+The only constraint: don't run two imports simultaneously. Use a lockfile (`.callmem/import.lock`) to prevent this.
 
 ### Files to modify
-- `src/llm_mem/cli.py` — add `--background` and `--status` flags
-- `src/llm_mem/adapters/opencode_import.py` — write progress to `.llm-mem/import_progress.json`
+- `src/callmem/cli.py` — add `--background` and `--status` flags
+- `src/callmem/adapters/opencode_import.py` — write progress to `.callmem/import_progress.json`
 - `scripts/setup.py` — offer background import option
 
 ### Files to create
@@ -166,10 +166,10 @@ The only constraint: don't run two imports simultaneously. Use a lockfile (`.llm
 4. [ ] Progress updates in real-time (not buffered until end)
 
 ### Background Import
-5. [ ] `llm-mem import --background` forks import and returns immediately
+5. [ ] `callmem import --background` forks import and returns immediately
 6. [ ] Setup wizard offers "import now" vs "import in background" choice
-7. [ ] Background import writes progress to `.llm-mem/import_progress.json`
-8. [ ] `llm-mem import --status` shows current progress or last import summary
+7. [ ] Background import writes progress to `.callmem/import_progress.json`
+8. [ ] `callmem import --status` shows current progress or last import summary
 9. [ ] Lockfile prevents concurrent imports
 10. [ ] Import is safe to run while daemon, adapter, and OC are active
 

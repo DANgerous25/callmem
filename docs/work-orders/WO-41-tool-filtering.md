@@ -6,7 +6,7 @@ Add a configurable list of tool names to skip during event ingestion, reducing n
 
 ## Background
 
-claude-mem has a `SKIP_TOOLS` configuration that excludes certain tool call events from being stored. This reduces storage, extraction load, and noise in the observation feed. llm-mem currently ingests all events indiscriminately.
+claude-mem has a `SKIP_TOOLS` configuration that excludes certain tool call events from being stored. This reduces storage, extraction load, and noise in the observation feed. callmem currently ingests all events indiscriminately.
 
 ## Deliverables
 
@@ -48,10 +48,10 @@ Add the skip_tools list to the settings panel so it can be edited from the UI.
 
 ### 5. Stats
 
-Add to `llm-mem watch` or a new command:
+Add to `callmem watch` or a new command:
 
 ```bash
-llm-mem stats -p .
+callmem stats -p .
 ```
 
 Include a line: `Events skipped (tool filter): N`

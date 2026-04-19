@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from llm_mem.core.queue import JobQueue
+from callmem.core.queue import JobQueue
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
 
 
 class TestEnqueue:

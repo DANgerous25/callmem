@@ -5,7 +5,7 @@ Use this prompt when tests are failing and you need a coding agent to diagnose a
 ## Test failure diagnosis
 
 ```
-Tests are failing in the llm-mem project. Diagnose and fix.
+Tests are failing in the callmem project. Diagnose and fix.
 
 ## Failing tests
 ```
@@ -35,10 +35,10 @@ Tests are failing in the llm-mem project. Diagnose and fix.
 ## Post-implementation test sweep
 
 ```
-Run the full test suite for llm-mem and fix any failures.
+Run the full test suite for callmem and fix any failures.
 
 ```bash
-cd /path/to/llm-mem
+cd /path/to/callmem
 pytest tests/ -v --tb=short
 ```
 
@@ -58,7 +58,7 @@ Report a summary:
 ## Regression check
 
 ```
-A change was made to {file_path} in the llm-mem project.
+A change was made to {file_path} in the callmem project.
 
 The change:
 {describe change or paste diff}
@@ -78,7 +78,7 @@ If any tests that were previously passing now fail:
 ## Writing missing tests
 
 ```
-The following module in llm-mem lacks test coverage:
+The following module in callmem lacks test coverage:
 
 File: {file_path}
 Module purpose: {description}

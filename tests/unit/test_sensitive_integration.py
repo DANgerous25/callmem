@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from llm_mem.core.engine import MemoryEngine
-from llm_mem.models.config import Config
+from callmem.core.engine import MemoryEngine
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
@@ -56,7 +56,7 @@ class TestIngestWithRedaction:
             conn.close()
 
     def test_vault_entries_encrypt_original(self, memory_db: Database) -> None:
-        from llm_mem.core.crypto import VaultKeyManager
+        from callmem.core.crypto import VaultKeyManager
 
         engine = _make_engine(memory_db)
         engine.start_session()
