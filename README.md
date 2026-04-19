@@ -141,6 +141,19 @@ make daemon
 make start
 ```
 
+**Restarting after an upgrade or config change.** The systemd service holds the old code in memory, so `git pull` / `pip install -e .` / `config.toml` edits only take effect after a restart:
+
+```bash
+make restart          # this project (preferred)
+make logs             # tail journalctl for the service
+
+# Or raw systemctl — the unit is named llm-mem-<project-dir-name>:
+systemctl --user restart llm-mem-<project>.service
+systemctl --user status  llm-mem-<project>.service
+```
+
+Each project that ran `llm-mem setup` with systemd enabled has its own unit, so restart the one matching your project directory.
+
 ### 5. Configure Your Coding Agent
 
 `llm-mem setup` and `llm-mem init` both write the right config file(s) automatically. If you prefer to wire it up by hand:
@@ -227,6 +240,9 @@ llm-mem status             # Show service status
 llm-mem search <query>     # Search memories from the command line
 llm-mem briefing           # Generate and print a briefing
 llm-mem briefing --write   # Write briefing to SESSION_SUMMARY.md
+
+make restart               # Restart the systemd unit for this project
+make logs                  # Tail journalctl for the service
 ```
 
 ---

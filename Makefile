@@ -1,7 +1,7 @@
 PROJECT := $(shell pwd)
 SVC_NAME := llm-mem-$(shell basename $(PROJECT))
 
-.PHONY: test dev setup lint typecheck session-save session-load clean start stop restart logs status daemon watch
+.PHONY: test dev setup lint typecheck clean start stop restart logs status daemon watch
 
 # Run the full test suite
 test:
@@ -37,17 +37,6 @@ restart:
 # Follow daemon logs
 logs:
 	journalctl --user -u $(SVC_NAME) -f
-
-# Save session memory from recent git history
-session-save:
-	uv run python scripts/session_save.py --from-git
-	@echo ""
-	@echo "Memory files updated. Don't forget to commit:"
-	@echo "  git add .llm-mem/ && git commit -m 'chore: update session memory' && git push"
-
-# Load and display current session memory
-session-load:
-	uv run python scripts/session_load.py
 
 # Watch job queue progress
 watch:

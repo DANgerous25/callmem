@@ -47,21 +47,19 @@ ollama list
 
 If you have a GPU with enough VRAM, `qwen3:30b` gives better extraction quality. Either works.
 
-## Step 3 — Read the bootstrap memory
+## Step 3 — Load the startup briefing
 
-Before writing any code, read the project memory. This is what OpenCode/GLM should do at the start of every session:
+llm-mem maintains its own persistent memory in `.llm-mem/memory.db`. The daemon auto-writes `SESSION_SUMMARY.md` on each extraction pass, so the latest state is always available:
 
 ```bash
-# Display the bootstrap memory files
-python scripts/session_load.py
+# Regenerate on demand
+uv run llm-mem briefing --write
+
+# Or just read the current file
+cat SESSION_SUMMARY.md
 ```
 
-This prints:
-- **SESSION.md** — What happened in the last session
-- **DECISIONS.md** — All design decisions made so far (009 and counting)
-- **TODO.md** — Current work order progress
-
-Read these yourself too — they're the canonical source of project state.
+OpenCode/Claude Code agents read `SESSION_SUMMARY.md` at session start (or call `mem_get_briefing` via MCP) — no manual memory files to maintain.
 
 ## Step 4 — Configure OpenCode MCP (for later)
 
@@ -97,34 +95,32 @@ opencode
 Copy-paste this as your first message to the agent:
 
 ```
-Read AGENTS.md completely. Then read .llm-mem/SESSION.md, .llm-mem/DECISIONS.md, and .llm-mem/TODO.md.
+Read AGENTS.md completely. Then read SESSION_SUMMARY.md for current project state.
 
 Then open docs/work-orders/WO-01-project-setup.md and verify all acceptance criteria are met.
 If anything is missing, implement it. Run pytest tests/ -v to confirm all tests pass.
 
 When done, commit with: git commit -m "chore(WO-01): verify project setup acceptance criteria"
-Then update .llm-mem/SESSION.md and .llm-mem/TODO.md with what you did.
-Push everything.
+Push.
 ```
 
 ### What to expect
 
 The agent should:
-1. Read all memory files and understand the project context
+1. Read `SESSION_SUMMARY.md` and understand the project context
 2. Check WO-01 acceptance criteria against what already exists
 3. Fill in any gaps (most of the scaffold is already done)
 4. Run tests and confirm they pass
-5. Commit, update memory files, push
+5. Commit, push
 
 ### After WO-01 completes
 
 Move to the next work order. The pattern is the same every time:
 
 ```
-Read .llm-mem/SESSION.md, DECISIONS.md, TODO.md.
+Read SESSION_SUMMARY.md.
 Open docs/work-orders/WO-02-data-models.md.
 Implement everything specified. Run tests. Commit and push.
-Update memory files.
 ```
 
 Work order execution order: **WO-01 → WO-02 → WO-03 → WO-04 → WO-04b → WO-05 → WO-06 → WO-07 → WO-08 → WO-09 → WO-10 → WO-11 → WO-12**
@@ -137,8 +133,7 @@ Do not skip ahead. Each work order builds on the previous ones.
 
 Always begin with:
 ```
-Read AGENTS.md. Then read .llm-mem/SESSION.md, .llm-mem/DECISIONS.md, .llm-mem/TODO.md.
-What's the current state of the project?
+Read AGENTS.md and SESSION_SUMMARY.md. What's the current state of the project?
 ```
 
 This ensures the agent has full context before doing anything.
@@ -147,23 +142,16 @@ This ensures the agent has full context before doing anything.
 
 Always end with:
 ```
-Run pytest tests/ -v to make sure everything passes.
-Update .llm-mem/SESSION.md with what we did this session.
-Update .llm-mem/TODO.md if any tasks changed.
-Commit everything and push.
+Run pytest tests/ -v to make sure everything passes. Commit everything and push.
 ```
 
-Or use the helper script:
-```bash
-python scripts/session_save.py --from-git
-git add -A && git commit -m "chore: update session memory" && git push
-```
+Memory is captured automatically by the llm-mem daemon — no manual files to update.
 
 ### When the agent makes a design decision
 
 Tell it:
 ```
-Record this decision in .llm-mem/DECISIONS.md following the existing format.
+Call mem_ingest with type="decision" so this choice is recorded explicitly.
 ```
 
 ## Step 7 — Using the prompt templates
@@ -202,16 +190,13 @@ The Ollama integration (WO-06) isn't built yet. If you see Ollama errors before 
 Make sure you installed in the same Python environment OpenCode uses. If using `uv`, activate the virtual environment: `source .venv/bin/activate`.
 
 ### Agent forgets context mid-session
-This is exactly the problem llm-mem solves. For now, re-paste the "read memory files" prompt. Once WO-05+ is complete, the MCP server handles this automatically.
+This is exactly the problem llm-mem solves. Call `mem_get_briefing` or re-read `SESSION_SUMMARY.md` to reload state.
 
-## What success looks like
+## What a working setup looks like
 
-After completing all work orders, your setup will be:
-1. OpenCode starts → llm-mem MCP server auto-starts as a subprocess
-2. MCP server delivers a startup briefing with recent context
-3. During coding, events are automatically captured and stored
-4. Background Ollama model summarizes and compresses memories
-5. Web UI at `localhost:8765` lets you browse, search, pin, and edit memories
+1. OpenCode / Claude Code starts → llm-mem MCP server is available as a subprocess
+2. Agent reads `SESSION_SUMMARY.md` or calls `mem_get_briefing` for recent context
+3. During coding, events are automatically captured and extracted into entities
+4. Background Ollama model summarizes sessions and compresses older memory
+5. Web UI at `localhost:9090` (default port) lets you browse, search, pin, and edit memories
 6. Sensitive data is automatically detected and encrypted before storage
-
-Until then, the bootstrap memory files (SESSION.md, DECISIONS.md, TODO.md) carry the project state between sessions.
