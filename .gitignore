@@ -35,6 +35,8 @@ vault.salt
 *.salt
 *.bak
 llm_mem.db
+llm_mem.db-wal
+llm_mem.db-shm
 .llm-mem/SESSION.*.md
 .llm-mem/config.toml.bak
 .llm-mem/import.lock
