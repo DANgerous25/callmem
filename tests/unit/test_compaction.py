@@ -5,20 +5,20 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from llm_mem.core.compaction import Compactor
-from llm_mem.models.config import Config
+from callmem.core.compaction import Compactor
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
 def _seed_old_events(memory_db: Database) -> str:
-    from llm_mem.core.repository import Repository
-    from llm_mem.models.events import Event
-    from llm_mem.models.projects import Project
-    from llm_mem.models.sessions import Session
-    from llm_mem.models.summaries import Summary
+    from callmem.core.repository import Repository
+    from callmem.models.events import Event
+    from callmem.models.projects import Project
+    from callmem.models.sessions import Session
+    from callmem.models.summaries import Summary
 
     repo = Repository(memory_db)
     project = Project(name="test-project")
@@ -79,12 +79,12 @@ def _seed_old_events(memory_db: Database) -> str:
 
 
 def _seed_with_entities(memory_db: Database) -> str:
-    from llm_mem.core.repository import Repository
-    from llm_mem.models.entities import Entity
-    from llm_mem.models.events import Event
-    from llm_mem.models.projects import Project
-    from llm_mem.models.sessions import Session
-    from llm_mem.models.summaries import Summary
+    from callmem.core.repository import Repository
+    from callmem.models.entities import Entity
+    from callmem.models.events import Event
+    from callmem.models.projects import Project
+    from callmem.models.sessions import Session
+    from callmem.models.summaries import Summary
 
     repo = Repository(memory_db)
     project = Project(name="test-project")
@@ -196,10 +196,10 @@ class TestCompactionArchive:
     def test_unsummarized_events_not_archived(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.core.repository import Repository
-        from llm_mem.models.events import Event
-        from llm_mem.models.projects import Project
-        from llm_mem.models.sessions import Session
+        from callmem.core.repository import Repository
+        from callmem.models.events import Event
+        from callmem.models.projects import Project
+        from callmem.models.sessions import Session
 
         repo = Repository(memory_db)
         project = Project(name="test")
@@ -224,11 +224,11 @@ class TestCompactionArchive:
     def test_recent_events_not_archived(
         self, memory_db: Database
     ) -> None:
-        from llm_mem.core.repository import Repository
-        from llm_mem.models.events import Event
-        from llm_mem.models.projects import Project
-        from llm_mem.models.sessions import Session
-        from llm_mem.models.summaries import Summary
+        from callmem.core.repository import Repository
+        from callmem.models.events import Event
+        from callmem.models.projects import Project
+        from callmem.models.sessions import Session
+        from callmem.models.summaries import Summary
 
         repo = Repository(memory_db)
         project = Project(name="test")
@@ -343,11 +343,11 @@ class TestCompactionSearch:
         compactor = Compactor(memory_db, Config())
         compactor.run(project_id)
 
-        from llm_mem.core.retrieval import RetrievalEngine
+        from callmem.core.retrieval import RetrievalEngine
 
         engine = RetrievalEngine(
             __import__(
-                "llm_mem.core.repository", fromlist=["Repository"]
+                "callmem.core.repository", fromlist=["Repository"]
             ).Repository(memory_db),
             Config(),
         )
@@ -361,11 +361,11 @@ class TestCompactionSearch:
         compactor = Compactor(memory_db, Config())
         compactor.run(project_id)
 
-        from llm_mem.core.retrieval import RetrievalEngine
+        from callmem.core.retrieval import RetrievalEngine
 
         engine = RetrievalEngine(
             __import__(
-                "llm_mem.core.repository", fromlist=["Repository"]
+                "callmem.core.repository", fromlist=["Repository"]
             ).Repository(memory_db),
             Config(),
         )

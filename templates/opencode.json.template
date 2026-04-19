@@ -1,8 +1,8 @@
 {
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
-      "command": ["python3", "-m", "llm_mem.mcp.server", "--project", "."],
+      "command": ["python3", "-m", "callmem.mcp.server", "--project", "."],
       "enabled": true
     }
   },

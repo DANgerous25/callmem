@@ -7,10 +7,10 @@ Set up the Python project with `pyproject.toml`, install dependencies, create th
 ## Files to create
 
 - `pyproject.toml` — Project metadata and dependencies
-- `src/llm_mem/__init__.py` — Package init with version
-- `src/llm_mem/core/__init__.py`
-- `src/llm_mem/core/database.py` — Database connection manager, schema init, migration runner
-- `src/llm_mem/core/migrations/001_initial.sql` — Full initial schema DDL
+- `src/callmem/__init__.py` — Package init with version
+- `src/callmem/core/__init__.py`
+- `src/callmem/core/database.py` — Database connection manager, schema init, migration runner
+- `src/callmem/core/migrations/001_initial.sql` — Full initial schema DDL
 - `tests/__init__.py`
 - `tests/conftest.py` — Shared fixtures (temp database, etc.)
 - `tests/unit/__init__.py`
@@ -31,7 +31,7 @@ Set up the Python project with `pyproject.toml`, install dependencies, create th
 ## Acceptance criteria
 
 1. `uv sync` installs all dependencies successfully
-2. `python -c "from llm_mem.core.database import Database; db = Database(':memory:'); db.initialize()"` creates all tables
+2. `python -c "from callmem.core.database import Database; db = Database(':memory:'); db.initialize()"` creates all tables
 3. Schema version table shows version 1
 4. All FTS5 virtual tables are created
 5. All triggers are in place

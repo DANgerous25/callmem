@@ -5,20 +5,20 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from llm_mem.core.extraction import EntityExtractor
-from llm_mem.core.ollama import OllamaClient
-from llm_mem.core.queue import JobQueue
-from llm_mem.models.config import Config
+from callmem.core.extraction import EntityExtractor
+from callmem.core.ollama import OllamaClient
+from callmem.core.queue import JobQueue
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
 def _setup_engine_and_extractor(
     memory_db: Database,
 ) -> tuple:
-    from llm_mem.core.engine import MemoryEngine
+    from callmem.core.engine import MemoryEngine
 
     config = Config(sensitive_data={"enabled": False, "llm_scan": False})
     engine = MemoryEngine(memory_db, config)
@@ -278,7 +278,7 @@ class TestIngestQueuesExtraction:
     ) -> None:
         engine, _ = _setup_engine_and_extractor(memory_db)
         engine.start_session()
-        from llm_mem.models.events import EventInput
+        from callmem.models.events import EventInput
 
         engine.ingest([
             EventInput(type="note", content="event 1"),
@@ -298,7 +298,7 @@ class TestAutoResolution:
         engine, extractor = _setup_engine_and_extractor(memory_db)
         engine.start_session()
 
-        from llm_mem.models.entities import Entity
+        from callmem.models.entities import Entity
 
         todo = Entity(
             project_id=engine.project_id,
@@ -356,7 +356,7 @@ class TestAutoResolution:
         engine, extractor = _setup_engine_and_extractor(memory_db)
         engine.start_session()
 
-        from llm_mem.models.entities import Entity
+        from callmem.models.entities import Entity
 
         todo = Entity(
             project_id=engine.project_id,
@@ -411,7 +411,7 @@ class TestAutoResolution:
         engine, extractor = _setup_engine_and_extractor(memory_db)
         engine.start_session()
 
-        from llm_mem.models.entities import Entity
+        from callmem.models.entities import Entity
 
         todo = Entity(
             project_id=engine.project_id,

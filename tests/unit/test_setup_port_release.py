@@ -85,7 +85,7 @@ class TestStopOwnServiceWaitsForPort:
         unit_dir.mkdir()
         project = tmp_path / "my-project"
         project.mkdir()
-        svc_name = f"llm-mem-{project.name}"
+        svc_name = f"callmem-{project.name}"
         (unit_dir / f"{svc_name}.service").write_text("# fake")
 
         monkeypatch.setattr(

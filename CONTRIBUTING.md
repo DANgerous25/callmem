@@ -1,12 +1,12 @@
-# Contributing to llm-mem
+# Contributing to callmem
 
 Thanks for your interest in contributing. This document covers how to get started, what we expect, and how to submit changes.
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/DANgerous25/llm-mem.git
-cd llm-mem
+git clone https://github.com/DANgerous25/callmem.git
+cd callmem
 uv sync --extra dev
 ```
 
@@ -71,14 +71,14 @@ Read [docs/architecture.md](docs/architecture.md) for an overview of the system 
 
 | Area | Location |
 |---|---|
-| Core engine | `src/llm_mem/core/engine.py` |
-| Entity extraction | `src/llm_mem/core/extraction.py` |
-| Briefing generation | `src/llm_mem/core/briefing.py` |
-| LLM prompts | `src/llm_mem/core/prompts.py` |
-| Data models | `src/llm_mem/models/` |
-| Web UI routes | `src/llm_mem/ui/routes/` |
-| MCP server | `src/llm_mem/mcp/server.py` |
-| OpenCode adapter | `src/llm_mem/adapters/opencode.py` |
+| Core engine | `src/callmem/core/engine.py` |
+| Entity extraction | `src/callmem/core/extraction.py` |
+| Briefing generation | `src/callmem/core/briefing.py` |
+| LLM prompts | `src/callmem/core/prompts.py` |
+| Data models | `src/callmem/models/` |
+| Web UI routes | `src/callmem/ui/routes/` |
+| MCP server | `src/callmem/mcp/server.py` |
+| OpenCode adapter | `src/callmem/adapters/opencode.py` |
 
 ## Work Orders
 

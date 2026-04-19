@@ -5,7 +5,7 @@ Use this prompt when asking an AI architect to review a work order before implem
 ## Pre-implementation review
 
 ```
-You are reviewing a technical work order for the llm-mem project — a persistent memory system for coding agents.
+You are reviewing a technical work order for the callmem project — a persistent memory system for coding agents.
 
 Project context:
 - Python backend, SQLite + FTS5 storage, local Ollama for background LLM work
@@ -33,7 +33,7 @@ Output:
 ## Post-implementation review
 
 ```
-You are reviewing a completed implementation for the llm-mem project.
+You are reviewing a completed implementation for the callmem project.
 
 Work order that was implemented:
 {paste work order content}
@@ -56,7 +56,7 @@ Output a structured review with specific file:line references for each finding.
 ## Architecture decision review
 
 ```
-A design decision needs to be made for the llm-mem project.
+A design decision needs to be made for the callmem project.
 
 Context:
 {describe the decision and why it matters}

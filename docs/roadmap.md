@@ -6,18 +6,18 @@
 
 | Deliverable | Status |
 |---|---|
-| Repository structure with `src/llm_mem/` package | This document |
+| Repository structure with `src/callmem/` package | This document |
 | `pyproject.toml` with dependencies | This document |
 | SQLite schema DDL (`001_initial.sql`) | This document |
 | Database initialization and migration runner | v0 |
 | Core data models (Pydantic) | v0 |
 | Core engine interface (abstract methods) | v0 |
 | MCP server entry point (no-op tools) | v0 |
-| CLI skeleton (`llm-mem init`, `llm-mem serve`) | v0 |
+| CLI skeleton (`callmem init`, `callmem serve`) | v0 |
 | Test infrastructure (pytest, fixtures) | v0 |
 | CI basics (linting, type checks) | v0 |
 
-**Exit criteria**: `llm-mem init` creates a database, `llm-mem serve` starts an MCP server that responds to tool listing, all tests pass.
+**Exit criteria**: `callmem init` creates a database, `callmem serve` starts an MCP server that responds to tool listing, all tests pass.
 
 ## v1: Local ingest + startup brief + search + UI
 
@@ -66,7 +66,7 @@
 ### v1.6 — OpenCode adapter
 - AGENTS.md template with memory instructions
 - OpenCode SSE event listener for automatic capture
-- `llm-mem adapter opencode` command
+- `callmem adapter opencode` command
 
 **Exit criteria**: Full workflow works end-to-end — start OpenCode session, work on code, memories captured automatically, close session, start new session, get briefing with yesterday's context. Web UI lets you inspect everything.
 
@@ -130,7 +130,7 @@
 - Import from other memory systems
 - Memory snapshots and restore points
 
-**Exit criteria**: Multiple projects managed from a single llm-mem instance with independent memory stores. Policy engine automatically manages retention without user intervention.
+**Exit criteria**: Multiple projects managed from a single callmem instance with independent memory stores. Policy engine automatically manages retention without user intervention.
 
 ## Backlog (unscheduled)
 

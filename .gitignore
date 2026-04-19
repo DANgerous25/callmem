@@ -18,29 +18,36 @@ env/
 *.swp
 *.swo
 
-# llm-mem auto-generated files
+# callmem auto-generated files
 SESSION_SUMMARY.md
 
-# llm-mem database and logs (but NOT the bootstrap memory .md files)
-.llm-mem/memory.db
-.llm-mem/memory.db-wal
-.llm-mem/memory.db-shm
-.llm-mem/llm-mem.log
-.llm-mem/vault.key
-.llm-mem/vault.salt
+# callmem database and logs (but NOT the bootstrap memory .md files)
+.callmem/memory.db
+.callmem/memory.db-wal
+.callmem/memory.db-shm
+.callmem/callmem.log
+.callmem/vault.key
+.callmem/vault.salt
 vault.key
 vault.salt
 *.key
 *.pem
 *.salt
 *.bak
+callmem.db
+callmem.db-wal
+callmem.db-shm
+
+# Legacy llm-mem paths (pre-v0.2.0 rename) — ignore any stale artifacts
+.llm-mem/
 llm_mem.db
 llm_mem.db-wal
 llm_mem.db-shm
-.llm-mem/SESSION.*.md
-.llm-mem/config.toml.bak
-.llm-mem/import.lock
-.llm-mem/import_progress.json
+
+.callmem/SESSION.*.md
+.callmem/config.toml.bak
+.callmem/import.lock
+.callmem/import_progress.json
 
 # Testing
 .pytest_cache/

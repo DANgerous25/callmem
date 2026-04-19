@@ -2,7 +2,7 @@
 
 ## Overview
 
-llm-mem includes a local web UI for inspecting, searching, and managing memories. The UI is a practical tool for the project owner, not a polished product — it should be fast to build and easy to extend.
+callmem includes a local web UI for inspecting, searching, and managing memories. The UI is a practical tool for the project owner, not a polished product — it should be fast to build and easy to extend.
 
 ## Technology choice
 
@@ -116,7 +116,7 @@ Configuration management.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  llm-mem  │ Dashboard │ Sessions │ Search │ Entities │ ...  │
+│  callmem  │ Dashboard │ Sessions │ Search │ Entities │ ...  │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  Session: 2026-04-15 14:30 — 16:45                         │
@@ -171,7 +171,7 @@ All UI interactions are server-rendered HTML fragments returned to htmx.
 
 ## Implementation notes
 
-- Templates live in `src/llm_mem/ui/templates/`
+- Templates live in `src/callmem/ui/templates/`
 - Static assets (Pico CSS, htmx.js) can be vendored or CDN-loaded
 - htmx is a single 14KB JS file — vendor it for offline use
 - The UI server binds to `127.0.0.1:9090` by default (configurable)

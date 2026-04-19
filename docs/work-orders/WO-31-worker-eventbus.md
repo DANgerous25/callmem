@@ -6,9 +6,9 @@ The UI serve command creates a `WorkerRunner` without passing the `event_bus`. T
 
 ## Files to Modify
 
-- `src/llm_mem/cli.py` — pass `event_bus` to `WorkerRunner` in the serve path
-- `src/llm_mem/core/workers.py` — accept and forward `event_bus` to handlers
-- `src/llm_mem/mcp/server.py` — pass `event_bus` if available
+- `src/callmem/cli.py` — pass `event_bus` to `WorkerRunner` in the serve path
+- `src/callmem/core/workers.py` — accept and forward `event_bus` to handlers
+- `src/callmem/mcp/server.py` — pass `event_bus` if available
 
 ## Approach
 

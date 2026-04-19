@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import pytest
 from click.testing import CliRunner
 
-from llm_mem.adapters.claude_code_import import (
+from callmem.adapters.claude_code_import import (
     _map_record,
     claude_project_dir,
     discover_sessions,
@@ -17,10 +17,10 @@ from llm_mem.adapters.claude_code_import import (
     import_sessions,
     project_slug,
 )
-from llm_mem.cli import main
-from llm_mem.core.config import load_config
-from llm_mem.core.database import Database
-from llm_mem.core.engine import MemoryEngine
+from callmem.cli import main
+from callmem.core.config import load_config
+from callmem.core.database import Database
+from callmem.core.engine import MemoryEngine
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,7 +31,7 @@ def _make_engine(project: Path) -> MemoryEngine:
     result = runner.invoke(main, ["init", "--project", str(project)])
     assert result.exit_code == 0
     config = load_config(project)
-    db = Database(project / ".llm-mem" / "memory.db")
+    db = Database(project / ".callmem" / "memory.db")
     db.initialize()
     return MemoryEngine(db, config)
 
@@ -193,7 +193,7 @@ class TestImportSession:
         assert result["event_count"] == 3
         assert not result.get("skipped")
 
-        db_path = tmp_path / ".llm-mem" / "memory.db"
+        db_path = tmp_path / ".callmem" / "memory.db"
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             sess = conn.execute(
@@ -234,7 +234,7 @@ class TestImportSession:
         assert second.get("skipped") is True
         assert second["session_id"] == first["session_id"]
 
-        db_path = tmp_path / ".llm-mem" / "memory.db"
+        db_path = tmp_path / ".callmem" / "memory.db"
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             n = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
@@ -265,7 +265,7 @@ class TestImportSessions:
         )
         assert results and results[0].get("dry_run") is True
 
-        db_path = project / ".llm-mem" / "memory.db"
+        db_path = project / ".callmem" / "memory.db"
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             n = conn.execute(
@@ -315,7 +315,7 @@ class TestImportCLI:
         runner = CliRunner()
         runner.invoke(main, ["init", "--project", str(project)])
 
-        import llm_mem.adapters.claude_code_import as cci
+        import callmem.adapters.claude_code_import as cci
         original = cci.CLAUDE_PROJECTS_DIR
         cci.CLAUDE_PROJECTS_DIR = projects_root
         try:
@@ -328,7 +328,7 @@ class TestImportCLI:
 
         assert result.exit_code == 0, result.output
         assert "Discovered 1 sessions" in result.output
-        db_path = project / ".llm-mem" / "memory.db"
+        db_path = project / ".callmem" / "memory.db"
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
             n = conn.execute(

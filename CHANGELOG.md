@@ -1,6 +1,47 @@
 # Changelog
 
-All notable changes to llm-mem are documented here.
+All notable changes to callmem are documented here.
+
+## [0.2.0] — 2026-04-19
+
+### Renamed from `llm-mem` to `callmem`
+
+The project has a new name. Everything works the same; identifiers changed:
+
+| Thing | Before | After |
+|---|---|---|
+| PyPI package | `llm-mem` | `callmem` |
+| Python module | `llm_mem` | `callmem` |
+| CLI binary | `llm-mem` | `callmem` |
+| MCP server id | `llm-mem` | `callmem` |
+| Project config dir | `.llm-mem/` | `.callmem/` |
+| Global config | `~/.config/llm-mem/` | `~/.config/callmem/` |
+| Env var prefix | `LLM_MEM_` | `CALLMEM_` |
+| Systemd unit | `llm-mem-<proj>.service` | `callmem-<proj>.service` |
+| GitHub repo | `DANgerous25/llm-mem` | `DANgerous25/callmem` |
+
+### Backward compatibility
+
+Existing installs keep working unchanged. All legacy names are honored as
+fallbacks so upgrading a project that's still on `llm-mem` just works:
+
+- `llm-mem` console script still runs (aliased to `callmem`)
+- `python -m llm_mem.mcp.server` still works (shim re-exports the new module)
+- `.llm-mem/config.toml` is still loaded if `.callmem/` doesn't exist
+- `~/.config/llm-mem/config.toml` still loaded if the new global path is missing
+- `LLM_MEM_*` env vars are honored (any matching `CALLMEM_*` wins)
+- `LLM_MEM_API_KEY` and `LLM_MEM_VAULT_PASSPHRASE` still work as fallbacks
+- Setup script's systemd port-conflict scan includes legacy `llm-mem-*.service` units
+
+A `DeprecationWarning` fires when the legacy `llm_mem` package is imported; no
+other messages unless configured.
+
+### New command
+
+- **`callmem migrate`** — one-shot, idempotent migration for a project:
+  renames `.llm-mem/` → `.callmem/` and rewrites the MCP server key/command
+  in `.mcp.json` and `opencode.json`. Run `callmem migrate --dry-run` to
+  preview changes first.
 
 ## [0.1.0] — 2026-04-17
 

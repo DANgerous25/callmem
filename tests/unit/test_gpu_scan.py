@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from llm_mem.core.gpu_scan import (
+from callmem.core.gpu_scan import (
     GPUInfo,
     ModelInfo,
     ModelRecommendation,
@@ -17,12 +17,12 @@ from llm_mem.core.gpu_scan import (
     pick_best,
     recommend_models,
 )
-from llm_mem.core.ollama import OllamaClient
+from callmem.core.ollama import OllamaClient
 
 
 class TestGPUDetection:
     def test_parses_nvidia_smi_output(self) -> None:
-        with patch("llm_mem.core.gpu_scan.subprocess.run") as mock_run:
+        with patch("callmem.core.gpu_scan.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="NVIDIA RTX 4090, 24576, 22100\n",
@@ -34,13 +34,13 @@ class TestGPUDetection:
             assert gpu.available
 
     def test_returns_empty_when_nvidia_smi_missing(self) -> None:
-        with patch("llm_mem.core.gpu_scan.subprocess.run") as mock_run:
+        with patch("callmem.core.gpu_scan.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError
             gpu = detect_gpu()
             assert not gpu.available
 
     def test_returns_empty_on_bad_output(self) -> None:
-        with patch("llm_mem.core.gpu_scan.subprocess.run") as mock_run:
+        with patch("callmem.core.gpu_scan.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             gpu = detect_gpu()
             assert not gpu.available
@@ -48,7 +48,7 @@ class TestGPUDetection:
 
 class TestRAMDetection:
     def test_parses_proc_meminfo(self, tmp_path: str) -> None:
-        with patch("llm_mem.core.gpu_scan.Path") as mock_path:
+        with patch("callmem.core.gpu_scan.Path") as mock_path:
             mock_path.return_value.read_text.return_value = (
                 "MemTotal:       65789012 kB\nMemFree:        32100000 kB\n"
             )
@@ -56,7 +56,7 @@ class TestRAMDetection:
             assert ram == 64247  # 65789012 / 1024
 
     def test_returns_zero_on_failure(self) -> None:
-        with patch("llm_mem.core.gpu_scan.Path") as mock_path:
+        with patch("callmem.core.gpu_scan.Path") as mock_path:
             mock_path.return_value.read_text.side_effect = OSError
             ram = detect_ram()
             assert ram == 0
@@ -64,7 +64,7 @@ class TestRAMDetection:
 
 class TestFetchOllamaModels:
     def test_parses_model_list(self) -> None:
-        with patch("llm_mem.core.gpu_scan.httpx.get") as mock_get:
+        with patch("callmem.core.gpu_scan.httpx.get") as mock_get:
             mock_get.return_value.status_code = 200
             mock_get.return_value.json.return_value = {
                 "models": [
@@ -82,7 +82,7 @@ class TestFetchOllamaModels:
     def test_returns_empty_on_failure(self) -> None:
         import httpx
 
-        with patch("llm_mem.core.gpu_scan.httpx.get") as mock_get:
+        with patch("callmem.core.gpu_scan.httpx.get") as mock_get:
             mock_get.side_effect = httpx.ConnectError("refused")
             models = fetch_ollama_models("http://localhost:11434")
             assert models == []
@@ -256,7 +256,7 @@ class TestNumCtxPassthrough:
             timeout=30,
             num_ctx=8192,
         )
-        with patch("llm_mem.core.ollama.httpx.post") as mock_post:
+        with patch("callmem.core.ollama.httpx.post") as mock_post:
             mock_response = MagicMock()
             mock_response.json.return_value = {"response": "ok"}
             mock_response.raise_for_status = MagicMock()
@@ -276,7 +276,7 @@ class TestNumCtxPassthrough:
             timeout=30,
             num_ctx=None,
         )
-        with patch("llm_mem.core.ollama.httpx.post") as mock_post:
+        with patch("callmem.core.ollama.httpx.post") as mock_post:
             mock_response = MagicMock()
             mock_response.json.return_value = {"response": "ok"}
             mock_response.raise_for_status = MagicMock()
@@ -292,22 +292,22 @@ class TestNumCtxPassthrough:
 
 class TestConfigRoundTrip:
     def test_num_ctx_in_config(self) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         config = Config(ollama={"num_ctx": 8192})
         assert config.ollama.num_ctx == 8192
 
     def test_num_ctx_default_none(self) -> None:
-        from llm_mem.models.config import Config
+        from callmem.models.config import Config
 
         config = Config()
         assert config.ollama.num_ctx is None
 
     def test_engine_creates_client_with_num_ctx(self) -> None:
 
-        from llm_mem.core.database import Database
-        from llm_mem.core.engine import MemoryEngine
-        from llm_mem.models.config import Config
+        from callmem.core.database import Database
+        from callmem.core.engine import MemoryEngine
+        from callmem.models.config import Config
 
         db = Database(":memory:")
         db.initialize()

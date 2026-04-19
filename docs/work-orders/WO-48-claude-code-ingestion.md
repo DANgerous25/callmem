@@ -2,16 +2,16 @@
 
 ## Goal
 
-Ingest Claude Code (CC) transcripts into llm-mem so the feed, briefings, and search reflect work done in CC — just like it already does for OpenCode. Follow-up to WO-36, which only made llm-mem's MCP tools *available* to CC; it did not feed CC's own conversations back in.
+Ingest Claude Code (CC) transcripts into callmem so the feed, briefings, and search reflect work done in CC — just like it already does for OpenCode. Follow-up to WO-36, which only made callmem's MCP tools *available* to CC; it did not feed CC's own conversations back in.
 
 ## Background
 
-Today llm-mem has two ingestion paths, both OpenCode-only:
+Today callmem has two ingestion paths, both OpenCode-only:
 
-- `src/llm_mem/adapters/opencode.py` — live SSE listener on `http://localhost:4096`, translated by `process_event()` into `EventInput` records.
-- `src/llm_mem/adapters/opencode_import.py` — batch importer that reads OpenCode's SQLite DB (`~/.local/share/opencode/opencode.db`) and replays historical sessions.
+- `src/callmem/adapters/opencode.py` — live SSE listener on `http://localhost:4096`, translated by `process_event()` into `EventInput` records.
+- `src/callmem/adapters/opencode_import.py` — batch importer that reads OpenCode's SQLite DB (`~/.local/share/opencode/opencode.db`) and replays historical sessions.
 
-There is no equivalent for Claude Code. As a result, any project where the user works primarily in CC shows a stale / empty feed. Every row in today's `.llm-mem/memory.db` across all projects has `agent_name='opencode'`.
+There is no equivalent for Claude Code. As a result, any project where the user works primarily in CC shows a stale / empty feed. Every row in today's `.callmem/memory.db` across all projects has `agent_name='opencode'`.
 
 Claude Code stores transcripts as JSONL on disk:
 
@@ -19,7 +19,7 @@ Claude Code stores transcripts as JSONL on disk:
 ~/.claude/projects/<slug>/<sessionId>.jsonl
 ```
 
-where `<slug>` is the project's absolute path with `/` replaced by `-` (e.g. `/home/dan/llm-mem` → `-home-dan-llm-mem`). Each line is one event. The file is append-only — CC appends a new line after every user message, assistant response, tool call, permission change, etc.
+where `<slug>` is the project's absolute path with `/` replaced by `-` (e.g. `/home/dan/callmem` → `-home-dan-callmem`). Each line is one event. The file is append-only — CC appends a new line after every user message, assistant response, tool call, permission change, etc.
 
 ## Transcript schema (observed)
 
@@ -44,7 +44,7 @@ Observed `type` distribution in one 306 KB transcript:
 
 ## Deliverables
 
-### 1. `src/llm_mem/adapters/claude_code_import.py`
+### 1. `src/callmem/adapters/claude_code_import.py`
 
 Historical-batch importer, parallel to `opencode_import.py`. Public API:
 
@@ -61,7 +61,7 @@ def import_session(
     jsonl_path: Path,
     progress_cb: ProgressCallback | None = None,
 ) -> dict[str, Any]:
-    """Replay one CC transcript into llm-mem. Idempotent via session_id."""
+    """Replay one CC transcript into callmem. Idempotent via session_id."""
 
 def import_sessions(
     engine: MemoryEngine,
@@ -70,12 +70,12 @@ def import_sessions(
     progress_cb: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Import all CC sessions for this project. Reuses the same
-    .llm-mem/import.lock and import_progress.json files."""
+    .callmem/import.lock and import_progress.json files."""
 ```
 
 Event mapping (MVP — skip what's in parentheses):
 
-| CC record                                            | llm-mem EventInput |
+| CC record                                            | callmem EventInput |
 |------------------------------------------------------|--------------------|
 | `user` + `message.content` is str, not `<command-*>` | `prompt`           |
 | `user` + content blocks with `tool_use_id`           | `tool_result`      |
@@ -87,12 +87,12 @@ Event mapping (MVP — skip what's in parentheses):
 
 Derive `agent_name='claude-code'` and `model_name` from `assistant.message.model` when present.
 
-### 2. `src/llm_mem/adapters/claude_code.py`
+### 2. `src/callmem/adapters/claude_code.py`
 
 Live tailer. Uses `watchdog` (already pulled in? check pyproject; if not, poll-based `os.stat` every 2s is acceptable and keeps the dep surface smaller — OpenCode's adapter already polls on reconnect). Responsibilities:
 
 - Watch `~/.claude/projects/<slug>/` for new or growing `.jsonl` files where `<slug>` is derived from `project_path`.
-- Maintain per-file byte offset in `.llm-mem/claude_code_offsets.json` so restarts resume mid-file.
+- Maintain per-file byte offset in `.callmem/claude_code_offsets.json` so restarts resume mid-file.
 - On new lines, parse and call the same mapping used by the importer — share code, don't duplicate.
 - Session lifecycle: open a session on the first record of a new file; close it on `system/away_summary`, or when the file has been idle for `CLAUDE_SESSION_IDLE_SECONDS` (default 300), or on adapter shutdown.
 
@@ -102,12 +102,12 @@ In `cli.py` `daemon()` (around line 548):
 
 ```python
 if not no_adapter:
-    from llm_mem.adapters.opencode import OpenCodeAdapter
-    from llm_mem.adapters.claude_code import ClaudeCodeAdapter
+    from callmem.adapters.opencode import OpenCodeAdapter
+    from callmem.adapters.claude_code import ClaudeCodeAdapter
     ...
     cc_adapter = ClaudeCodeAdapter(engine, project_path=project)
     threading.Thread(target=cc_adapter.run, daemon=True,
-                     name="llm-mem-claude-code-adapter").start()
+                     name="callmem-claude-code-adapter").start()
 ```
 
 Gate each adapter behind a config flag so users can disable either:
@@ -123,7 +123,7 @@ Keep `--no-adapter` as the master off-switch.
 ### 4. CLI entry point for manual import
 
 ```
-llm-mem import --source claude-code --project . [--all | --since <ts>]
+callmem import --source claude-code --project . [--all | --since <ts>]
 ```
 
 Mirror the existing `--source opencode` flag's ergonomics.
@@ -155,20 +155,20 @@ New file `tests/unit/test_claude_code_live.py`:
 
 - `test_tailer_resumes_from_offset` — write half a file, tail, write the rest, assert only the new lines are ingested.
 - `test_idle_timeout_ends_session` — monkeypatch `CLAUDE_SESSION_IDLE_SECONDS=0.1`.
-- `test_slug_derivation_for_project_path` — `/home/dan/llm-mem` → `-home-dan-llm-mem`.
+- `test_slug_derivation_for_project_path` — `/home/dan/callmem` → `-home-dan-callmem`.
 
 ## Non-goals
 
 - Ingesting thinking blocks (noisy; reconsider later).
 - Ingesting attachments (`attachment` records) as first-class events — just record a lightweight `note` with the filename if desired.
-- Two-way sync (llm-mem does not write back to CC transcripts, ever).
-- Watching every project under `~/.claude/projects/` — only the ones associated with a given llm-mem daemon's `--project`.
+- Two-way sync (callmem does not write back to CC transcripts, ever).
+- Watching every project under `~/.claude/projects/` — only the ones associated with a given callmem daemon's `--project`.
 
 ## Open questions
 
 1. **Multi-instance CC sessions.** If the user has two CC windows open on the same project, two jsonl files grow concurrently. The tailer must handle N files at once — not assume a single "current" session.
 2. **Sidechain records.** `isSidechain: true` appears on subagent messages. Decision: ingest but tag `metadata.sidechain=true` so the feed can hide them by default.
-3. **Timestamps.** CC uses `Z`-suffixed UTC. OpenCode's importer converts to `+00:00` — reuse `llm_mem.compat.UTC` helpers so timestamps are consistent in the DB.
+3. **Timestamps.** CC uses `Z`-suffixed UTC. OpenCode's importer converts to `+00:00` — reuse `callmem.compat.UTC` helpers so timestamps are consistent in the DB.
 4. **Schema migration?** Likely unnecessary — `sessions.agent_name` already stores free-form strings. But confirm no enum constraint exists before proceeding.
 
 ## Risks

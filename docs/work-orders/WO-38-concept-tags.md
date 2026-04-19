@@ -67,8 +67,8 @@ Update the extraction response parser to read and store tags.
 ### 5. CLI
 
 ```bash
-llm-mem search --tag gotcha -p .           # filter by tag
-llm-mem search --tag gotcha --tag pattern -p .  # OR filter
+callmem search --tag gotcha -p .           # filter by tag
+callmem search --tag gotcha --tag pattern -p .  # OR filter
 ```
 
 ### 6. Re-tagging existing entities
@@ -76,8 +76,8 @@ llm-mem search --tag gotcha --tag pattern -p .  # OR filter
 Add a management command:
 
 ```bash
-llm-mem retag -p .          # re-run tagging on all entities missing tags
-llm-mem retag --all -p .    # re-tag everything (overwrite)
+callmem retag -p .          # re-run tagging on all entities missing tags
+callmem retag --all -p .    # re-tag everything (overwrite)
 ```
 
 This sends each entity's title + content through the LLM with just the tagging prompt (cheaper than full re-extraction).

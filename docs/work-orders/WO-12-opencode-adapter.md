@@ -6,31 +6,31 @@ Implement the OpenCode adapter that can subscribe to OpenCode's SSE event stream
 
 ## Files to create
 
-- `src/llm_mem/adapters/__init__.py`
-- `src/llm_mem/adapters/opencode.py` — OpenCode SSE event listener (live)
-- `src/llm_mem/adapters/opencode_import.py` — OpenCode session history importer (batch)
-- `templates/AGENTS.md.template` — AGENTS.md template for projects using llm-mem
+- `src/callmem/adapters/__init__.py`
+- `src/callmem/adapters/opencode.py` — OpenCode SSE event listener (live)
+- `src/callmem/adapters/opencode_import.py` — OpenCode session history importer (batch)
+- `templates/AGENTS.md.template` — AGENTS.md template for projects using callmem
 - `templates/opencode.json.template` — OpenCode config template
 - `tests/unit/test_opencode_adapter.py`
 - `tests/unit/test_opencode_import.py`
 
 ## Files to modify
 
-- `src/llm_mem/cli.py` — Add `llm-mem adapter opencode` command and `llm-mem import` command
+- `src/callmem/cli.py` — Add `callmem adapter opencode` command and `callmem import` command
 - `scripts/setup.py` — Add session import step to the interactive setup wizard
 - `pyproject.toml` — Add `httpx-sse` dependency (if needed)
 
 ## Constraints
 
 - The adapter connects to OpenCode's SSE event stream (`GET /event` on OpenCode's server)
-- It translates OpenCode events into llm-mem event types
+- It translates OpenCode events into callmem event types
 - The adapter runs as a long-lived process alongside the coding session
 - It must handle OpenCode server restarts gracefully (reconnect)
 - The adapter and MCP server can run in the same process or separately
 
 ## Event mapping
 
-| OpenCode event | llm-mem event type | Content |
+| OpenCode event | callmem event type | Content |
 |---|---|---|
 | `message.created` (role=user) | `prompt` | User message text |
 | `message.created` (role=assistant) | `response` | Assistant message text |
@@ -44,9 +44,9 @@ Note: The exact OpenCode SSE event schema may need adjustment based on the actua
 ## AGENTS.md template
 
 ```markdown
-# Project Memory — llm-mem
+# Project Memory — callmem
 
-This project uses llm-mem for persistent memory across coding sessions.
+This project uses callmem for persistent memory across coding sessions.
 
 ## Session workflow
 
@@ -76,10 +76,10 @@ This project uses llm-mem for persistent memory across coding sessions.
 
 ## Session import — CLI command
 
-Users adding llm-mem to an existing project will have OpenCode session history they want to backfill. Provide a CLI command:
+Users adding callmem to an existing project will have OpenCode session history they want to backfill. Provide a CLI command:
 
 ```
-llm-mem import --source opencode [--session-id <id>] [--session-dir <path>] [--project <path>] [--all] [--dry-run]
+callmem import --source opencode [--session-id <id>] [--session-dir <path>] [--project <path>] [--all] [--dry-run]
 ```
 
 - `--source` — Required. Only `opencode` for now, but design for extensibility.
@@ -127,7 +127,7 @@ The setup wizard (`scripts/setup.py`) must offer to import existing sessions dur
 1. Check `~/.local/share/opencode/` for JSON files with messages
 2. If none found, skip silently
 3. If found, show a preview: up to 10 sessions with truncated ID, title, and message count
-4. Ask: `Import these sessions into llm-mem? [Y/n]`
+4. Ask: `Import these sessions into callmem? [Y/n]`
 5. If yes: call `import_sessions(engine, session_dir, import_all=True)`, print summary
 6. If no: print the manual CLI command for later use
 7. On failure: print error and the manual CLI command (never block setup completion)
@@ -141,17 +141,17 @@ The import step must be safe to run multiple times. The engine's dedup window ha
 ## Acceptance criteria
 
 ### Live adapter
-1. `llm-mem adapter opencode --opencode-url http://localhost:4096 --project .` connects to OpenCode's SSE stream
+1. `callmem adapter opencode --opencode-url http://localhost:4096 --project .` connects to OpenCode's SSE stream
 2. User messages are captured as `prompt` events
 3. Assistant messages are captured as `response` events
 4. Tool invocations are captured as `tool_call` events
-5. OpenCode session start/end maps to llm-mem session lifecycle
+5. OpenCode session start/end maps to callmem session lifecycle
 6. Adapter reconnects if OpenCode server disconnects
 
 ### Session import CLI
-7. `llm-mem import --source opencode --dry-run` lists discovered sessions without importing
-8. `llm-mem import --source opencode --all` imports all sessions with correct event mapping
-9. `llm-mem import --source opencode --session-id <id>` imports only the matching session
+7. `callmem import --source opencode --dry-run` lists discovered sessions without importing
+8. `callmem import --source opencode --all` imports all sessions with correct event mapping
+9. `callmem import --source opencode --session-id <id>` imports only the matching session
 10. Handles both flat content strings and structured parts/content arrays
 11. Tool calls are mapped with name and truncated args (max 200 chars)
 12. File changes from message parts are mapped as `file_change` events
@@ -159,15 +159,15 @@ The import step must be safe to run multiple times. The engine's dedup window ha
 14. Import prints a summary: session count, event count, errors
 
 ### Setup wizard integration
-15. `make setup` / `llm-mem setup` shows "Existing session history" section when OpenCode sessions exist
+15. `make setup` / `callmem setup` shows "Existing session history" section when OpenCode sessions exist
 16. Previews up to 10 sessions with ID, title, and message count
 17. On "yes", imports all sessions and prints a summary
-18. On "no", prints the manual `llm-mem import` command
+18. On "no", prints the manual `callmem import` command
 19. Skips silently when no OpenCode session directory or no valid sessions found
 20. Never blocks setup completion on import failure
 
 ### Templates and tests
-21. AGENTS.md template is generated by `llm-mem init` alongside config
+21. AGENTS.md template is generated by `callmem init` alongside config
 22. OpenCode config template works when placed in `opencode.json`
 23. `pytest tests/unit/test_opencode_adapter.py tests/unit/test_opencode_import.py` passes
 

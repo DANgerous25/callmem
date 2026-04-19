@@ -1,1 +1,1 @@
-"""MCP server for llm-mem."""
+"""Compatibility shim for ``llm_mem.mcp`` — redirects to ``callmem.mcp``."""

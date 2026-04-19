@@ -8,19 +8,19 @@ This WO sits between WO-04 (core engine) and WO-05 (MCP server). The ingest pipe
 
 ## Files to create
 
-- `src/llm_mem/core/redaction.py` — Pattern scanner, entropy detection, redaction logic (skeleton exists — flesh out the full implementation)
-- `src/llm_mem/core/crypto.py` — Vault key manager, encrypt/decrypt (skeleton exists — flesh out)
-- `src/llm_mem/core/migrations/002_vault.sql` — Vault table and scan_status column
+- `src/callmem/core/redaction.py` — Pattern scanner, entropy detection, redaction logic (skeleton exists — flesh out the full implementation)
+- `src/callmem/core/crypto.py` — Vault key manager, encrypt/decrypt (skeleton exists — flesh out)
+- `src/callmem/core/migrations/002_vault.sql` — Vault table and scan_status column
 - `tests/unit/test_redaction.py`
 - `tests/unit/test_crypto.py`
 - `tests/unit/test_sensitive_integration.py`
 
 ## Files to modify
 
-- `src/llm_mem/core/engine.py` — Wire redaction into the ingest pipeline
-- `src/llm_mem/core/ollama.py` — Add `scan_sensitive()` method using the LLM detection prompt
-- `src/llm_mem/core/prompts.py` — Add `SENSITIVE_SCAN_PROMPT`
-- `src/llm_mem/core/repository.py` — Add vault CRUD methods
+- `src/callmem/core/engine.py` — Wire redaction into the ingest pipeline
+- `src/callmem/core/ollama.py` — Add `scan_sensitive()` method using the LLM detection prompt
+- `src/callmem/core/prompts.py` — Add `SENSITIVE_SCAN_PROMPT`
+- `src/callmem/core/repository.py` — Add vault CRUD methods
 - `pyproject.toml` — Add `cryptography` dependency
 
 ## Schema addition
@@ -240,7 +240,7 @@ def test_wrong_key_fails(tmp_path):
         km2.decrypt(ct)
 
 def test_passphrase_mode(tmp_path, monkeypatch):
-    monkeypatch.setenv("LLM_MEM_VAULT_PASSPHRASE", "test-passphrase")
+    monkeypatch.setenv("CALLMEM_VAULT_PASSPHRASE", "test-passphrase")
     km = VaultKeyManager(tmp_path, mode="passphrase")
     ct = km.encrypt("my secret")
     assert km.decrypt(ct) == "my secret"

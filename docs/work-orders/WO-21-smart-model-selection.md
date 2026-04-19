@@ -6,7 +6,7 @@ Make the setup wizard hardware-aware so it can recommend the best Ollama model f
 
 ## Background
 
-llm-mem's extraction, summarization, and sensitive data scanning use a local Ollama model. On a 24GB GPU (e.g. RTX 4090), the model weights + KV cache for context compete for VRAM. A 14B model at Q4 uses ~10GB, leaving ~14GB for context — plenty. A 30B model at Q4 uses ~20GB, leaving only ~4GB — enough for ~4k context but OOM at Ollama's default 32k.
+callmem's extraction, summarization, and sensitive data scanning use a local Ollama model. On a 24GB GPU (e.g. RTX 4090), the model weights + KV cache for context compete for VRAM. A 14B model at Q4 uses ~10GB, leaving ~14GB for context — plenty. A 30B model at Q4 uses ~20GB, leaving only ~4GB — enough for ~4k context but OOM at Ollama's default 32k.
 
 Currently:
 - No `num_ctx` is passed to Ollama, so it uses its auto-detected default (32k on 24GB cards)
@@ -49,7 +49,7 @@ e) **Display recommendations** — show a table during setup:
 
 ### 2. Context window config (`num_ctx`)
 
-a) **Add `num_ctx` to `OllamaConfig`** in `src/llm_mem/models/config.py`:
+a) **Add `num_ctx` to `OllamaConfig`** in `src/callmem/models/config.py`:
    ```python
    class OllamaConfig(BaseModel):
        model: str = "qwen3:8b"
@@ -58,7 +58,7 @@ a) **Add `num_ctx` to `OllamaConfig`** in `src/llm_mem/models/config.py`:
        num_ctx: int | None = None  # None = let Ollama auto-detect
    ```
 
-b) **Pass `num_ctx` in Ollama requests** — update `_generate()` in `src/llm_mem/core/ollama.py`:
+b) **Pass `num_ctx` in Ollama requests** — update `_generate()` in `src/callmem/core/ollama.py`:
    ```python
    def __init__(self, endpoint, model, timeout, num_ctx=None):
        ...
@@ -87,7 +87,7 @@ d) **Add to config.toml template**:
 a) **Show `num_ctx` prompt only when relevant** — after the user picks a model, if the estimated model VRAM + default context cache exceeds 85% of GPU VRAM, prompt:
    ```
    ⚠️  qwen3:30b uses ~19 GB — leaving ~5 GB for context.
-   llm-mem extraction batches are small, so a reduced context window works fine.
+   callmem extraction batches are small, so a reduced context window works fine.
 
    Context window (num_ctx) [recommended: 8192]:
    ```
@@ -104,14 +104,14 @@ b) **Auto-suggest a safe `num_ctx`** — calculate a value that keeps total VRAM
 
 ## Constraints
 
-- Python 3.10 compatible (no `datetime.UTC`, use `from llm_mem.compat import UTC`; `typing_extensions` for `Self`)
+- Python 3.10 compatible (no `datetime.UTC`, use `from callmem.compat import UTC`; `typing_extensions` for `Self`)
 - Setup must remain safe to re-run — if `num_ctx` is already set in config, show it as default
 - No AI attribution in code or comments
 - Keep the setup UX clean — the GPU scan and recommendations should feel helpful, not overwhelming. Users who don't understand VRAM should be able to just accept the recommended model and move on.
 
 ## Acceptance criteria
 
-- [ ] `llm-mem setup` detects GPU VRAM and system RAM when Ollama backend is selected
+- [ ] `callmem setup` detects GPU VRAM and system RAM when Ollama backend is selected
 - [ ] Setup lists available Ollama models with VRAM estimates and fit indicators
 - [ ] Setup recommends a model based on available VRAM
 - [ ] `num_ctx` prompt appears only when the chosen model is tight on VRAM

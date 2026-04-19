@@ -6,18 +6,18 @@ import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from llm_mem.core.ollama import OllamaClient
-from llm_mem.core.queue import JobQueue
-from llm_mem.core.workers import WorkerRunner
-from llm_mem.models.config import Config
+from callmem.core.ollama import OllamaClient
+from callmem.core.queue import JobQueue
+from callmem.core.workers import WorkerRunner
+from callmem.models.config import Config
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
     pass
 
 
 def _make_engine(memory_db: Database) -> tuple:
-    from llm_mem.core.engine import MemoryEngine
+    from callmem.core.engine import MemoryEngine
 
     config = Config(
         sensitive_data={"enabled": False, "llm_scan": False},

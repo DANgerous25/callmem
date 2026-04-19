@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
 
-from llm_mem.cli import (
+from callmem.cli import (
     _claude_md_is_separate_file,
     _ensure_claude_code_mcp,
     main,
@@ -26,10 +26,10 @@ class TestEnsureClaudeCodeMcp:
 
         data = json.loads(mcp_path.read_text())
         assert "mcpServers" in data
-        entry = data["mcpServers"]["llm-mem"]
+        entry = data["mcpServers"]["callmem"]
         assert isinstance(entry["command"], str)
         assert isinstance(entry["args"], list)
-        assert "llm_mem.mcp.server" in entry["args"]
+        assert "callmem.mcp.server" in entry["args"]
 
     def test_preserves_other_servers(self, tmp_path: Path) -> None:
         mcp_path = tmp_path / ".mcp.json"
@@ -44,7 +44,7 @@ class TestEnsureClaudeCodeMcp:
         data = json.loads(mcp_path.read_text())
         assert "other-tool" in data["mcpServers"]
         assert data["mcpServers"]["other-tool"]["command"] == "node"
-        assert "llm-mem" in data["mcpServers"]
+        assert "callmem" in data["mcpServers"]
 
     def test_preserves_top_level_keys(self, tmp_path: Path) -> None:
         mcp_path = tmp_path / ".mcp.json"
@@ -57,7 +57,7 @@ class TestEnsureClaudeCodeMcp:
 
         data = json.loads(mcp_path.read_text())
         assert data["customField"] == "keep me"
-        assert "llm-mem" in data["mcpServers"]
+        assert "callmem" in data["mcpServers"]
 
     def test_idempotent(self, tmp_path: Path) -> None:
         _ensure_claude_code_mcp(tmp_path)
@@ -72,25 +72,25 @@ class TestEnsureClaudeCodeMcp:
         _ensure_claude_code_mcp(tmp_path)
 
         data = json.loads((tmp_path / ".mcp.json").read_text())
-        entry = data["mcpServers"]["llm-mem"]
+        entry = data["mcpServers"]["callmem"]
         # Claude Code schema: command is a string, not a list
         assert isinstance(entry["command"], str)
         assert entry["command"] not in entry["args"]
 
-    def test_updates_stale_llm_mem_entry(self, tmp_path: Path) -> None:
+    def test_updates_stale_callmem_entry(self, tmp_path: Path) -> None:
         mcp_path = tmp_path / ".mcp.json"
         mcp_path.write_text(json.dumps({
             "mcpServers": {
-                "llm-mem": {"command": "wrong", "args": ["old"]},
+                "callmem": {"command": "wrong", "args": ["old"]},
             },
         }))
 
         _ensure_claude_code_mcp(tmp_path)
 
         data = json.loads(mcp_path.read_text())
-        entry = data["mcpServers"]["llm-mem"]
+        entry = data["mcpServers"]["callmem"]
         assert entry["command"] != "wrong"
-        assert "llm_mem.mcp.server" in entry["args"]
+        assert "callmem.mcp.server" in entry["args"]
 
     def test_invalid_json_leaves_file_alone(self, tmp_path: Path) -> None:
         mcp_path = tmp_path / ".mcp.json"
@@ -135,7 +135,7 @@ class TestInitIntegration:
         mcp_path = tmp_path / ".mcp.json"
         assert mcp_path.exists()
         data = json.loads(mcp_path.read_text())
-        assert "llm-mem" in data["mcpServers"]
+        assert "callmem" in data["mcpServers"]
 
     def test_init_preserves_existing_mcp_json(self, tmp_path: Path) -> None:
         mcp_path = tmp_path / ".mcp.json"
@@ -151,7 +151,7 @@ class TestInitIntegration:
 
         data = json.loads(mcp_path.read_text())
         assert "other" in data["mcpServers"]
-        assert "llm-mem" in data["mcpServers"]
+        assert "callmem" in data["mcpServers"]
 
     def test_init_patches_separate_claude_md(self, tmp_path: Path) -> None:
         (tmp_path / "AGENTS.md").write_text("# Agents\n")
@@ -162,7 +162,7 @@ class TestInitIntegration:
         result = runner.invoke(main, ["init", "--project", str(tmp_path)])
         assert result.exit_code == 0
 
-        assert "## Memory (llm-mem)" in claude.read_text()
+        assert "## Memory (callmem)" in claude.read_text()
 
     def test_init_skips_patch_when_claude_md_is_symlink(self, tmp_path: Path) -> None:
         agents = tmp_path / "AGENTS.md"
@@ -175,7 +175,7 @@ class TestInitIntegration:
         assert result.exit_code == 0
 
         # The symlink target (AGENTS.md) got patched exactly once
-        assert agents.read_text().count("## Memory (llm-mem)") == 1
+        assert agents.read_text().count("## Memory (callmem)") == 1
 
     def test_init_idempotent_for_mcp_json(self, tmp_path: Path) -> None:
         runner = CliRunner()

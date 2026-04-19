@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}callmem — Feed{% endblock %}
+{% block content %}
+<hgroup>
+    <h2>{{ project_name }}</h2>
+    <p>
+        Events: {{ event_count }} &middot;
+        Entities: {{ entity_count }} &middot;
+        Sessions: {{ session_count }}
+    </p>
+</hgroup>
+
+<div class="feed-filters" style="display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;margin-bottom:1rem;">
+    <button class="filter-pill {% if not active_type %}filter-active{% endif %}"
+            hx-get="/partials/feed" hx-target="#feed-content" hx-swap="innerHTML"
+            style="padding:0.25rem 0.65rem;border-radius:9999px;border:1px solid #475569;background:transparent;color:#cbd5e1;font-size:0.8rem;cursor:pointer;">
+        All
+    </button>
+    {% for t in entity_types %}
+    <button class="filter-pill {% if active_type == t %}filter-active{% endif %}"
+            hx-get="/partials/feed?type={{ t }}{% if active_query %}&q={{ active_query }}{% endif %}{% if active_order %}&order={{ active_order }}{% endif %}" hx-target="#feed-content" hx-swap="innerHTML"
+            style="padding:0.25rem 0.65rem;border-radius:9999px;border:1px solid #475569;background:transparent;color:#cbd5e1;font-size:0.8rem;cursor:pointer;">
+        {{ t | upper }}
+    </button>
+    {% endfor %}
+    <input type="text" id="feed-search" placeholder="Search..." value="{{ active_query or '' }}"
+           hx-get="/partials/feed" hx-trigger="keyup changed delay:300ms" hx-target="#feed-content" hx-swap="innerHTML"
+           name="q"
+           style="margin-left:0.5rem;padding:0.25rem 0.5rem;border-radius:0.375rem;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:0.8rem;width:160px;">
+    <button id="order-toggle" title="Toggle sort order"
+            hx-get="/partials/feed?order={% if active_order == 'desc' %}asc{% else %}desc{% endif %}{% if active_type %}&type={{ active_type }}{% endif %}{% if active_query %}&q={{ active_query }}{% endif %}"
+            hx-target="#feed-content" hx-swap="innerHTML"
+            style="padding:0.25rem 0.5rem;border-radius:0.375rem;border:1px solid #475569;background:transparent;color:#cbd5e1;font-size:0.8rem;cursor:pointer;">
+        {% if active_order == 'desc' %}&#x2193; Newest{% else %}&#x2191; Oldest{% endif %}
+    </button>
+    <button class="feed-filter-toggle {% if include_stale %}active{% endif %}"
+            title="Toggle display of entities marked stale by the auto-detector"
+            hx-get="/partials/feed?include_stale={% if include_stale %}false{% else %}true{% endif %}{% if active_type %}&type={{ active_type }}{% endif %}{% if active_query %}&q={{ active_query }}{% endif %}{% if active_order %}&order={{ active_order }}{% endif %}"
+            hx-target="#feed-content" hx-swap="innerHTML">
+        {% if include_stale %}✓ Showing stale{% else %}Show stale{% endif %}
+    </button>
+</div>
+
+<div id="feed-content">
+{% include "feed_partial.html" %}
+</div>
+
+<script>
+(function() {
+    var container = document.getElementById('feed-content');
+    var reconnectDelay = 1000;
+    var maxDelay = 30000;
+    var fallbackInterval = null;
+
+    function connectSSE() {
+        var source = new EventSource('/events');
+
+        source.addEventListener('entity_created', function(e) {
+            var data = JSON.parse(e.data);
+            prependCard(data, 'entity');
+        });
+
+        source.addEventListener('session_started', function(e) {
+            var data = JSON.parse(e.data);
+            prependCard(data, 'session');
+        });
+
+        source.addEventListener('session_ended', function(e) {
+            var data = JSON.parse(e.data);
+            prependCard(data, 'summary');
+        });
+
+        source.addEventListener('error', function() {
+            source.close();
+            if (!fallbackInterval) {
+                startFallbackPolling();
+            }
+            setTimeout(function() {
+                connectSSE();
+                reconnectDelay = Math.min(reconnectDelay * 2, maxDelay);
+            }, reconnectDelay);
+        });
+
+        source.addEventListener('open', function() {
+            reconnectDelay = 1000;
+            if (fallbackInterval) {
+                clearInterval(fallbackInterval);
+                fallbackInterval = null;
+            }
+        });
+    }
+
+    function prependCard(data, kind) {
+        var existing = container.querySelector('[data-entity-id="' + data.id + '"]');
+        if (existing) return;
+
+        var card = document.createElement('div');
+        card.setAttribute('data-entity-id', data.id);
+        card.className = 'feed-card-new';
+        card.style.cssText = 'max-width:700px;margin:0 auto 1.25rem auto;padding:0.75rem 1.25rem;background:#1a3520;border:1px solid #22c55e;border-radius:0.75rem;opacity:0;transition:opacity 0.3s,background 0.3s;';
+
+        var category = data.type || kind;
+        var title = data.title || (kind === 'session' ? 'Session started' : 'New event');
+        var time = relativeTime(data.created_at || data.started_at || '');
+
+        card.innerHTML = '<span class="badge badge-' + category + '">' + category.toUpperCase() + '</span> ' +
+            '<strong style="color:#e2e8f0;">' + escapeHtml(title) + '</strong> ' +
+            '<span style="font-size:0.75rem;opacity:0.5;">' + time + '</span>';
+
+        container.insertBefore(card, container.firstChild);
+        requestAnimationFrame(function() {
+            card.style.opacity = '1';
+        });
+        setTimeout(function() {
+            card.style.background = '#1e293b';
+            card.style.borderColor = '#334155';
+        }, 2000);
+    }
+
+    function escapeHtml(text) {
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function relativeTime(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        if (isNaN(d.getTime())) return ts.substring(0, 19).replace('T', ' ');
+        var now = new Date();
+        var secs = Math.floor((now - d) / 1000);
+        if (secs < 0) secs = 0;
+        if (secs < 60) return 'just now';
+        if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+        if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+        if (secs < 604800) return Math.floor(secs / 86400) + 'd ago';
+        return d.toLocaleDateString('en-US', {month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'});
+    }
+
+    function startFallbackPolling() {
+        fallbackInterval = setInterval(function() {
+            fetch('/partials/feed').then(function(r) { return r.text(); }).then(function(html) {
+                container.innerHTML = html;
+            });
+        }, 30000);
+    }
+
+    connectSSE();
+})();
+</script>
+{% endblock %}

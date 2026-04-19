@@ -7,12 +7,12 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from llm_mem.models.edges import MemoryEdge
-from llm_mem.models.entities import Entity
-from llm_mem.models.events import Event, EventInput
-from llm_mem.models.projects import Project
-from llm_mem.models.sessions import Session
-from llm_mem.models.summaries import Summary
+from callmem.models.edges import MemoryEdge
+from callmem.models.entities import Entity
+from callmem.models.events import Event, EventInput
+from callmem.models.projects import Project
+from callmem.models.sessions import Session
+from callmem.models.summaries import Summary
 
 
 class TestEvent:

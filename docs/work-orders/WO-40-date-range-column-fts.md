@@ -6,7 +6,7 @@ Add date range filtering (`--since` / `--until`) and column-specific FTS queries
 
 ## Background
 
-claude-mem supports both features. llm-mem's FTS5 search currently matches against all indexed columns and has no date filtering. This means a search for recent decisions pulls everything back to project inception, and a search for "auth" in titles also matches content body mentions.
+claude-mem supports both features. callmem's FTS5 search currently matches against all indexed columns and has no date filtering. This means a search for recent decisions pulls everything back to project inception, and a search for "auth" in titles also matches content body mentions.
 
 ## Deliverables
 
@@ -28,8 +28,8 @@ SQL: add `WHERE created_at >= ? AND created_at <= ?` to the search query.
 #### CLI
 
 ```bash
-llm-mem search "auth" --since 7d -p .
-llm-mem search "auth" --since 2026-04-01 --until 2026-04-15 -p .
+callmem search "auth" --since 7d -p .
+callmem search "auth" --since 2026-04-01 --until 2026-04-15 -p .
 ```
 
 #### Web UI
@@ -64,8 +64,8 @@ The `query` parameter already accepts a string. Column-specific syntax works wit
 #### CLI
 
 ```bash
-llm-mem search "title:auth" -p .
-llm-mem search "title:auth content:jwt" -p .
+callmem search "title:auth" -p .
+callmem search "title:auth content:jwt" -p .
 ```
 
 ### 3. Combined usage
@@ -73,7 +73,7 @@ llm-mem search "title:auth content:jwt" -p .
 Both features compose:
 
 ```bash
-llm-mem search "title:auth" --since 7d -p .
+callmem search "title:auth" --since 7d -p .
 ```
 
 MCP:

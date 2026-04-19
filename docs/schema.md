@@ -12,7 +12,7 @@
 
 ### `projects`
 
-Top-level grouping. One llm-mem instance can serve multiple projects.
+Top-level grouping. One callmem instance can serve multiple projects.
 
 ```sql
 CREATE TABLE projects (
@@ -331,6 +331,6 @@ Schema changes are tracked in `schema_version`. The migration runner:
 1. Reads current version from `schema_version`
 2. Applies all pending migration scripts in order
 3. Records each applied migration
-4. Migration scripts live in `src/llm_mem/core/migrations/`
+4. Migration scripts live in `src/callmem/core/migrations/`
 
 Migrations are plain SQL files named `NNN_description.sql` (e.g., `001_initial.sql`, `002_add_embeddings.sql`).

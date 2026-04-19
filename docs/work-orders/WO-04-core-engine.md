@@ -6,8 +6,8 @@ Implement the core engine that manages sessions and ingests events. This is the 
 
 ## Files to create
 
-- `src/llm_mem/core/engine.py` — Main engine class with ingest and session methods
-- `src/llm_mem/core/repository.py` — Data access layer (SQL queries abstracted behind methods)
+- `src/callmem/core/engine.py` — Main engine class with ingest and session methods
+- `src/callmem/core/repository.py` — Data access layer (SQL queries abstracted behind methods)
 - `tests/unit/test_engine.py`
 - `tests/unit/test_repository.py`
 

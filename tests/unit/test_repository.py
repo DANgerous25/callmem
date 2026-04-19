@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from llm_mem.core.repository import Repository
-from llm_mem.models.events import Event
-from llm_mem.models.projects import Project
-from llm_mem.models.sessions import Session
+from callmem.core.repository import Repository
+from callmem.models.events import Event
+from callmem.models.projects import Project
+from callmem.models.sessions import Session
 
 if TYPE_CHECKING:
-    from llm_mem.core.database import Database
+    from callmem.core.database import Database
 
 
 class TestProjectQueries:

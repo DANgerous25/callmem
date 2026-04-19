@@ -9,7 +9,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
-from llm_mem.core.crypto import VaultKeyManager
+from callmem.core.crypto import VaultKeyManager
 
 
 class TestAutoMode:
@@ -57,13 +57,13 @@ class TestPassphraseMode:
     def test_encrypt_decrypt_with_passphrase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("LLM_MEM_VAULT_PASSPHRASE", "test-passphrase")
+        monkeypatch.setenv("CALLMEM_VAULT_PASSPHRASE", "test-passphrase")
         km = VaultKeyManager(tmp_path, mode="passphrase")
         ct = km.encrypt("my secret")
         assert km.decrypt(ct) == "my secret"
 
     def test_passphrase_creates_salt(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("LLM_MEM_VAULT_PASSPHRASE", "test-passphrase")
+        monkeypatch.setenv("CALLMEM_VAULT_PASSPHRASE", "test-passphrase")
         km = VaultKeyManager(tmp_path, mode="passphrase")
         km.get_fernet()
         assert (tmp_path / "vault.salt").exists()
@@ -71,7 +71,7 @@ class TestPassphraseMode:
     def test_same_passphrase_same_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("LLM_MEM_VAULT_PASSPHRASE", "stable-passphrase")
+        monkeypatch.setenv("CALLMEM_VAULT_PASSPHRASE", "stable-passphrase")
         km1 = VaultKeyManager(tmp_path, mode="passphrase")
         ct = km1.encrypt("test")
 
@@ -81,7 +81,7 @@ class TestPassphraseMode:
     def test_missing_passphrase_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("LLM_MEM_VAULT_PASSPHRASE", raising=False)
+        monkeypatch.delenv("CALLMEM_VAULT_PASSPHRASE", raising=False)
         km = VaultKeyManager(tmp_path, mode="passphrase")
         with pytest.raises(ValueError, match="passphrase"):
             km.get_fernet()

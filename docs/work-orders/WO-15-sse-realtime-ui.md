@@ -30,7 +30,7 @@ Worker extracts entity → DB insert → SSE broadcast → UI receives event →
 
 Add a simple pub/sub event bus that the worker publishes to and SSE clients subscribe to.
 
-Create `src/llm_mem/core/event_bus.py`:
+Create `src/callmem/core/event_bus.py`:
 
 ```python
 import asyncio
@@ -58,7 +58,7 @@ Attach to `app.state.event_bus` in the FastAPI app.
 
 ### 2. SSE Endpoint
 
-Create `src/llm_mem/ui/routes/sse.py`:
+Create `src/callmem/ui/routes/sse.py`:
 
 ```python
 @router.get("/events")
@@ -137,17 +137,17 @@ Keep the htmx polling as a fallback if SSE connection fails (e.g., behind a prox
 
 ## Files to Create
 
-- `src/llm_mem/core/event_bus.py` — async pub/sub
+- `src/callmem/core/event_bus.py` — async pub/sub
 
 ## Files to Modify
 
-- `src/llm_mem/ui/app.py` — attach event_bus to app.state, register SSE router
-- `src/llm_mem/ui/routes/sse.py` — SSE streaming endpoint (or add to existing routes)
-- `src/llm_mem/ui/templates/feed.html` — replace polling with SSE client
-- `src/llm_mem/ui/templates/base.html` — include htmx SSE extension or JS EventSource code
-- `src/llm_mem/core/extraction.py` — publish `entity_created` after insert
-- `src/llm_mem/core/workers.py` — publish session events
-- `src/llm_mem/adapters/opencode.py` — publish session start/end to event bus
+- `src/callmem/ui/app.py` — attach event_bus to app.state, register SSE router
+- `src/callmem/ui/routes/sse.py` — SSE streaming endpoint (or add to existing routes)
+- `src/callmem/ui/templates/feed.html` — replace polling with SSE client
+- `src/callmem/ui/templates/base.html` — include htmx SSE extension or JS EventSource code
+- `src/callmem/core/extraction.py` — publish `entity_created` after insert
+- `src/callmem/core/workers.py` — publish session events
+- `src/callmem/adapters/opencode.py` — publish session start/end to event bus
 
 ## Acceptance Criteria
 

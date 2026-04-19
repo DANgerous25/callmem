@@ -6,8 +6,8 @@ When importing sessions, `engine.start_session()` creates an active session. If 
 
 ## Files to Modify
 
-- `src/llm_mem/core/engine.py` — add mechanism to mark sessions as "import" sessions
-- `src/llm_mem/adapters/opencode_import.py` — use isolated session scope
+- `src/callmem/core/engine.py` — add mechanism to mark sessions as "import" sessions
+- `src/callmem/adapters/opencode_import.py` — use isolated session scope
 
 ## Approach
 

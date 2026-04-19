@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}callmem — Dashboard{% endblock %}
+{% block content %}
+<div id="dashboard-content" hx-get="/partials/dashboard" hx-trigger="every 3s" hx-swap="innerHTML">
+<hgroup>
+    <h2>{{ project_name }}</h2>
+    <p>Events: {{ event_count }} &middot; Entities: {{ entity_count }} &middot; Sessions: {{ session_count }}</p>
+</hgroup>
+
+{% if active_session %}
+<article>
+    <header><strong>Active Session</strong></header>
+    Session {{ active_session.id[:8] }}... &middot; {{ active_session.event_count }} events
+</article>
+{% endif %}
+
+{% if recent_sessions %}
+<h3>Recent Sessions</h3>
+<table>
+    <thead><tr><th>Date</th><th>Events</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for s in recent_sessions %}
+    <tr>
+        <td><a href="/sessions/{{ s.id }}">{{ s.started_at[:10] }}</a></td>
+        <td>{{ s.event_count }}</td>
+        <td>{{ s.status }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if recent_entities %}
+<h3>Recent Entities</h3>
+<table>
+    <thead><tr><th>Type</th><th>Title</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for e in recent_entities %}
+    <tr>
+        <td>{{ e.type }}</td>
+        <td>{{ e.title }}</td>
+        <td>{{ e.status or "-" }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+</div>
+{% endblock %}

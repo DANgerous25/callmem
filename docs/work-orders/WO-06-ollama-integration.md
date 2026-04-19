@@ -6,18 +6,18 @@ Implement the Ollama client and the entity extraction worker that processes raw 
 
 ## Files to create
 
-- `src/llm_mem/core/ollama.py` — Ollama HTTP client
-- `src/llm_mem/core/extraction.py` — Entity extraction worker
-- `src/llm_mem/core/prompts.py` — Prompt templates for extraction, summarization, etc.
-- `src/llm_mem/core/queue.py` — Simple SQLite-backed job queue
+- `src/callmem/core/ollama.py` — Ollama HTTP client
+- `src/callmem/core/extraction.py` — Entity extraction worker
+- `src/callmem/core/prompts.py` — Prompt templates for extraction, summarization, etc.
+- `src/callmem/core/queue.py` — Simple SQLite-backed job queue
 - `tests/unit/test_ollama.py`
 - `tests/unit/test_extraction.py`
 - `tests/unit/test_queue.py`
 
 ## Files to modify
 
-- `src/llm_mem/core/engine.py` — Queue extraction jobs after ingest
-- `src/llm_mem/core/migrations/001_initial.sql` — Add `jobs` table if not already present
+- `src/callmem/core/engine.py` — Queue extraction jobs after ingest
+- `src/callmem/core/migrations/001_initial.sql` — Add `jobs` table if not already present
 - `pyproject.toml` — Add `httpx` dependency
 
 ## Constraints

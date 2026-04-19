@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from llm_mem.adapters.opencode_import import (
+from callmem.adapters.opencode_import import (
     _map_message,
     _parse_json,
     _progress_path,
@@ -21,14 +21,14 @@ from llm_mem.adapters.opencode_import import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from llm_mem.core.database import Database
-    from llm_mem.core.engine import MemoryEngine
+    from callmem.core.database import Database
+    from callmem.core.engine import MemoryEngine
 
 
 @pytest.fixture
 def engine_no_sensitive(memory_db: Database) -> MemoryEngine:
-    from llm_mem.core.engine import MemoryEngine
-    from llm_mem.models.config import Config
+    from callmem.core.engine import MemoryEngine
+    from callmem.models.config import Config
 
     config = Config(sensitive_data={"enabled": False, "llm_scan": False})
     return MemoryEngine(memory_db, config)
@@ -542,7 +542,7 @@ class TestLockfile:
     def test_lockfile_prevents_concurrent(
         self, tmp_path: Path, engine_no_sensitive: MemoryEngine
     ) -> None:
-        from llm_mem.adapters.opencode_import import _acquire_lock, _release_lock
+        from callmem.adapters.opencode_import import _acquire_lock, _release_lock
 
         db_path = tmp_path / "opencode.db"
         conn = _create_opencode_db(db_path)
@@ -566,7 +566,7 @@ class TestLockfile:
     def test_lockfile_released_after_import(
         self, tmp_path: Path, engine_no_sensitive: MemoryEngine
     ) -> None:
-        from llm_mem.adapters.opencode_import import _acquire_lock
+        from callmem.adapters.opencode_import import _acquire_lock
 
         db_path = tmp_path / "opencode.db"
         conn = _create_opencode_db(db_path)
@@ -584,6 +584,6 @@ class TestLockfile:
         )
 
         lock_fd = _acquire_lock(tmp_path)
-        from llm_mem.adapters.opencode_import import _release_lock
+        from callmem.adapters.opencode_import import _release_lock
 
         _release_lock(lock_fd)

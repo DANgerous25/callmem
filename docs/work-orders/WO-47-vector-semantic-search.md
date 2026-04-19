@@ -6,7 +6,7 @@ Add embedding-based semantic search alongside the existing FTS5 keyword search s
 
 ## Background
 
-FTS5 is keyword-based — it requires term overlap. Semantic search uses vector embeddings to find conceptual similarity. claude-mem attempted this with ChromaDB but it was unstable. llm-mem's design docs call for `sqlite-vec` (SQLite extension) to keep everything in a single database file.
+FTS5 is keyword-based — it requires term overlap. Semantic search uses vector embeddings to find conceptual similarity. claude-mem attempted this with ChromaDB but it was unstable. callmem's design docs call for `sqlite-vec` (SQLite extension) to keep everything in a single database file.
 
 This is a Phase 2 feature — the schema was designed to accommodate it, but the implementation was deferred.
 
@@ -57,7 +57,7 @@ Migration: create table if `sqlite-vec` is available, skip gracefully if not.
 
 ### 3. Embedding generation
 
-New module `src/llm_mem/core/embeddings.py`:
+New module `src/callmem/core/embeddings.py`:
 
 ```python
 class EmbeddingProvider(ABC):
@@ -127,9 +127,9 @@ Setup wizard:
 ### 7. Backfill command
 
 ```bash
-llm-mem embed -p .            # generate embeddings for all entities missing them
-llm-mem embed --all -p .      # regenerate all embeddings
-llm-mem embed --status -p .   # show embedding coverage stats
+callmem embed -p .            # generate embeddings for all entities missing them
+callmem embed --all -p .      # regenerate all embeddings
+callmem embed --status -p .   # show embedding coverage stats
 ```
 
 ### 8. MCP search update
@@ -151,7 +151,7 @@ Default "hybrid" when embeddings are available, falls back to "keyword" when not
 
 - Python 3.10 compatible
 - No AI attribution
-- `sqlite-vec` is an optional dependency — llm-mem must work without it (FTS5 only)
+- `sqlite-vec` is an optional dependency — callmem must work without it (FTS5 only)
 - Embedding generation must not block the main pipeline — async worker queue
 - If Ollama is not running, embedding jobs should retry with backoff (not fail permanently)
 - Embedding model should be configurable independently from the extraction model

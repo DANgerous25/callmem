@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS corpus_entities (
 
 ### Core Module
 
-Create `src/llm_mem/core/knowledge.py`:
+Create `src/callmem/core/knowledge.py`:
 
 ```python
 class KnowledgeAgent:
@@ -105,7 +105,7 @@ def query_corpus(self, corpus_name: str, question: str) -> str:
 
 ### Prompt
 
-Add to `src/llm_mem/core/prompts.py`:
+Add to `src/callmem/core/prompts.py`:
 
 ```python
 KNOWLEDGE_QUERY_PROMPT = """You are a knowledge agent with access to a curated corpus of project observations.
@@ -122,7 +122,7 @@ ANSWER:"""
 
 ### MCP Tools
 
-Add to `src/llm_mem/mcp/server.py`:
+Add to `src/callmem/mcp/server.py`:
 
 #### `build_corpus`
 ```
@@ -162,14 +162,14 @@ Returns: Updated corpus stats.
 
 ### CLI Commands
 
-Add to `src/llm_mem/cli.py`:
+Add to `src/callmem/cli.py`:
 
 ```bash
-llm-mem corpus build <name> [--types bugfix,feature] [--since 2026-04-01] [--query "auth"]
-llm-mem corpus list
-llm-mem corpus query <name> "How did we implement auth?"
-llm-mem corpus rebuild <name>
-llm-mem corpus delete <name>
+callmem corpus build <name> [--types bugfix,feature] [--since 2026-04-01] [--query "auth"]
+callmem corpus list
+callmem corpus query <name> "How did we implement auth?"
+callmem corpus rebuild <name>
+callmem corpus delete <name>
 ```
 
 ### Web UI (optional, lower priority)
@@ -180,15 +180,15 @@ A `/knowledge` page listing corpora with a query input box. Can be deferred to a
 
 ## Files to Create
 
-- `src/llm_mem/core/knowledge.py` — KnowledgeAgent class
+- `src/callmem/core/knowledge.py` — KnowledgeAgent class
 
 ## Files to Modify
 
-- `src/llm_mem/core/database.py` — add `corpora` and `corpus_entities` tables
-- `src/llm_mem/core/prompts.py` — add KNOWLEDGE_QUERY_PROMPT
-- `src/llm_mem/mcp/server.py` — add 4 knowledge tools
-- `src/llm_mem/cli.py` — add `corpus` command group
-- `src/llm_mem/core/engine.py` — expose KnowledgeAgent via engine
+- `src/callmem/core/database.py` — add `corpora` and `corpus_entities` tables
+- `src/callmem/core/prompts.py` — add KNOWLEDGE_QUERY_PROMPT
+- `src/callmem/mcp/server.py` — add 4 knowledge tools
+- `src/callmem/cli.py` — add `corpus` command group
+- `src/callmem/core/engine.py` — expose KnowledgeAgent via engine
 
 ## Acceptance Criteria
 

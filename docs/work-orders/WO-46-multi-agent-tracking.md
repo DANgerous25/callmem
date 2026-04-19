@@ -63,8 +63,8 @@ Session 13 (OpenCode/GLM, Apr 18): Added rate limiting to auth
 ### 6. CLI
 
 ```bash
-llm-mem sessions -p .                    # list sessions with agent column
-llm-mem search "auth" --agent claude -p . # filter by agent
+callmem sessions -p .                    # list sessions with agent column
+callmem search "auth" --agent claude -p . # filter by agent
 ```
 
 ## Constraints

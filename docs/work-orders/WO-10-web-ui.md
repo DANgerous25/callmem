@@ -6,29 +6,29 @@ Implement the local web UI using FastAPI + htmx + Pico CSS. The UI provides a br
 
 ## Files to create
 
-- `src/llm_mem/ui/__init__.py`
-- `src/llm_mem/ui/app.py` — FastAPI application factory
-- `src/llm_mem/ui/routes/dashboard.py` — Dashboard page
-- `src/llm_mem/ui/routes/sessions.py` — Sessions list and detail
-- `src/llm_mem/ui/routes/search.py` — Memory search
-- `src/llm_mem/ui/routes/entities.py` — Entity browser (TODOs, decisions, facts, etc.)
-- `src/llm_mem/ui/routes/briefing.py` — Briefing preview
-- `src/llm_mem/ui/routes/settings.py` — Settings page
-- `src/llm_mem/ui/templates/base.html` — Base template with nav and Pico CSS
-- `src/llm_mem/ui/templates/dashboard.html`
-- `src/llm_mem/ui/templates/sessions.html`
-- `src/llm_mem/ui/templates/session_detail.html`
-- `src/llm_mem/ui/templates/search.html`
-- `src/llm_mem/ui/templates/entities.html`
-- `src/llm_mem/ui/templates/briefing.html`
-- `src/llm_mem/ui/templates/settings.html`
-- `src/llm_mem/ui/templates/partials/` — htmx partial templates
-- `src/llm_mem/ui/static/htmx.min.js` — Vendored htmx
+- `src/callmem/ui/__init__.py`
+- `src/callmem/ui/app.py` — FastAPI application factory
+- `src/callmem/ui/routes/dashboard.py` — Dashboard page
+- `src/callmem/ui/routes/sessions.py` — Sessions list and detail
+- `src/callmem/ui/routes/search.py` — Memory search
+- `src/callmem/ui/routes/entities.py` — Entity browser (TODOs, decisions, facts, etc.)
+- `src/callmem/ui/routes/briefing.py` — Briefing preview
+- `src/callmem/ui/routes/settings.py` — Settings page
+- `src/callmem/ui/templates/base.html` — Base template with nav and Pico CSS
+- `src/callmem/ui/templates/dashboard.html`
+- `src/callmem/ui/templates/sessions.html`
+- `src/callmem/ui/templates/session_detail.html`
+- `src/callmem/ui/templates/search.html`
+- `src/callmem/ui/templates/entities.html`
+- `src/callmem/ui/templates/briefing.html`
+- `src/callmem/ui/templates/settings.html`
+- `src/callmem/ui/templates/partials/` — htmx partial templates
+- `src/callmem/ui/static/htmx.min.js` — Vendored htmx
 - `tests/integration/test_ui.py`
 
 ## Files to modify
 
-- `src/llm_mem/cli.py` — Wire `llm-mem ui` to launch FastAPI with uvicorn
+- `src/callmem/cli.py` — Wire `callmem ui` to launch FastAPI with uvicorn
 - `pyproject.toml` — Add `fastapi`, `uvicorn`, `jinja2` dependencies
 
 ## Constraints
@@ -89,7 +89,7 @@ Implement the local web UI using FastAPI + htmx + Pico CSS. The UI provides a br
 
 ## Acceptance criteria
 
-1. `llm-mem ui --project .` starts a web server on port 9090
+1. `callmem ui --project .` starts a web server on port 9090
 2. Dashboard loads and shows project stats
 3. Sessions list shows existing sessions
 4. Session detail shows events and extracted entities
@@ -107,7 +107,7 @@ Implement the local web UI using FastAPI + htmx + Pico CSS. The UI provides a br
 def test_dashboard_loads(test_client):
     response = test_client.get("/")
     assert response.status_code == 200
-    assert "llm-mem" in response.text
+    assert "callmem" in response.text
 
 def test_sessions_list(test_client_with_data):
     response = test_client_with_data.get("/sessions")

@@ -6,13 +6,13 @@ Add Claude Code as a supported coding tool alongside OpenCode. The setup wizard 
 
 ## Background
 
-llm-mem currently only integrates with OpenCode (`opencode.json` MCP config, `.opencode/` plugins, OpenCode SSE adapter). Claude Code also supports MCP servers via `.mcp.json` in the project root and reads agent instructions from `CLAUDE.md`.
+callmem currently only integrates with OpenCode (`opencode.json` MCP config, `.opencode/` plugins, OpenCode SSE adapter). Claude Code also supports MCP servers via `.mcp.json` in the project root and reads agent instructions from `CLAUDE.md`.
 
 The user switches between Claude Code and OpenCode on the same projects. When one tool hits a rate limit or when different tasks suit different tools, they want to pick up where the other left off — with shared memory context.
 
 ### Network consideration
 
-Claude Code requires ExpressVPN (for region access), which conflicts with Tailscale. So when using Claude Code, the user cannot reach services via Tailscale IPs. The Ollama endpoint and llm-mem web UI must be configured using the machine's **local LAN IP** (e.g. `192.168.x.x`) rather than `localhost` or Tailscale IP. The setup wizard should ask for the host/IP to bind to and use for service URLs.
+Claude Code requires ExpressVPN (for region access), which conflicts with Tailscale. So when using Claude Code, the user cannot reach services via Tailscale IPs. The Ollama endpoint and callmem web UI must be configured using the machine's **local LAN IP** (e.g. `192.168.x.x`) rather than `localhost` or Tailscale IP. The setup wizard should ask for the host/IP to bind to and use for service URLs.
 
 ## Deliverables
 
@@ -22,7 +22,7 @@ Add a new function `_ensure_claude_code_mcp(project: Path)` alongside the existi
 
 ```python
 def _ensure_claude_code_mcp(project: Path) -> None:
-    """Ensure .mcp.json has llm-mem MCP server configured for Claude Code."""
+    """Ensure .mcp.json has callmem MCP server configured for Claude Code."""
 ```
 
 The `.mcp.json` format:
@@ -30,9 +30,9 @@ The `.mcp.json` format:
 ```json
 {
   "mcpServers": {
-    "llm-mem": {
+    "callmem": {
       "command": "python3",
-      "args": ["-m", "llm_mem.mcp.server", "--project", "."]
+      "args": ["-m", "callmem.mcp.server", "--project", "."]
     }
   }
 }
@@ -75,7 +75,7 @@ Based on selection:
 
 ### 3. CLAUDE.md handling
 
-The `coding-norms` installer already creates `CLAUDE.md` as a symlink to `AGENTS.md`. The llm-mem setup should:
+The `coding-norms` installer already creates `CLAUDE.md` as a symlink to `AGENTS.md`. The callmem setup should:
 
 a) If `CLAUDE.md` exists (symlink or file) → patch it with MCP tool instructions via the existing `_ensure_agents_mcp_block()` (same as AGENTS.md patching from WO-04c)
 b) If `CLAUDE.md` is a symlink to `AGENTS.md` → patching AGENTS.md is sufficient (the symlink follows)
@@ -111,8 +111,8 @@ The `init` command (non-interactive) should also configure Claude Code MCP if `.
 
 | File | Change |
 |---|---|
-| `src/llm_mem/cli.py` | Add `_ensure_claude_code_mcp()`, add tool selection to setup wizard, call from both `init` and `setup` |
-| `src/llm_mem/core/config.py` | No changes needed (endpoint is already user-configurable) |
+| `src/callmem/cli.py` | Add `_ensure_claude_code_mcp()`, add tool selection to setup wizard, call from both `init` and `setup` |
+| `src/callmem/core/config.py` | No changes needed (endpoint is already user-configurable) |
 | `templates/` | Add `claude/.mcp.json.template` if desired (optional — the function can generate it inline) |
 
 ## Constraints
@@ -126,11 +126,11 @@ The `init` command (non-interactive) should also configure Claude Code MCP if `.
 
 ## Acceptance criteria
 
-- [ ] `llm-mem setup` asks which coding tools to configure
-- [ ] Selecting "Claude Code" creates/updates `.mcp.json` with llm-mem MCP server
+- [ ] `callmem setup` asks which coding tools to configure
+- [ ] Selecting "Claude Code" creates/updates `.mcp.json` with callmem MCP server
 - [ ] Selecting "OpenCode" configures `opencode.json` (existing behaviour preserved)
 - [ ] Selecting "Both" configures both files
-- [ ] `llm-mem init` auto-detects and configures both if config files present
+- [ ] `callmem init` auto-detects and configures both if config files present
 - [ ] Existing `.mcp.json` entries (other MCP servers) are preserved
 - [ ] CLAUDE.md gets MCP tool instructions block (if it's a separate file from AGENTS.md)
 - [ ] Re-running setup/init does not duplicate entries
@@ -140,8 +140,8 @@ The `init` command (non-interactive) should also configure Claude Code MCP if `.
 ## Suggested tests
 
 - Unit test: `.mcp.json` created correctly when none exists
-- Unit test: existing `.mcp.json` with other servers preserved, llm-mem added
-- Unit test: `.mcp.json` already has llm-mem → no-op
+- Unit test: existing `.mcp.json` with other servers preserved, callmem added
+- Unit test: `.mcp.json` already has callmem → no-op
 - Unit test: CLAUDE.md symlink detected → only AGENTS.md patched
 - Unit test: CLAUDE.md separate file → patched independently
 - Integration test: setup wizard with "Both" selected configures both files

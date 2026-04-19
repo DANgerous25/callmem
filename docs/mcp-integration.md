@@ -2,7 +2,7 @@
 
 ## Overview
 
-llm-mem exposes itself as an MCP (Model Context Protocol) server. This is the primary integration surface — any MCP-capable client (OpenCode, Claude Code, Kilo, custom wrappers) can use llm-mem by adding it as an MCP server.
+callmem exposes itself as an MCP (Model Context Protocol) server. This is the primary integration surface — any MCP-capable client (OpenCode, Claude Code, Kilo, custom wrappers) can use callmem by adding it as an MCP server.
 
 The MCP server provides three categories of capabilities:
 1. **Tools** — Actions the agent can invoke (ingest, search, pin, etc.)
@@ -11,12 +11,12 @@ The MCP server provides three categories of capabilities:
 
 ## Transport
 
-llm-mem supports two MCP transports:
+callmem supports two MCP transports:
 
 | Transport | When to use | How it works |
 |---|---|---|
-| **stdio** | OpenCode, Claude Code (default) | Parent process spawns llm-mem as a subprocess; communication over stdin/stdout |
-| **SSE** | Remote access, multiple clients, web UI | llm-mem runs as an HTTP server; clients connect via Server-Sent Events |
+| **stdio** | OpenCode, Claude Code (default) | Parent process spawns callmem as a subprocess; communication over stdin/stdout |
+| **SSE** | Remote access, multiple clients, web UI | callmem runs as an HTTP server; clients connect via Server-Sent Events |
 
 Default: stdio. The MCP server auto-detects based on how it's launched.
 
@@ -253,9 +253,9 @@ Add to your project's `opencode.json` (or `~/.config/opencode/opencode.json` for
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
-      "command": ["python", "-m", "llm_mem.mcp.server", "--project", "."],
+      "command": ["python", "-m", "callmem.mcp.server", "--project", "."],
       "enabled": true,
       "timeout": 10000
     }
@@ -268,9 +268,9 @@ If using `uv` (recommended):
 ```json
 {
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
-      "command": ["uv", "run", "--directory", "/path/to/llm-mem", "python", "-m", "llm_mem.mcp.server", "--project", "."],
+      "command": ["uv", "run", "--directory", "/path/to/callmem", "python", "-m", "callmem.mcp.server", "--project", "."],
       "enabled": true
     }
   }
@@ -284,7 +284,7 @@ Add to your project's `AGENTS.md` or `.opencode/agents.md`:
 ```markdown
 ## Memory
 
-This project uses llm-mem for persistent memory across sessions.
+This project uses callmem for persistent memory across sessions.
 
 At the start of each session:
 1. Call `mem_session_start` to register the session and get a briefing
@@ -301,16 +301,16 @@ At the end of the session:
 
 ### Automatic capture adapter
 
-For fully automatic capture (no manual `mem_ingest` calls needed), llm-mem can optionally act as a proxy or event listener. The OpenCode adapter:
+For fully automatic capture (no manual `mem_ingest` calls needed), callmem can optionally act as a proxy or event listener. The OpenCode adapter:
 
 1. Subscribes to OpenCode's SSE event stream (`GET /event`)
 2. Captures prompts, responses, and tool calls automatically
 3. Feeds them to the ingest pipeline
 
-This requires running llm-mem alongside OpenCode in "adapter mode":
+This requires running callmem alongside OpenCode in "adapter mode":
 
 ```bash
-llm-mem adapter opencode --opencode-url http://localhost:4096
+callmem adapter opencode --opencode-url http://localhost:4096
 ```
 
 This is a v1+ feature. In v0, ingest relies on explicit `mem_ingest` calls from the agent (guided by AGENTS.md instructions).
@@ -352,4 +352,4 @@ Embedded use ───────┤  Direct function calls ├──── Cor
                     └────────────────────────┘
 ```
 
-The `src/llm_mem/core/` module is the adapter-agnostic engine. MCP, REST, and direct Python calls all route through it.
+The `src/callmem/core/` module is the adapter-agnostic engine. MCP, REST, and direct Python calls all route through it.

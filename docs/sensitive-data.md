@@ -2,7 +2,7 @@
 
 ## Threat model
 
-llm-mem stores everything a coding agent sees — prompts, responses, tool calls, file contents. This inevitably includes sensitive data:
+callmem stores everything a coding agent sees — prompts, responses, tool calls, file contents. This inevitably includes sensitive data:
 
 | Category | Examples | How it gets in |
 |---|---|---|
@@ -113,14 +113,14 @@ Fernet (AES-128-CBC + HMAC) via Python's `cryptography` library.
 
 | Mode | How it works | Protects against |
 |---|---|---|
-| **`auto`** (default) | Random key generated on init, stored in `.llm-mem/vault.key` | Database file theft (without the key file) |
-| **`passphrase`** | Key derived from `LLM_MEM_VAULT_PASSPHRASE` env var via scrypt | Database + key file theft (without the passphrase) |
+| **`auto`** (default) | Random key generated on init, stored in `.callmem/vault.key` | Database file theft (without the key file) |
+| **`passphrase`** | Key derived from `CALLMEM_VAULT_PASSPHRASE` env var via scrypt | Database + key file theft (without the passphrase) |
 
 Default is `auto` because it requires zero configuration. If your `memory.db` file is backed up to cloud or stored somewhere shared, set a passphrase.
 
 ## Pattern library
 
-Built-in patterns, shipped with llm-mem:
+Built-in patterns, shipped with callmem:
 
 ```python
 PATTERNS = {
@@ -291,7 +291,7 @@ allowlist = [
 
 [vault]
 mode = "auto"                      # "auto" or "passphrase"
-# passphrase read from LLM_MEM_VAULT_PASSPHRASE env var when mode = "passphrase"
+# passphrase read from CALLMEM_VAULT_PASSPHRASE env var when mode = "passphrase"
 ```
 
 ## False positive handling
@@ -304,5 +304,5 @@ mode = "auto"                      # "auto" or "passphrase"
 ## What this does NOT include
 
 - **Full database encryption** (SQLCipher): Overkill. Field-level encryption of sensitive values is sufficient and simpler.
-- **Redaction of the interactive model's context**: Out of scope. The coding agent already sees secrets in real-time — llm-mem protects the stored record, not the live session.
+- **Redaction of the interactive model's context**: Out of scope. The coding agent already sees secrets in real-time — callmem protects the stored record, not the live session.
 - **Guaranteed perfect detection**: Some secrets will slip through. The primary defense is still "don't commit secrets to your codebase."

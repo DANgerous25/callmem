@@ -1,5 +1,5 @@
 PROJECT := $(shell pwd)
-SVC_NAME := llm-mem-$(shell basename $(PROJECT))
+SVC_NAME := callmem-$(shell basename $(PROJECT))
 
 .PHONY: test dev setup lint typecheck clean start stop restart logs status daemon watch
 
@@ -17,12 +17,12 @@ setup:
 
 # Start the daemon (UI + workers + adapter) in foreground
 daemon:
-	uv run llm-mem daemon --project $(PROJECT)
+	uv run callmem daemon --project $(PROJECT)
 
 # Start the systemd user service
 start:
 	systemctl --user start $(SVC_NAME)
-	@echo "$(SVC_NAME) started. UI at http://$$(grep '^host' .llm-mem/config.toml 2>/dev/null | head -1 | cut -d'"' -f2 || echo 0.0.0.0):$$(grep '^port' .llm-mem/config.toml 2>/dev/null | head -1 | tr -d ' ' | cut -d= -f2 || echo 9090)"
+	@echo "$(SVC_NAME) started. UI at http://$$(grep '^host' .callmem/config.toml 2>/dev/null | head -1 | cut -d'"' -f2 || echo 0.0.0.0):$$(grep '^port' .callmem/config.toml 2>/dev/null | head -1 | tr -d ' ' | cut -d= -f2 || echo 9090)"
 
 # Stop the systemd user service
 stop:
@@ -44,7 +44,7 @@ watch:
 
 # Show memory status
 status:
-	uv run llm-mem status --project $(PROJECT)
+	uv run callmem status --project $(PROJECT)
 
 # Run ruff linter
 lint:

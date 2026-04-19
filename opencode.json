@@ -1,12 +1,12 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
-    "llm-mem": {
+    "callmem": {
       "type": "local",
       "command": [
         "python3",
         "-m",
-        "llm_mem.mcp.server",
+        "callmem.mcp.server",
         "--project",
         "."
       ],

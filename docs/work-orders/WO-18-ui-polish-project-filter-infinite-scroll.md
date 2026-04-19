@@ -12,7 +12,7 @@ Polish the web UI with project-level filtering, infinite scroll pagination, and 
 
 ### Why
 
-When running llm-mem across multiple projects, the feed shows everything mixed together. Users need to filter to one project at a time, like claude-mem's "All Projects" dropdown.
+When running callmem across multiple projects, the feed shows everything mixed together. Users need to filter to one project at a time, like claude-mem's "All Projects" dropdown.
 
 ### Implementation
 
@@ -43,10 +43,10 @@ Query distinct project_ids from the `entities` or `sessions` table. Map to displ
 
 ### Files to Modify
 
-- `src/llm_mem/ui/routes/feed.py` — accept `project` query param, pass to feed builder
-- `src/llm_mem/ui/templates/feed.html` — project filter pill bar
-- `src/llm_mem/ui/templates/feed_partial.html` — no change (already dynamic)
-- `src/llm_mem/ui/templates/base.html` — CSS for filter pills
+- `src/callmem/ui/routes/feed.py` — accept `project` query param, pass to feed builder
+- `src/callmem/ui/templates/feed.html` — project filter pill bar
+- `src/callmem/ui/templates/feed_partial.html` — no change (already dynamic)
+- `src/callmem/ui/templates/base.html` — CSS for filter pills
 
 ---
 
@@ -86,8 +86,8 @@ When appending new items via infinite scroll, entity IDs already in the DOM shou
 
 ### Files to Modify
 
-- `src/llm_mem/ui/routes/feed.py` — pagination params (offset, limit), has_more flag
-- `src/llm_mem/ui/templates/feed_partial.html` — infinite scroll trigger at bottom
+- `src/callmem/ui/routes/feed.py` — pagination params (offset, limit), has_more flag
+- `src/callmem/ui/templates/feed_partial.html` — infinite scroll trigger at bottom
 
 ---
 
@@ -133,10 +133,10 @@ At the top of the feed (in the stats bar), show aggregate economics:
 
 ### Files to Modify
 
-- `src/llm_mem/ui/routes/feed.py` — compute economics, pass to template
-- `src/llm_mem/ui/templates/feed.html` — display economics in header
-- `src/llm_mem/ui/templates/feed_partial.html` — token count in card footer
-- `src/llm_mem/ui/templates/base.html` — CSS for token display (muted, small text)
+- `src/callmem/ui/routes/feed.py` — compute economics, pass to template
+- `src/callmem/ui/templates/feed.html` — display economics in header
+- `src/callmem/ui/templates/feed_partial.html` — token count in card footer
+- `src/callmem/ui/templates/base.html` — CSS for token display (muted, small text)
 
 ---
 

@@ -4,9 +4,9 @@ This document explains the reasoning behind each norm in `AGENTS.md`. The norms 
 
 ## Memory is the DB
 
-llm-mem captures every event and extracts entities into `.llm-mem/memory.db`. The daemon rewrites `SESSION_SUMMARY.md` on each extraction pass, and `mem_get_briefing` serves the same data via MCP.
+callmem captures every event and extracts entities into `.callmem/memory.db`. The daemon rewrites `SESSION_SUMMARY.md` on each extraction pass, and `mem_get_briefing` serves the same data via MCP.
 
-The old flat memory files (`.llm-mem/SESSION.md`, `TODO.md`, `DECISIONS.md`) were retired once the daemon proved reliable. The DB is the source of truth; the briefing is a rendering of it.
+The old flat memory files (`.callmem/SESSION.md`, `TODO.md`, `DECISIONS.md`) were retired once the daemon proved reliable. The DB is the source of truth; the briefing is a rendering of it.
 
 ### Why the DB over flat files
 
@@ -31,7 +31,7 @@ Same reason: pushed commits survive session loss. Additionally, if you're workin
 
 ### Why conventional commits
 
-They're parseable, and llm-mem attributes extracted entities to commits where possible. They also make git log readable at a glance:
+They're parseable, and callmem attributes extracted entities to commits where possible. They also make git log readable at a glance:
 
 ```
 feat(WO-04): implement event ingest pipeline

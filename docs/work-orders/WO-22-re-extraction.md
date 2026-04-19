@@ -12,23 +12,23 @@ A re-extraction command would re-run entity extraction on existing raw events us
 
 ## Deliverables
 
-### 1. CLI command: `llm-mem re-extract`
+### 1. CLI command: `callmem re-extract`
 
 ```bash
 # Re-extract all events (full rebuild of entities)
-llm-mem re-extract --project ~/ellma-trading-bot
+callmem re-extract --project ~/ellma-trading-bot
 
 # Re-extract only a specific session
-llm-mem re-extract --session ses_2693f3fc --project ~/ellma-trading-bot
+callmem re-extract --session ses_2693f3fc --project ~/ellma-trading-bot
 
 # Re-extract events from the last N days
-llm-mem re-extract --since 7d --project ~/ellma-trading-bot
+callmem re-extract --since 7d --project ~/ellma-trading-bot
 
 # Dry run — show what would be re-extracted without doing it
-llm-mem re-extract --dry-run --project ~/ellma-trading-bot
+callmem re-extract --dry-run --project ~/ellma-trading-bot
 
 # Limit concurrency to avoid GPU overload
-llm-mem re-extract --batch-size 5 --project ~/ellma-trading-bot
+callmem re-extract --batch-size 5 --project ~/ellma-trading-bot
 ```
 
 ### 2. Re-extraction logic
@@ -78,7 +78,7 @@ e) **Comparison mode** (nice-to-have) — `--compare` flag that extracts with th
 
 ## Acceptance criteria
 
-- [ ] `llm-mem re-extract` processes all events and creates new entities
+- [ ] `callmem re-extract` processes all events and creates new entities
 - [ ] `--session` flag limits scope to a single session
 - [ ] `--since` flag limits scope by time
 - [ ] `--dry-run` shows scope without executing

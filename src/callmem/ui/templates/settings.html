@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}callmem — Settings{% endblock %}
+{% block content %}
+<h2>Settings</h2>
+
+{% if flash == "saved" %}
+<article style="background:#1a3520;border-color:#22c55e;">
+    <strong>Saved.</strong> Configuration updated. Server settings (port/host) require a restart.
+</article>
+{% endif %}
+
+<form method="post" action="/settings">
+
+<fieldset>
+    <legend>Context Injection</legend>
+    <label>
+        Max briefing tokens
+        <input type="range" name="briefing_max_tokens" min="500" max="5000" step="100" value="{{ form.briefing_max_tokens }}"
+               oninput="this.nextElementSibling.textContent=this.value; debouncePreview()">
+        <output>{{ form.briefing_max_tokens }}</output>
+    </label>
+    <label>
+        Max entities per type
+        <input type="number" name="briefing_max_per_type" min="1" max="50" value="{{ form.briefing_max_per_type }}"
+               onchange="debouncePreview()">
+    </label>
+    <label>
+        <input type="checkbox" name="briefing_include_last_session" {% if form.briefing_include_last_session %}checked{% endif %}
+               onchange="debouncePreview()">
+        Include last session summary
+    </label>
+    <label>
+        Default content view
+        <select name="briefing_default_view" onchange="debouncePreview()">
+            <option value="key_points" {% if form.briefing_default_view == 'key_points' %}selected{% endif %}>Key Points</option>
+            <option value="synopsis" {% if form.briefing_default_view == 'synopsis' %}selected{% endif %}>Synopsis</option>
+        </select>
+    </label>
+    <label>
+        <input type="checkbox" name="briefing_auto_write" {% if form.briefing_auto_write %}checked{% endif %}>
+        Auto-write SESSION_SUMMARY.md to project root
+    </label>
+</fieldset>
+
+<fieldset>
+    <legend>LLM Backend</legend>
+    <label>
+        Backend
+        <select name="llm_backend">
+            <option value="ollama" {% if form.llm_backend == 'ollama' %}selected{% endif %}>Ollama</option>
+            <option value="openai_compat" {% if form.llm_backend == 'openai_compat' %}selected{% endif %}>OpenAI-compatible</option>
+            <option value="none" {% if form.llm_backend == 'none' %}selected{% endif %}>None (patterns only)</option>
+        </select>
+    </label>
+    <label>
+        Model
+        <input type="text" name="ollama_model" value="{{ form.ollama_model }}">
+    </label>
+    <label>
+        API base URL
+        <input type="text" name="ollama_endpoint" value="{{ form.ollama_endpoint }}">
+    </label>
+</fieldset>
+
+<fieldset>
+    <legend>Server <small>(requires restart)</small></legend>
+    <label>
+        Port
+        <input type="number" name="ui_port" value="{{ form.ui_port }}" min="1024" max="65535">
+    </label>
+    <label>
+        Bind address
+        <input type="text" name="ui_host" value="{{ form.ui_host }}">
+    </label>
+</fieldset>
+
+<fieldset>
+    <legend>Extraction</legend>
+    <label>
+        Batch size (events per extraction)
+        <input type="number" name="extraction_batch_size" min="1" max="20" value="{{ form.extraction_batch_size }}">
+    </label>
+</fieldset>
+
+<button type="submit">Save Settings</button>
+</form>
+
+<h3>Live Briefing Preview</h3>
+<div id="briefing-preview"
+     hx-get="/partials/briefing-preview"
+     hx-trigger="load, settings-changed from:body delay:500ms"
+     hx-swap="innerHTML">
+    Loading preview...
+</div>
+
+<script>
+var previewTimer = null;
+function debouncePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(function() {
+        document.body.dispatchEvent(new Event('settings-changed'));
+    }, 500);
+}
+</script>
+{% endblock %}

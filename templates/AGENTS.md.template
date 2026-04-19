@@ -1,6 +1,6 @@
-# Project Memory — llm-mem
+# Project Memory — callmem
 
-This project uses llm-mem for persistent memory across coding sessions.
+This project uses callmem for persistent memory across coding sessions.
 
 ## Session workflow
 

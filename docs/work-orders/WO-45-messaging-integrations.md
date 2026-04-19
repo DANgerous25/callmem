@@ -12,7 +12,7 @@ When a long extraction or import job is running, or when an agent is working in 
 
 ### 1. Notification framework
 
-Create a plugin-based notification system in `src/llm_mem/notifications/`:
+Create a plugin-based notification system in `src/callmem/notifications/`:
 
 ```python
 # base.py
@@ -39,8 +39,8 @@ Config:
 ```toml
 [notifications.telegram]
 enabled = true
-bot_token = "..."       # or env var: LLM_MEM_TELEGRAM_TOKEN
-chat_id = "..."         # or env var: LLM_MEM_TELEGRAM_CHAT_ID
+bot_token = "..."       # or env var: CALLMEM_TELEGRAM_TOKEN
+chat_id = "..."         # or env var: CALLMEM_TELEGRAM_CHAT_ID
 notify_on = ["failure", "decision", "session_end"]  # which events trigger notifications
 ```
 
@@ -56,7 +56,7 @@ Uses Discord webhook (no bot required). Config:
 ```toml
 [notifications.discord]
 enabled = true
-webhook_url = "..."     # or env var: LLM_MEM_DISCORD_WEBHOOK
+webhook_url = "..."     # or env var: CALLMEM_DISCORD_WEBHOOK
 notify_on = ["failure", "decision", "session_end"]
 ```
 
@@ -72,7 +72,7 @@ Uses Slack incoming webhook. Config:
 ```toml
 [notifications.slack]
 enabled = true
-webhook_url = "..."     # or env var: LLM_MEM_SLACK_WEBHOOK
+webhook_url = "..."     # or env var: CALLMEM_SLACK_WEBHOOK
 notify_on = ["failure", "decision", "session_end"]
 ```
 
@@ -108,14 +108,14 @@ If selected, prompt for the relevant token/webhook/chat_id.
 ### 8. CLI test
 
 ```bash
-llm-mem notify --test -p .    # send a test message to all configured channels
+callmem notify --test -p .    # send a test message to all configured channels
 ```
 
 ## Constraints
 
 - Python 3.10 compatible
 - No AI attribution
-- All messaging deps are optional (`pip install llm-mem[telegram]`, etc.) — use `httpx` for HTTP calls (already a dependency) rather than platform-specific SDKs
+- All messaging deps are optional (`pip install callmem[telegram]`, etc.) — use `httpx` for HTTP calls (already a dependency) rather than platform-specific SDKs
 - Notification failures must not crash the daemon — log and continue
 - Rate limiting: max 1 notification per 30 seconds per channel (debounce rapid entity creation)
 - Sensitive data: notifications should respect the vault — never send encrypted/redacted content to messaging platforms

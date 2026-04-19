@@ -1,8 +1,8 @@
-# WO-04c — Auto-patch AGENTS.md with llm-mem MCP Tool Instructions
+# WO-04c — Auto-patch AGENTS.md with callmem MCP Tool Instructions
 
 ## Goal
 
-When `llm-mem init` or `llm-mem setup` detects an existing `AGENTS.md` in the project root (e.g. one installed by [coding-norms](https://github.com/DANgerous25/coding-norms)), append the llm-mem MCP tool usage block so the coding agent knows to call the memory tools automatically during sessions.
+When `callmem init` or `callmem setup` detects an existing `AGENTS.md` in the project root (e.g. one installed by [coding-norms](https://github.com/DANgerous25/coding-norms)), append the callmem MCP tool usage block so the coding agent knows to call the memory tools automatically during sessions.
 
 ## Background
 
@@ -19,7 +19,7 @@ The gap: in case 2 and 3, the MCP tool usage instructions (`mem_ingest`, `mem_se
 - `mem_get_briefing` is never called at session start
 - The agent has memory tools available but doesn't know to use them
 
-This is the exact scenario when a project uses the `coding-norms` repo for universal norms and then adds llm-mem on top.
+This is the exact scenario when a project uses the `coding-norms` repo for universal norms and then adds callmem on top.
 
 ## Deliverables
 
@@ -28,7 +28,7 @@ This is the exact scenario when a project uses the `coding-norms` repo for unive
 Add a function (next to the existing `_ensure_agents_session_summary`) that:
 
 a) Reads the existing `AGENTS.md`
-b) Checks if the MCP tool usage block is already present (look for a sentinel like `mem_ingest` or `## Memory (llm-mem)`)
+b) Checks if the MCP tool usage block is already present (look for a sentinel like `mem_ingest` or `## Memory (callmem)`)
 c) If missing, appends the MCP tool usage block (see below)
 d) Writes the file back
 
@@ -36,9 +36,9 @@ The block to append:
 
 ```markdown
 
-## Memory (llm-mem)
+## Memory (callmem)
 
-This project uses llm-mem for persistent memory via MCP tools.
+This project uses callmem for persistent memory via MCP tools.
 
 **Start of session:**
 1. Read `SESSION_SUMMARY.md` (if it exists) for an auto-generated briefing
@@ -91,21 +91,21 @@ The `templates/AGENTS.md.template` content should stay as the "full" version (fo
 - No AI attribution
 - Idempotent — running init/setup multiple times should not duplicate the block
 - Must not overwrite or corrupt existing AGENTS.md content — append only
-- Sentinel check should be robust: look for `## Memory (llm-mem)` heading OR `mem_ingest` OR `mem_session_start` (any one is sufficient)
+- Sentinel check should be robust: look for `## Memory (callmem)` heading OR `mem_ingest` OR `mem_session_start` (any one is sufficient)
 
 ## Acceptance criteria
 
-- [ ] `llm-mem init` on a project with a pre-existing AGENTS.md (from coding-norms) appends the MCP tool usage block
-- [ ] Running `llm-mem init` again does not duplicate the block
-- [ ] `llm-mem init` on a project with no AGENTS.md still writes the full template (existing behaviour preserved)
-- [ ] `llm-mem init` on a project whose AGENTS.md already has the MCP block is a no-op for that file
+- [ ] `callmem init` on a project with a pre-existing AGENTS.md (from coding-norms) appends the MCP tool usage block
+- [ ] Running `callmem init` again does not duplicate the block
+- [ ] `callmem init` on a project with no AGENTS.md still writes the full template (existing behaviour preserved)
+- [ ] `callmem init` on a project whose AGENTS.md already has the MCP block is a no-op for that file
 - [ ] The setup wizard also applies the same patching
-- [ ] Print message: `Patched AGENTS.md with llm-mem MCP tool instructions` (or `AGENTS.md already has llm-mem instructions`)
+- [ ] Print message: `Patched AGENTS.md with callmem MCP tool instructions` (or `AGENTS.md already has callmem instructions`)
 - [ ] All existing tests pass
 
 ## Suggested tests
 
-- Unit test: AGENTS.md with no llm-mem content gets MCP block appended
+- Unit test: AGENTS.md with no callmem content gets MCP block appended
 - Unit test: AGENTS.md that already has `mem_ingest` reference is not modified
 - Unit test: AGENTS.md with old SESSION_SUMMARY snippet but no MCP block gets the block added
 - Unit test: no AGENTS.md → full template written (regression test for existing behaviour)

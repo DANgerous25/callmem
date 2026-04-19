@@ -24,8 +24,8 @@ Cards show `content[:300]` truncated inline. No expand/collapse.
 - Expanded state persists during htmx polling (don't collapse on 3s refresh)
 
 ### Files to modify
-- `src/llm_mem/ui/templates/feed_partial.html` — card expand/collapse markup
-- `src/llm_mem/ui/templates/base.html` — CSS for expanded state + JS for toggle logic
+- `src/callmem/ui/templates/feed_partial.html` — card expand/collapse markup
+- `src/callmem/ui/templates/base.html` — CSS for expanded state + JS for toggle logic
 
 ### Implementation notes
 - Use a `<details>` element or a JS-toggled class (`feed-card-expanded`)
@@ -72,7 +72,7 @@ ALTER TABLE entities ADD COLUMN synopsis TEXT;
 
 ### Extraction changes
 
-Update `EXTRACTION_PROMPT` in `src/llm_mem/core/prompts.py` to ask the LLM to produce all three:
+Update `EXTRACTION_PROMPT` in `src/callmem/core/prompts.py` to ask the LLM to produce all three:
 
 ```json
 {
@@ -86,12 +86,12 @@ Update `EXTRACTION_PROMPT` in `src/llm_mem/core/prompts.py` to ask the LLM to pr
 }
 ```
 
-Update `EntityExtractor._process_job()` in `src/llm_mem/core/extraction.py`:
+Update `EntityExtractor._process_job()` in `src/callmem/core/extraction.py`:
 - Parse `key_points` (list of strings → join with `\n• ` prefix) and `synopsis` from LLM output
 - Store in the new entity fields
 - If LLM doesn't produce them (backward compat), fall back to `content`
 
-Update `Entity` model in `src/llm_mem/models/entities.py`:
+Update `Entity` model in `src/callmem/models/entities.py`:
 - Add `key_points: str | None = None`
 - Add `synopsis: str | None = None`
 - Update `to_row()` and `from_row()`
@@ -124,13 +124,13 @@ Toggle buttons switch visibility with JS. Active button gets `toggle-active` cla
 - Use icons: `☑` for Key Points, `📄` for Synopsis (or simple text)
 
 ### Files to modify
-- `src/llm_mem/models/entities.py` — add fields
-- `src/llm_mem/core/extraction.py` — parse new fields
-- `src/llm_mem/core/prompts.py` — update extraction prompt
-- `src/llm_mem/core/database.py` — schema migration (add columns)
-- `src/llm_mem/ui/templates/feed_partial.html` — toggle UI
-- `src/llm_mem/ui/templates/base.html` — toggle CSS + JS
-- `src/llm_mem/ui/routes/feed.py` — pass key_points/synopsis to template
+- `src/callmem/models/entities.py` — add fields
+- `src/callmem/core/extraction.py` — parse new fields
+- `src/callmem/core/prompts.py` — update extraction prompt
+- `src/callmem/core/database.py` — schema migration (add columns)
+- `src/callmem/ui/templates/feed_partial.html` — toggle UI
+- `src/callmem/ui/templates/base.html` — toggle CSS + JS
+- `src/callmem/ui/routes/feed.py` — pass key_points/synopsis to template
 
 ---
 
@@ -157,13 +157,13 @@ Add export buttons (clipboard/PDF) to Data Explorer chat panel, scoped to output
 ```
 
 ### Changes
-- Update `SESSION_SUMMARY_PROMPT` in `src/llm_mem/core/prompts.py` to produce a structured summary with sections: title line, INVESTIGATED, LEARNED, COMPLETED, NEXT STEPS
+- Update `SESSION_SUMMARY_PROMPT` in `src/callmem/core/prompts.py` to produce a structured summary with sections: title line, INVESTIGATED, LEARNED, COMPLETED, NEXT STEPS
 - The summary title should be a clear 1-line description of what the session accomplished, NOT the user's raw prompt
 - Use emoji section headers for visual scanning: 🔍 INVESTIGATED, 💡 LEARNED, ✅ COMPLETED, 📋 NEXT STEPS
 - Omit empty sections (don't write "Nothing investigated yet")
 
 ### Files to modify
-- `src/llm_mem/core/prompts.py` — update SESSION_SUMMARY_PROMPT
+- `src/callmem/core/prompts.py` — update SESSION_SUMMARY_PROMPT
 
 ---
 
@@ -179,8 +179,8 @@ On the session detail page (`/sessions/<id>`), event content is truncated mid-se
 - Content should preserve line breaks (use `white-space: pre-wrap` or convert newlines to `<br>`)
 
 ### Files to modify
-- `src/llm_mem/ui/templates/session_detail.html` — remove any truncation, add show-more pattern
-- `src/llm_mem/ui/templates/base.html` — CSS for pre-wrap content in event tables
+- `src/callmem/ui/templates/session_detail.html` — remove any truncation, add show-more pattern
+- `src/callmem/ui/templates/base.html` — CSS for pre-wrap content in event tables
 
 ---
 
@@ -206,16 +206,16 @@ Add coding-specific categories that map to developer mental models:
 
 ### Files to modify
 
-1. `src/llm_mem/models/entities.py`
+1. `src/callmem/models/entities.py`
    - Update `EntityType` Literal to include: `"decision", "todo", "fact", "failure", "discovery", "feature", "bugfix", "research", "change"`
 
-2. `src/llm_mem/core/prompts.py`
+2. `src/callmem/core/prompts.py`
    - Update `EXTRACTION_PROMPT` to include the new categories with guidance on when to use each
 
-3. `src/llm_mem/core/extraction.py`
+3. `src/callmem/core/extraction.py`
    - Update `ENTITY_TYPE_MAP` to include new types
 
-4. `src/llm_mem/ui/templates/base.html`
+4. `src/callmem/ui/templates/base.html`
    - Add CSS badge colours for the new types:
      ```css
      .badge-feature  { background: #22c55e; }
@@ -224,7 +224,7 @@ Add coding-specific categories that map to developer mental models:
      .badge-change   { background: #64748b; }
      ```
 
-5. `src/llm_mem/ui/templates/feed_partial.html`
+5. `src/callmem/ui/templates/feed_partial.html`
    - No changes needed — already uses `badge-{{ item.category }}` dynamically
 
 ---

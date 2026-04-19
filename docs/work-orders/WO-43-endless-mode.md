@@ -2,13 +2,13 @@
 
 ## Goal
 
-Enable O(N) scaling for marathon coding sessions by progressively compressing older conversation context and replacing it with llm-mem summaries, so the agent never hits context window limits.
+Enable O(N) scaling for marathon coding sessions by progressively compressing older conversation context and replacing it with callmem summaries, so the agent never hits context window limits.
 
 ## Background
 
 Long coding sessions hit the context window ceiling. When that happens, the agent either loses early context (sliding window) or the session must end and restart. claude-mem handles this with an "endless mode" that compresses older context in-place.
 
-llm-mem already has chunk summaries and cross-session summaries. This WO extends that to work within a single session: as the conversation grows, older exchanges are compressed into llm-mem observations and replaced in the active context with compact summaries.
+callmem already has chunk summaries and cross-session summaries. This WO extends that to work within a single session: as the conversation grows, older exchanges are compressed into callmem observations and replaced in the active context with compact summaries.
 
 ## Architecture
 

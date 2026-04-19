@@ -6,15 +6,15 @@ Implement the retrieval engine that combines structured lookup, FTS5 search, and
 
 ## Files to create
 
-- `src/llm_mem/core/retrieval.py` — Multi-strategy retrieval engine
-- `src/llm_mem/core/briefing.py` — Briefing assembly and compression
+- `src/callmem/core/retrieval.py` — Multi-strategy retrieval engine
+- `src/callmem/core/briefing.py` — Briefing assembly and compression
 - `tests/unit/test_retrieval.py`
 - `tests/unit/test_briefing.py`
 
 ## Files to modify
 
-- `src/llm_mem/core/engine.py` — Add `search()` and `get_briefing()` methods that delegate to retrieval/briefing modules
-- `src/llm_mem/mcp/tools.py` — Wire `mem_search` to use retrieval engine, `mem_get_briefing` to use briefing generator
+- `src/callmem/core/engine.py` — Add `search()` and `get_briefing()` methods that delegate to retrieval/briefing modules
+- `src/callmem/mcp/tools.py` — Wire `mem_search` to use retrieval engine, `mem_get_briefing` to use briefing generator
 
 ## Constraints
 

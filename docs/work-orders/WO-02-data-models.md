@@ -6,13 +6,13 @@ Create Pydantic data models for all core types: events, sessions, entities, summ
 
 ## Files to create
 
-- `src/llm_mem/models/__init__.py` — Re-export all models
-- `src/llm_mem/models/events.py` — Event types and models
-- `src/llm_mem/models/sessions.py` — Session model
-- `src/llm_mem/models/entities.py` — Entity types (decision, todo, fact, failure, discovery)
-- `src/llm_mem/models/summaries.py` — Summary model
-- `src/llm_mem/models/projects.py` — Project model
-- `src/llm_mem/models/edges.py` — Memory edge model
+- `src/callmem/models/__init__.py` — Re-export all models
+- `src/callmem/models/events.py` — Event types and models
+- `src/callmem/models/sessions.py` — Session model
+- `src/callmem/models/entities.py` — Entity types (decision, todo, fact, failure, discovery)
+- `src/callmem/models/summaries.py` — Summary model
+- `src/callmem/models/projects.py` — Project model
+- `src/callmem/models/edges.py` — Memory edge model
 - `tests/unit/test_models.py`
 
 ## Constraints
