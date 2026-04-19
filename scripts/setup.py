@@ -363,12 +363,12 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
 
     if not do_import:
         print("  Skipped. You can import later with:")
-        print(f"    llm-mem import --source opencode --all --project {project}")
+        print(f"    llm-mem import --source opencode --all --project {project} --project-path {project}")
         return
 
     if not db_path.exists():
         print("  Database not ready — skipping import.")
-        print(f"  Run: llm-mem import --source opencode --all --project {project}")
+        print(f"  Run: llm-mem import --source opencode --all --project {project} --project-path {project}")
         return
 
     total_sessions = len(all_sessions)
@@ -421,6 +421,7 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
         results = import_sessions(
             engine,
             db_path=oc_db,
+            project_path=str(project),
             import_all=True,
             progress_callback=_on_progress,
             project=project,
@@ -447,7 +448,7 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
 
     except Exception as exc:
         print(f"  Import failed: {exc}")
-        print(f"  You can retry: llm-mem import --source opencode --all --project {project}")
+        print(f"  You can retry: llm-mem import --source opencode --all --project {project} --project-path {project}")
 
 
 def _run_setup_background_import(project: Path, oc_db: Path) -> None:
@@ -460,6 +461,7 @@ def _run_setup_background_import(project: Path, oc_db: Path) -> None:
         "import",
         "--source", "opencode",
         "--project", str(project),
+        "--project-path", str(project),
         "--opencode-db", str(oc_db),
         "--all",
     ]
@@ -1303,7 +1305,7 @@ vault_mode = "{vault_mode}"
         print("    Import existing sessions (if not done above):")
         print(
             f"      llm-mem import --source opencode --all"
-            f" --project {project}"
+            f" --project {project} --project-path {project}"
         )
         print()
 
