@@ -270,7 +270,7 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
     if not oc_db.is_file():
         return
 
-    all_sessions = discover_sessions(db_path=oc_db)
+    all_sessions = discover_sessions(db_path=oc_db, project_path=str(project))
     if not all_sessions:
         return
 
