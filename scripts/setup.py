@@ -57,14 +57,36 @@ def ask_choice(prompt: str, options: list[tuple[str, str]], default: str) -> str
 def port_available(port: int, host: str = "0.0.0.0") -> bool:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind((host, port))
             return True
     except OSError:
         return False
 
 
-def _stop_own_service(project: Path) -> str | None:
-    """Stop this project's systemd service if running. Returns service name or None."""
+def _wait_port_free(
+    port: int, host: str = "0.0.0.0", timeout: float = 10.0,
+) -> bool:
+    """Poll until the port is bindable or timeout elapses."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if port_available(port, host):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def _stop_own_service(project: Path, port: int | None = None) -> str | None:
+    """Stop this project's systemd service if running.
+
+    If ``port`` is given, wait (up to 10s) for the socket to actually
+    release before returning — systemctl stop returns before the
+    process finishes tearing down, and a bare ``time.sleep(1)`` isn't
+    enough, which caused setup to keep incrementing to a fresh port.
+    Returns the service name so the caller can restart it afterwards.
+    """
     import subprocess
 
     svc_name = _service_name(project)
@@ -81,8 +103,11 @@ def _stop_own_service(project: Path) -> str | None:
                 ["systemctl", "--user", "stop", svc_name],
                 capture_output=True, check=True,
             )
-            import time
-            time.sleep(1)  # give the port time to release
+            if port is not None:
+                _wait_port_free(port)
+            else:
+                import time
+                time.sleep(1)
             return svc_name
     except Exception:
         pass
@@ -363,12 +388,18 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
 
     if not do_import:
         print("  Skipped. You can import later with:")
-        print(f"    llm-mem import --source opencode --all --project {project} --project-path {project}")
+        print(
+            f"    llm-mem import --source opencode --all "
+            f"--project {project} --project-path {project}"
+        )
         return
 
     if not db_path.exists():
         print("  Database not ready — skipping import.")
-        print(f"  Run: llm-mem import --source opencode --all --project {project} --project-path {project}")
+        print(
+            f"  Run: llm-mem import --source opencode --all "
+            f"--project {project} --project-path {project}"
+        )
         return
 
     total_sessions = len(all_sessions)
@@ -448,7 +479,10 @@ def _offer_session_import(project: Path, db_path: Path) -> None:
 
     except Exception as exc:
         print(f"  Import failed: {exc}")
-        print(f"  You can retry: llm-mem import --source opencode --all --project {project} --project-path {project}")
+        print(
+            f"  You can retry: llm-mem import --source opencode --all "
+            f"--project {project} --project-path {project}"
+        )
 
 
 def _run_setup_background_import(project: Path, oc_db: Path) -> None:
@@ -969,8 +1003,12 @@ def main() -> None:
     default_host = existing.get("ui", {}).get("host", "0.0.0.0")
     default_port = existing.get("ui", {}).get("port", 9090)
 
-    # Stop this project's own service so its port isn't flagged as in-use
-    stopped_service = _stop_own_service(project) if is_rerun else None
+    # Stop this project's own service so its port isn't flagged as in-use,
+    # and wait for the socket to actually release before the availability
+    # probe below runs.
+    stopped_service = (
+        _stop_own_service(project, port=default_port) if is_rerun else None
+    )
     if stopped_service:
         print(f"  Stopped {stopped_service} for port check (will restart after setup)")
 
@@ -980,7 +1018,9 @@ def main() -> None:
         print("  Ports used by other llm-mem projects:")
         for p, name in sorted(other_ports.items()):
             print(f"    {p} — {name}")
-        # Auto-suggest a free port if default conflicts
+        # Auto-suggest a free port if default conflicts with a *different*
+        # project. On a re-run we always prefer reclaiming the existing
+        # port — we just stopped our own service to free it.
         if default_port in other_ports and not is_rerun:
             default_port = max(other_ports.keys()) + 1
             print(f"  Suggesting {default_port} to avoid conflict.")
