@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from llm_mem.core.compaction import Compactor
 from llm_mem.core.extraction import EntityExtractor
 from llm_mem.core.queue import JobQueue
+from llm_mem.core.staleness import StalenessChecker
 from llm_mem.core.summarization import Summarizer
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ class WorkerRunner:
             "extract_entities": EntityExtractor(db, ollama, event_bus),
             "generate_summary": Summarizer(db, ollama),
             "compact": Compactor(db, config),
+            "staleness_check": StalenessChecker(db, ollama),
         }
 
     def start(self) -> None:
@@ -97,6 +99,7 @@ class WorkerRunner:
                 if self._extractions_since_summary >= 5:
                     self._maybe_write_session_summary()
                     self._extractions_since_summary = 0
+                self._enqueue_staleness_check(job)
         except Exception as exc:
             logger.error("Job %s failed: %s", job.id[:8], exc)
             self.queue.fail(job.id, str(exc))
@@ -108,7 +111,7 @@ class WorkerRunner:
         """Dispatch a job to the appropriate handler method."""
         if isinstance(handler, (EntityExtractor, Summarizer)):
             handler.process_pending()
-        elif isinstance(handler, Compactor):
+        elif isinstance(handler, (Compactor, StalenessChecker)):
             project_id = job.payload.get("project_id", "")
             handler.run(project_id)
         else:
@@ -148,6 +151,36 @@ class WorkerRunner:
             logger.info("Updated SESSION_SUMMARY.md")
         except Exception as exc:
             logger.warning("Failed to write SESSION_SUMMARY.md: %s", exc)
+
+    def _enqueue_staleness_check(self, job: Any) -> None:
+        """Queue a staleness check after extraction if we can infer the project."""
+        project_id = self._resolve_project_id(job)
+        if not project_id:
+            return
+        try:
+            self.queue.enqueue(
+                "staleness_check", {"project_id": project_id},
+            )
+        except Exception as exc:
+            logger.warning("Failed to enqueue staleness_check: %s", exc)
+
+    def _resolve_project_id(self, job: Any) -> str | None:
+        project_id = job.payload.get("project_id")
+        if project_id:
+            return str(project_id)
+        session_id = job.payload.get("session_id")
+        if not session_id:
+            return None
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT project_id FROM sessions WHERE id = ?", (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return str(row["project_id"])
+        finally:
+            conn.close()
 
     def _run_loop(self) -> None:
         """Main polling loop — runs in background thread."""

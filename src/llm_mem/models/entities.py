@@ -43,6 +43,9 @@ class Entity(BaseModel):
     key_points: str | None = None
     synopsis: str | None = None
     archived_at: str | None = None
+    stale: bool = False
+    superseded_by: str | None = None
+    staleness_reason: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -62,6 +65,9 @@ class Entity(BaseModel):
             "resolved_at": self.resolved_at,
             "metadata": json.dumps(self.metadata) if self.metadata else None,
             "archived_at": self.archived_at,
+            "stale": 1 if self.stale else 0,
+            "superseded_by": self.superseded_by,
+            "staleness_reason": self.staleness_reason,
         }
 
     @classmethod
@@ -71,4 +77,6 @@ class Entity(BaseModel):
             data["metadata"] = json.loads(data["metadata"])
         if "pinned" in data:
             data["pinned"] = bool(data["pinned"])
+        if "stale" in data:
+            data["stale"] = bool(data["stale"])
         return cls(**data)

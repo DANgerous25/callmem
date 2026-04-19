@@ -68,13 +68,14 @@ def _build_feed_items(
     entity_type: str | None = None,
     query: str | None = None,
     order: str = "desc",
+    include_stale: bool = False,
 ) -> list[dict[str, Any]]:
     """Build a unified feed of entities and sessions sorted by timestamp."""
     items: list[dict[str, Any]] = []
     project_name = engine.config.project.name or "default"
 
     if query:
-        results = engine.search(query, limit=100)
+        results = engine.search(query, limit=100, include_stale=include_stale)
         entity_ids = set()
         source_event_ids: list[str] = []
         for r in results:
@@ -105,7 +106,9 @@ def _build_feed_items(
             })
     else:
         type_filter = entity_type if entity_type else None
-        entities = engine.get_entities(type=type_filter, limit=100)
+        entities = engine.get_entities(
+            type=type_filter, limit=100, include_stale=include_stale,
+        )
         source_event_ids = []
         for e in entities:
             seid = e.get("source_event_id")
@@ -130,6 +133,9 @@ def _build_feed_items(
                 "status": e.get("status"),
                 "priority": e.get("priority"),
                 "pinned": e.get("pinned", False),
+                "stale": bool(e.get("stale", False)),
+                "superseded_by": e.get("superseded_by"),
+                "staleness_reason": e.get("staleness_reason"),
                 "agent_name": None,
                 "model_name": es_map.get("model_name"),
                 "session_id": es_map.get("session_id"),
@@ -226,8 +232,12 @@ async def feed_partial(request: Request) -> HTMLResponse:
     entity_type = request.query_params.get("type")
     query = request.query_params.get("q")
     order = request.query_params.get("order", "desc")
+    include_stale = request.query_params.get("include_stale") == "true"
 
-    items = _build_feed_items(engine, entity_type=entity_type, query=query, order=order)
+    items = _build_feed_items(
+        engine, entity_type=entity_type, query=query, order=order,
+        include_stale=include_stale,
+    )
 
     return render_template(
         request.app,

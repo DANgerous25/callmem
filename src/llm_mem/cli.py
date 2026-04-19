@@ -394,6 +394,81 @@ def status(project: Path) -> None:
         conn.close()
 
 
+@main.command("stale")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--check", "run_check", is_flag=True,
+              help="Run a staleness detection pass now.")
+@click.option("--reset", "reset_id", default=None,
+              help="Unmark an entity ID as stale.")
+@click.option("--limit", type=int, default=50)
+def stale_cmd(
+    project: Path, run_check: bool, reset_id: str | None, limit: int,
+) -> None:
+    """List, run, or reset entity staleness."""
+    from llm_mem.core.config import load_config
+    from llm_mem.core.database import Database
+    from llm_mem.core.engine import MemoryEngine
+
+    db_path = project / ".llm-mem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No llm-mem database found at {db_path}")
+        return
+
+    config = load_config(project)
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+
+    if reset_id:
+        updated = engine.mark_current(reset_id)
+        if updated is None:
+            click.echo(f"Entity not found: {reset_id}")
+            return
+        click.echo(
+            f"{reset_id}: stale={bool(updated.get('stale', 0))}"
+        )
+        return
+
+    if run_check:
+        from llm_mem.core.engine import _create_llm_client
+        from llm_mem.core.staleness import StalenessChecker
+
+        llm = _create_llm_client(config)
+        if llm is None:
+            click.echo("No LLM backend configured — skipping automatic check.")
+            click.echo("(Manual mark/unmark via MCP or --reset still works.)")
+            return
+        checker = StalenessChecker(db, llm)
+        decisions = checker.run(engine.project_id)
+        click.echo(f"Evaluated {len(decisions)} pair(s).")
+        for d in decisions:
+            click.echo(
+                f"  {d.older_id[:8]} → {d.verdict} "
+                f"(by {d.newer_id[:8]}): {d.reason}"
+            )
+        marked = sum(
+            1 for d in decisions
+            if d.verdict in ("superseded", "contradicted")
+        )
+        click.echo(f"Marked {marked} entity(ies) stale.")
+        return
+
+    stale = engine.list_stale_entities(limit=limit)
+    if not stale:
+        click.echo("No stale entities.")
+        return
+    click.echo(f"{len(stale)} stale entity(ies):")
+    for e in stale:
+        reason = e.get("staleness_reason") or "?"
+        sup = e.get("superseded_by")
+        sup_str = f" → {sup[:8]}" if sup else ""
+        click.echo(
+            f"  {e['id'][:8]} [{e['type']}] "
+            f"{(e.get('title') or '')[:60]} "
+            f"({reason}{sup_str})"
+        )
+
+
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--interval", type=int, default=5, help="Poll interval in seconds.")

@@ -98,10 +98,13 @@ class BriefingGenerator:
     ) -> Briefing:
         budget = max_tokens or self.config.briefing.max_tokens
 
-        all_entities = self._fetch_all_entities(project_id, focus)
+        all_entities, suppressed_stale = self._fetch_all_entities(
+            project_id, focus,
+        )
         sessions = self._fetch_sessions_with_entities(project_id)
         last_session = self._fetch_last_session(project_id)
         work_investment = self._compute_work_investment(project_id)
+        self._suppressed_stale_count = suppressed_stale
 
         if not all_entities and not last_session:
             now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
@@ -292,29 +295,45 @@ class BriefingGenerator:
         parts.append(
             f"  Web UI: http://{ui_host}:{ui_port}"
         )
+        suppressed = getattr(self, "_suppressed_stale_count", 0) or 0
+        if suppressed:
+            parts.append(
+                f"  ({suppressed} stale {'entity' if suppressed == 1 else 'entities'} "
+                f"suppressed — run 'llm-mem stale' to review)"
+            )
 
         return parts
 
     def _fetch_all_entities(
-        self, project_id: str, focus: str | None
-    ) -> list[dict[str, Any]]:
+        self, project_id: str, focus: str | None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return (entities, suppressed_stale_count).
+
+        Stale entities are excluded from the briefing by default. The
+        caller surfaces the suppressed count as a footer so the agent
+        knows memory was curated, not missing.
+        """
         conn = self.repo.db.connect()
         try:
             rows = conn.execute(
                 "SELECT * FROM entities WHERE project_id = ? "
-                "ORDER BY pinned DESC, created_at DESC LIMIT 100",
+                "ORDER BY pinned DESC, created_at DESC LIMIT 200",
                 (project_id,),
             ).fetchall()
             results = [dict(r) for r in rows]
         finally:
             conn.close()
+
         if focus:
             results = [
                 r for r in results
                 if focus.lower() in (r.get("title") or "").lower()
                 or focus.lower() in (r.get("content") or "").lower()
             ]
-        return results
+
+        stale_count = sum(1 for r in results if r.get("stale"))
+        results = [r for r in results if not r.get("stale")][:100]
+        return results, stale_count
 
     def _fetch_sessions_with_entities(
         self, project_id: str
