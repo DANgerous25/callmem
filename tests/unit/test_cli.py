@@ -125,6 +125,92 @@ class TestStatus:
         assert str(tmp_path) in result.output
 
 
+class TestAudit:
+    def test_clean_db_passes(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        result = runner.invoke(main, ["audit", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "no integrity issues" in result.output.lower()
+        assert "Cross-project entity/event mismatches: 0" in result.output
+
+    def test_missing_database_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["audit", "--project", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No callmem database found" in result.output
+
+    def test_cross_project_contamination_fails(self, tmp_path: Path) -> None:
+        """Seed contamination directly to verify the auditor catches it."""
+        import sqlite3
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        db_path = tmp_path / ".callmem" / "memory.db"
+
+        # Two projects; one event in project A; one entity claiming
+        # project B but linked to the project-A event.
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at, updated_at) VALUES "
+                "('pA', 'alpha', datetime('now'), datetime('now')), "
+                "('pB', 'beta',  datetime('now'), datetime('now'))",
+            )
+            conn.execute(
+                "INSERT INTO sessions (id, project_id, started_at, status) "
+                "VALUES ('sA', 'pA', datetime('now'), 'active')",
+            )
+            conn.execute(
+                "INSERT INTO events (id, session_id, project_id, type, "
+                "content, timestamp) "
+                "VALUES ('ev1', 'sA', 'pA', 'note', 'alpha event', "
+                "datetime('now'))",
+            )
+            conn.execute(
+                "INSERT INTO entities (id, project_id, source_event_id, "
+                "type, title, content, pinned, created_at, updated_at) "
+                "VALUES ('en1', 'pB', 'ev1', 'note', 'contaminated', "
+                "'contaminated', 0, datetime('now'), datetime('now'))",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = runner.invoke(main, ["audit", "--project", str(tmp_path)])
+        assert result.exit_code == 2
+        assert "Cross-project entity/event mismatches: 1" in result.output
+        assert "integrity issue" in result.output.lower()
+
+    def test_dangling_event_ref_fails(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        db_path = tmp_path / ".callmem" / "memory.db"
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at, updated_at) "
+                "VALUES ('pA', 'alpha', datetime('now'), datetime('now'))",
+            )
+            # Entity refers to an event that doesn't exist
+            conn.execute(
+                "INSERT INTO entities (id, project_id, source_event_id, "
+                "type, title, content, pinned, created_at, updated_at) "
+                "VALUES ('en1', 'pA', 'ghost', 'note', 'dangling', "
+                "'dangling', 0, datetime('now'), datetime('now'))",
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = runner.invoke(main, ["audit", "--project", str(tmp_path)])
+        assert result.exit_code == 2
+        assert "dangling source_event_id: 1" in result.output
+
+
 class TestVacuum:
     def test_reports_size_before_and_after(self, tmp_path: Path) -> None:
         runner = CliRunner()

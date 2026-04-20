@@ -1536,6 +1536,107 @@ def resolve(project: Path, dry_run: bool) -> None:
         click.echo(f"      matched by: {r['driver_title'][:70]}")
 
 
+# ── Audit command (database integrity checks) ────────────────────────
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def audit(project: Path) -> None:
+    """Report database integrity issues without making any changes.
+
+    Checks the invariants that the earlier llm-mem → callmem
+    contamination incidents violated: entity/event project_id
+    consistency, orphaned foreign keys, and per-project counts.
+    Exits non-zero if any issue is found so CI can gate on a clean
+    report.
+    """
+    from callmem.core.database import Database
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}", err=True)
+        raise SystemExit(1)
+
+    db = Database(db_path)
+    db.initialize()
+    conn = db.connect()
+    try:
+        cross_project = conn.execute(
+            "SELECT COUNT(*) c FROM entities e "
+            "JOIN events ev ON ev.id = e.source_event_id "
+            "WHERE e.project_id != ev.project_id",
+        ).fetchone()["c"]
+
+        dangling_event_refs = conn.execute(
+            "SELECT COUNT(*) c FROM entities e "
+            "WHERE e.source_event_id IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM events ev WHERE ev.id = e.source_event_id"
+            ")",
+        ).fetchone()["c"]
+
+        dangling_session_refs = conn.execute(
+            "SELECT COUNT(*) c FROM events ev "
+            "WHERE ev.session_id IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM sessions s WHERE s.id = ev.session_id"
+            ")",
+        ).fetchone()["c"]
+
+        orphaned_sessions = conn.execute(
+            "SELECT COUNT(*) c FROM sessions s "
+            "WHERE NOT EXISTS ("
+            "  SELECT 1 FROM events ev WHERE ev.session_id = s.id"
+            ") AND s.status = 'ended'",
+        ).fetchone()["c"]
+
+        per_project = conn.execute(
+            "SELECT p.name, "
+            "  (SELECT COUNT(*) FROM events ev WHERE ev.project_id = p.id) events, "
+            "  (SELECT COUNT(*) FROM entities e WHERE e.project_id = p.id) entities, "
+            "  (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id) sessions "
+            "FROM projects p ORDER BY p.name",
+        ).fetchall()
+    finally:
+        conn.close()
+
+    issues = cross_project + dangling_event_refs + dangling_session_refs
+
+    click.echo(f"callmem audit — {db_path}")
+    click.echo()
+    click.echo("Integrity:")
+    click.echo(
+        f"  Cross-project entity/event mismatches: {cross_project}",
+    )
+    click.echo(
+        f"  Entities with dangling source_event_id: {dangling_event_refs}",
+    )
+    click.echo(
+        f"  Events with dangling session_id:        {dangling_session_refs}",
+    )
+    click.echo(
+        f"  Ended sessions with no events:          {orphaned_sessions}  "
+        f"(informational)",
+    )
+    click.echo()
+    click.echo("Per-project counts:")
+    for r in per_project:
+        click.echo(
+            f"  {r['name']}: events={r['events']} "
+            f"entities={r['entities']} sessions={r['sessions']}",
+        )
+
+    if issues:
+        click.echo()
+        click.echo(
+            f"FAIL: {issues} integrity issue(s) found.",
+            err=True,
+        )
+        raise SystemExit(2)
+    click.echo()
+    click.echo("OK: no integrity issues.")
+
+
 # ── Vacuum command (SQLite space reclamation) ────────────────────────
 
 
