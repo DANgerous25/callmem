@@ -19,5 +19,9 @@
   },
   "extraction": {
     "batch_size": 10
+  },
+  "ingestion": {
+    "skip_tools": [],
+    "skip_patterns": []
   }
 }

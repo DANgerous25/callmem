@@ -458,6 +458,175 @@ class MemoryEngine:
         """Return a copy of the file-read-gate counters."""
         return dict(self._file_context_stats)
 
+    def check_context(
+        self,
+        message_count: int,
+        estimated_tokens: int = 0,
+    ) -> dict[str, Any]:
+        """Advise the agent on whether to compress older context.
+
+        The model-side context window is not visible from here, so this
+        is a recommendation: if the agent's own estimate (messages or
+        tokens) crosses the configured threshold, return
+        ``compress_recommended``; otherwise ``ok``.
+        """
+        cfg = self.config.endless_mode
+        context_limit = cfg.context_limit
+        if context_limit is None:
+            context_limit = self.config.ollama.num_ctx
+        if context_limit is None:
+            context_limit = 128_000
+
+        threshold = cfg.compress_threshold
+
+        # Prefer the agent's own token estimate; fall back to a
+        # coarse 500 tok/msg heuristic if only message_count was given.
+        TOKENS_PER_MESSAGE = 500
+        effective_tokens = (
+            estimated_tokens if estimated_tokens > 0
+            else message_count * TOKENS_PER_MESSAGE
+        )
+        usage = (
+            min(1.0, effective_tokens / context_limit)
+            if context_limit > 0 else 0.0
+        )
+
+        base = {
+            "enabled": cfg.enabled,
+            "context_limit": context_limit,
+            "compress_threshold": threshold,
+            "chunk_size": cfg.chunk_size,
+            "message_count": message_count,
+            "estimated_tokens": estimated_tokens,
+            "effective_tokens": effective_tokens,
+            "usage_ratio": round(usage, 3),
+        }
+
+        if not cfg.enabled:
+            base["status"] = "disabled"
+            base["action"] = (
+                "Endless mode disabled — no compression recommended."
+            )
+            return base
+
+        if usage >= threshold:
+            free_hint = cfg.chunk_size * TOKENS_PER_MESSAGE
+            base["status"] = "compress_recommended"
+            base["reason"] = (
+                f"Session has {message_count} messages "
+                f"(~{effective_tokens} tokens, "
+                f"{int(usage * 100)}% of the {context_limit}-token "
+                f"window), above the "
+                f"{int(threshold * 100)}% threshold. Compressing the "
+                f"oldest {cfg.chunk_size} messages will free context."
+            )
+            base["action"] = (
+                "Summarize the oldest ~{n} messages and call "
+                "mem_compress_context with the summary."
+            ).format(n=cfg.chunk_size)
+            base["recommended_chunk_size"] = cfg.chunk_size
+            base["free_tokens_hint"] = free_hint
+            return base
+
+        base["status"] = "ok"
+        base["action"] = (
+            "Context is under the compression threshold. Continue."
+        )
+        return base
+
+    def compress_context(
+        self,
+        summary: str,
+        message_range: str = "",
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Store an agent-provided context summary as a session milestone.
+
+        Persists the summary as a cross-session-style ``summary`` record
+        scoped to the active (or given) session and updates the session
+        metadata counter. Returns a marker the agent should drop into
+        its conversation in place of the compressed exchanges.
+        """
+        if not summary.strip():
+            raise ValueError("summary is required")
+
+        if session_id is None:
+            session = self.get_active_session()
+            if session is None:
+                raise ValueError(
+                    "No active session — call mem_session_start first.",
+                )
+            session_id = session.id
+        else:
+            session = self.get_session(session_id)
+            if session is None:
+                raise ValueError(f"Session {session_id} not found")
+
+        import json
+        from datetime import datetime
+
+        from ulid import ULID
+
+        from callmem.compat import UTC
+
+        now = datetime.now(UTC).isoformat()
+        summary_id = str(ULID())
+        meta_blob = json.dumps(
+            {"source": "endless_mode", "message_range": message_range or None},
+        )
+
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO summaries "
+                "(id, project_id, session_id, level, content, "
+                "event_range_start, event_range_end, event_count, "
+                "token_count, created_at, metadata) "
+                "VALUES (?, ?, ?, 'chunk', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    summary_id,
+                    session.project_id,
+                    session_id,
+                    summary,
+                    message_range or None,
+                    message_range or None,
+                    None,
+                    len(summary) // 4,
+                    now,
+                    meta_blob,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        metadata = dict(session.metadata or {})
+        compressions = int(metadata.get("compression_events", 0)) + 1
+        metadata["compression_events"] = compressions
+        metadata["last_compression_at"] = now
+        session.metadata = metadata
+        self.repo.update_session(session)
+
+        marker = (
+            f"[Context compressed — range={message_range or 'oldest'} "
+            f"summarized by callmem. Use mem_search to recall details.]"
+        )
+
+        self._publish("context_compressed", {
+            "session_id": session_id,
+            "summary_id": summary_id,
+            "compression_events": compressions,
+        })
+
+        return {
+            "status": "compressed",
+            "session_id": session_id,
+            "summary_id": summary_id,
+            "compression_events": compressions,
+            "marker": marker,
+            "message_range": message_range,
+        }
+
     def get_file_context(
         self, path: str, include_content: bool = False,
     ) -> dict[str, Any]:

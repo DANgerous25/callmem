@@ -434,6 +434,97 @@ class TestFileContext:
         assert result["current_content"] == "hello from disk"
 
 
+class TestEndlessMode:
+    def test_check_context_under_threshold_returns_ok(
+        self, memory_db: Database,
+    ) -> None:
+        config = Config(
+            endless_mode={"enabled": True, "context_limit": 8000},
+        )
+        engine = MemoryEngine(memory_db, config)
+        result = engine.check_context(
+            message_count=5, estimated_tokens=1000,
+        )
+        assert result["status"] == "ok"
+
+    def test_check_context_over_threshold_recommends_compression(
+        self, memory_db: Database,
+    ) -> None:
+        config = Config(
+            endless_mode={
+                "enabled": True,
+                "context_limit": 8000,
+                "compress_threshold": 0.8,
+            },
+        )
+        engine = MemoryEngine(memory_db, config)
+        result = engine.check_context(
+            message_count=200, estimated_tokens=7000,
+        )
+        assert result["status"] == "compress_recommended"
+        assert result["usage_ratio"] >= 0.8
+        assert "compress" in result["action"].lower()
+
+    def test_check_context_disabled_never_recommends(
+        self, memory_db: Database,
+    ) -> None:
+        config = Config(
+            endless_mode={"enabled": False, "context_limit": 8000},
+        )
+        engine = MemoryEngine(memory_db, config)
+        result = engine.check_context(
+            message_count=10_000, estimated_tokens=1_000_000,
+        )
+        assert result["status"] == "disabled"
+
+    def test_compress_context_persists_summary_and_marker(
+        self, memory_db: Database,
+    ) -> None:
+        engine = MemoryEngine(memory_db, Config())
+        session = engine.start_session()
+        result = engine.compress_context(
+            summary="Agent summary of messages 1-30: decided to use JWT.",
+            message_range="messages 1-30",
+        )
+        assert result["status"] == "compressed"
+        assert result["session_id"] == session.id
+        assert result["compression_events"] == 1
+        assert "compressed" in result["marker"].lower()
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT content, session_id FROM summaries "
+                "WHERE id = ?",
+                (result["summary_id"],),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["session_id"] == session.id
+        assert "JWT" in row["content"]
+
+        refreshed = engine.get_session(session.id)
+        assert refreshed is not None
+        assert refreshed.metadata is not None
+        assert refreshed.metadata["compression_events"] == 1
+
+    def test_compress_context_without_active_session_errors(
+        self, memory_db: Database,
+    ) -> None:
+        engine = MemoryEngine(memory_db, Config())
+        with pytest.raises(ValueError, match="No active session"):
+            engine.compress_context(summary="anything")
+
+    def test_compress_context_rejects_empty_summary(
+        self, memory_db: Database,
+    ) -> None:
+        engine = MemoryEngine(memory_db, Config())
+        engine.start_session()
+        with pytest.raises(ValueError, match="summary is required"):
+            engine.compress_context(summary="   ")
+
+
 class TestProjectAutoCreation:
     def test_project_created_on_first_use(self, engine: MemoryEngine) -> None:
         assert engine.project_id is not None

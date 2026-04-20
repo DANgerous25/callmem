@@ -147,9 +147,23 @@ class BriefingGenerator:
             _estimate_tokens(e.get("content") or "") for e in all_entities
         )
 
-        if work_investment > 0 and read_tokens > 0:
+        # Two-pass render: pass 1 measures the rendered briefing so
+        # "compression savings" can report the honest ratio of what the
+        # agent actually reads (the final briefing, including its
+        # envelope and the 2000-token budget truncation) vs. the total
+        # captured work. Pass 2 re-renders with the correct percentage.
+        provisional = "\n".join(self._build_briefing_parts(
+            project_name, all_entities, sessions,
+            last_session, observations_loaded, read_tokens,
+            work_investment, 0.0,
+        ))
+        if _estimate_tokens(provisional) > budget:
+            provisional = _truncate_to_tokens(provisional, budget)
+        briefing_tokens = _estimate_tokens(provisional)
+
+        if work_investment > 0 and briefing_tokens > 0:
             savings_pct = round(
-                (1 - read_tokens / work_investment) * 100, 1
+                (1 - briefing_tokens / work_investment) * 100, 1
             )
         else:
             savings_pct = 0.0
@@ -228,14 +242,15 @@ class BriefingGenerator:
         parts.append("")
         parts.append(
             f"  {_BULLET} {observations_loaded} observations loaded "
-            f"({read_tokens:,} tokens)"
+            f"({read_tokens:,} tokens of entity content)"
         )
         parts.append(
             f"  {_BULLET} {work_investment:,} tokens of captured work"
         )
         if savings_pct > 0:
             parts.append(
-                f"  {_BULLET} {savings_pct}% compression savings"
+                f"  {_BULLET} {savings_pct}% savings — briefing "
+                f"compresses project history to fit the token budget"
             )
         parts.append("")
 

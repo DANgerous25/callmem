@@ -10,6 +10,8 @@ import pytest
 from callmem.core.engine import MemoryEngine
 from callmem.mcp.tools import (
     TOOL_DEFINITIONS,
+    handle_check_context,
+    handle_compress_context,
     handle_get_entities,
     handle_get_tasks,
     handle_ingest,
@@ -39,8 +41,9 @@ class TestToolDefinitions:
             "mem_session_start", "mem_session_end", "mem_ingest",
             "mem_search", "mem_get_briefing", "mem_get_tasks", "mem_pin",
             "mem_search_index", "mem_timeline", "mem_get_entities",
-            "mem_search_by_file", "mem_file_context", "mem_vault_review",
-            "mem_mark_stale", "mem_mark_current",
+            "mem_search_by_file", "mem_file_context",
+            "mem_check_context", "mem_compress_context",
+            "mem_vault_review", "mem_mark_stale", "mem_mark_current",
         }
         assert names == expected
 
@@ -319,3 +322,92 @@ class TestPin:
         engine = _make_engine(memory_db)
         with pytest.raises(ValueError, match="Entity not found"):
             handle_pin(engine, {"entity_id": "nonexistent", "pinned": True})
+
+
+class TestCheckContext:
+    def _engine_with_limit(
+        self, memory_db: Database, context_limit: int = 8000,
+        enabled: bool = True, threshold: float = 0.8,
+    ) -> MemoryEngine:
+        config = Config(endless_mode={
+            "enabled": enabled,
+            "context_limit": context_limit,
+            "compress_threshold": threshold,
+        })
+        return MemoryEngine(memory_db, config)
+
+    def test_under_threshold_ok(self, memory_db: Database) -> None:
+        engine = self._engine_with_limit(memory_db)
+        result = handle_check_context(
+            engine, {"message_count": 5, "estimated_tokens": 1000},
+        )
+        data = _parse_result(result)
+        assert data["status"] == "ok"
+        assert data["usage_ratio"] < 0.8
+        assert data["context_limit"] == 8000
+
+    def test_over_threshold_recommends_compression(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_limit(memory_db)
+        result = handle_check_context(
+            engine, {"message_count": 200, "estimated_tokens": 7000},
+        )
+        data = _parse_result(result)
+        assert data["status"] == "compress_recommended"
+        assert data["usage_ratio"] >= 0.8
+        assert data["free_tokens_hint"] > 0
+        assert "mem_compress_context" in data["action"]
+
+    def test_disabled_returns_disabled_status(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_limit(memory_db, enabled=False)
+        result = handle_check_context(
+            engine, {"message_count": 500, "estimated_tokens": 1_000_000},
+        )
+        data = _parse_result(result)
+        assert data["status"] == "disabled"
+
+    def test_missing_tokens_falls_back_to_message_heuristic(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_limit(memory_db, context_limit=1000)
+        result = handle_check_context(engine, {"message_count": 20})
+        data = _parse_result(result)
+        assert data["effective_tokens"] == 20 * 500
+        assert data["status"] == "compress_recommended"
+
+
+class TestCompressContext:
+    def test_empty_summary_returns_error(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        result = handle_compress_context(engine, {"summary": ""})
+        data = _parse_result(result)
+        assert "error" in data
+
+    def test_no_active_session_returns_error(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        result = handle_compress_context(
+            engine, {"summary": "some summary"},
+        )
+        data = _parse_result(result)
+        assert "error" in data
+        assert "active session" in data["error"].lower()
+
+    def test_persists_summary_and_returns_marker(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        handle_session_start(engine, {"agent_name": "test"})
+        result = handle_compress_context(engine, {
+            "summary": "Decided to use JWT for auth (messages 1-30).",
+            "message_range": "messages 1-30",
+        })
+        data = _parse_result(result)
+        assert data["status"] == "compressed"
+        assert data["compression_events"] == 1
+        assert "compressed" in data["marker"].lower()
+        assert data["message_range"] == "messages 1-30"

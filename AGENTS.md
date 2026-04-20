@@ -28,6 +28,7 @@ callmem captures every Claude Code / OpenCode event and extracts entities (decis
 - Something surprising happens — `mem_ingest` type `"discovery"` or `"failure"`
 - You need to recall past work — `mem_search query=...` or `mem_get_entities ids=[...]` (short IDs from the briefing work, e.g. `#F5AVDQ25`)
 - **Before re-reading a file you've worked on before** — call `mem_file_context path=<file>` first. If the returned timeline covers what you need, skip the raw read (typical saving: ~95% of tokens).
+- **Long sessions (50+ messages)** — every ~30 messages, call `mem_check_context message_count=<n>` (pass `estimated_tokens` too if you can). If it returns `compress_recommended`, summarize the oldest ~30 messages (preserve decisions, TODOs, and failures verbatim) and call `mem_compress_context summary=<text> message_range="messages 1-30"`. Replace the compressed span in your context with the marker it returns, and use `mem_search` to recall specifics later.
 
 Raw events are captured automatically — focus ingest calls on decisions/todos, not transcripts.
 
