@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}callmem — Files{% endblock %}
+{% block content %}
+<h2>Files</h2>
+
+<div class="stat-grid">
+    <div class="stat-card">
+        <div class="label">file_context calls</div>
+        <div class="value">{{ stats.calls | format_number }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Hits (timeline returned)</div>
+        <div class="value">{{ stats.hits | format_number }}</div>
+    </div>
+    <div class="stat-card">
+        <div class="label">Misses (no observations)</div>
+        <div class="value">{{ stats.misses | format_number }}</div>
+    </div>
+</div>
+
+{% if files %}
+<table>
+    <thead>
+        <tr>
+            <th>File</th>
+            <th>Observations</th>
+            <th>Last modified</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for f in files %}
+    <tr>
+        <td><a href="/files/timeline?path={{ f.file_path }}"><code>{{ f.file_path }}</code></a></td>
+        <td>{{ f.observation_count }}</td>
+        <td>{{ f.last_modified | relative_time }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<article>No files tracked yet. File observations appear once entities are linked to paths.</article>
+{% endif %}
+{% endblock %}

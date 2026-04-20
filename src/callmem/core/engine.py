@@ -5,12 +5,16 @@ All adapters (MCP, REST, direct Python) route through this class.
 
 from __future__ import annotations
 
+import fnmatch
+import logging
 from typing import TYPE_CHECKING, Any
 
 from callmem.core.repository import Repository
 from callmem.models.events import Event, EventInput, EventType
 from callmem.models.projects import Project
 from callmem.models.sessions import Session
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
@@ -97,6 +101,12 @@ class MemoryEngine:
         from callmem.core.queue import JobQueue
 
         self.queue = JobQueue(db)
+        self._ingestion_stats: dict[str, int] = {"skipped_tool_calls": 0}
+        self._file_context_stats: dict[str, int] = {
+            "calls": 0,
+            "hits": 0,
+            "misses": 0,
+        }
 
     @property
     def project_id(self) -> str:
@@ -220,6 +230,9 @@ class MemoryEngine:
 
         stored: list[Event] = []
         for inp in events:
+            if self._should_skip_tool_call(inp):
+                self._ingestion_stats["skipped_tool_calls"] += 1
+                continue
             event = self._create_event(session, inp)
             if event is not None:
                 stored.append(event)
@@ -436,6 +449,127 @@ class MemoryEngine:
         """Publish an event to the SSE event bus if available."""
         if self.event_bus is not None:
             self.event_bus.publish(event_type, data)
+
+    def ingestion_stats(self) -> dict[str, int]:
+        """Return a copy of the running ingestion counters."""
+        return dict(self._ingestion_stats)
+
+    def file_context_stats(self) -> dict[str, int]:
+        """Return a copy of the file-read-gate counters."""
+        return dict(self._file_context_stats)
+
+    def get_file_context(
+        self, path: str, include_content: bool = False,
+    ) -> dict[str, Any]:
+        """Return the observation timeline callmem has for ``path``.
+
+        When ``has_observations`` is False the agent should read the
+        file normally; otherwise the timeline is often enough to skip
+        the raw read.
+        """
+        self._file_context_stats["calls"] += 1
+
+        rows = self.repo.get_file_timeline(path)
+
+        if not rows:
+            self._file_context_stats["misses"] += 1
+            result: dict[str, Any] = {
+                "path": path,
+                "has_observations": False,
+                "observation_count": 0,
+                "timeline": [],
+                "recommendation": (
+                    "No prior observations — read the file normally."
+                ),
+            }
+            if include_content:
+                result["current_content"] = self._read_file_safely(path)
+            return result
+
+        self._file_context_stats["hits"] += 1
+
+        timeline_cap = 20
+        timeline = [
+            {
+                "id": r["id"],
+                "date": (r.get("created_at") or "")[:10],
+                "type": r.get("type"),
+                "title": r.get("title") or "",
+                "summary": r.get("synopsis") or r.get("title") or "",
+            }
+            for r in rows[:timeline_cap]
+        ]
+        truncated = len(rows) - timeline_cap if len(rows) > timeline_cap else 0
+
+        first_seen = (rows[0].get("created_at") or "")[:10]
+        last_modified = (rows[-1].get("created_at") or "")[:10]
+        latest = rows[-1]
+        current_state = (
+            latest.get("synopsis") or latest.get("key_points")
+            or latest.get("title") or ""
+        )
+
+        result = {
+            "path": path,
+            "has_observations": True,
+            "observation_count": len(rows),
+            "first_seen": first_seen,
+            "last_modified": last_modified,
+            "timeline": timeline,
+            "timeline_truncated": truncated,
+            "current_state": current_state,
+            "recommendation": (
+                "Timeline covers recorded changes. Raw read only "
+                "needed for exact line-level details."
+            ),
+        }
+        if include_content:
+            result["current_content"] = self._read_file_safely(path)
+        return result
+
+    @staticmethod
+    def _read_file_safely(path: str) -> str | None:
+        """Best-effort file read. Returns None if the file can't be opened."""
+        from pathlib import Path
+
+        try:
+            p = Path(path)
+            if not p.is_file():
+                return None
+            return p.read_text(encoding="utf-8", errors="replace")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def _should_skip_tool_call(self, inp: EventInput) -> bool:
+        """Return True if this event matches the configured tool filter.
+
+        Only ``tool_call`` events are eligible — other event types
+        (prompt, response, etc.) are always ingested.
+        """
+        if inp.type != "tool_call":
+            return False
+
+        skip_tools = self.config.ingestion.skip_tools
+        skip_patterns = self.config.ingestion.skip_patterns
+        if not skip_tools and not skip_patterns:
+            return False
+
+        content = inp.content or ""
+        tool_name = content.split("(", 1)[0].strip()
+
+        if tool_name and tool_name in skip_tools:
+            logger.debug("Skipped tool call: %s (matches skip_tools)", tool_name)
+            return True
+
+        for pattern in skip_patterns:
+            if fnmatch.fnmatchcase(content, pattern):
+                logger.debug(
+                    "Skipped tool call: %s (matches skip_patterns=%r)",
+                    tool_name or content[:40], pattern,
+                )
+                return True
+
+        return False
 
     def _ensure_active_session(self) -> Session:
         """Return the active session or create one if auto_start is on."""

@@ -558,6 +558,74 @@ class Repository:
         finally:
             conn.close()
 
+    def list_files_with_observations(
+        self, project_id: str, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """List tracked files for a project with observation counts.
+
+        Only counts live entities (not stale, not archived). Ordered by
+        most-recently observed first.
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT ef.file_path AS file_path, "
+                "COUNT(*) AS observation_count, "
+                "MAX(e.created_at) AS last_modified "
+                "FROM entity_files ef "
+                "JOIN entities e ON e.id = ef.entity_id "
+                "WHERE e.project_id = ? "
+                "AND COALESCE(e.stale, 0) = 0 "
+                "AND e.archived_at IS NULL "
+                "GROUP BY ef.file_path "
+                "ORDER BY last_modified DESC "
+                "LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_file_timeline(
+        self, file_path: str, limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return entities linked to a file, oldest-first, excluding stale.
+
+        Tries an exact match first, then falls back to any path whose
+        basename matches (covers `./foo.py` vs `src/foo.py` variants).
+        """
+        import os
+
+        normalized = file_path.lstrip("./") or file_path
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.*, ef.file_path AS matched_path "
+                "FROM entities e "
+                "JOIN entity_files ef ON e.id = ef.entity_id "
+                "WHERE (ef.file_path = ? OR ef.file_path = ?) "
+                "AND COALESCE(e.stale, 0) = 0 "
+                "AND e.archived_at IS NULL "
+                "ORDER BY e.created_at ASC LIMIT ?",
+                (file_path, normalized, limit),
+            ).fetchall()
+            if not rows:
+                basename = os.path.basename(normalized)
+                if basename:
+                    rows = conn.execute(
+                        "SELECT e.*, ef.file_path AS matched_path "
+                        "FROM entities e "
+                        "JOIN entity_files ef ON e.id = ef.entity_id "
+                        "WHERE (ef.file_path = ? OR ef.file_path LIKE ?) "
+                        "AND COALESCE(e.stale, 0) = 0 "
+                        "AND e.archived_at IS NULL "
+                        "ORDER BY e.created_at ASC LIMIT ?",
+                        (basename, f"%/{basename}", limit),
+                    ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def get_timeline(
         self,
         project_id: str,

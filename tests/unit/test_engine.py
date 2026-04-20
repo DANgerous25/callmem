@@ -255,6 +255,185 @@ class TestFTS5:
             conn.close()
 
 
+class TestToolFiltering:
+    def _engine_with_filters(
+        self,
+        memory_db: Database,
+        skip_tools: list[str] | None = None,
+        skip_patterns: list[str] | None = None,
+    ) -> MemoryEngine:
+        config = Config(
+            ingestion={
+                "skip_tools": skip_tools or [],
+                "skip_patterns": skip_patterns or [],
+            },
+        )
+        return MemoryEngine(memory_db, config)
+
+    def test_skip_tools_drops_matching_call(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_filters(memory_db, skip_tools=["Glob"])
+        engine.start_session()
+        stored = engine.ingest([
+            EventInput(type="tool_call", content='Glob({"pattern":"*.py"})'),
+            EventInput(type="tool_call", content='Read({"path":"a.py"})'),
+        ])
+        assert len(stored) == 1
+        assert stored[0].content.startswith("Read(")
+        assert engine.ingestion_stats()["skipped_tool_calls"] == 1
+
+    def test_skip_patterns_glob_match(self, memory_db: Database) -> None:
+        engine = self._engine_with_filters(
+            memory_db, skip_patterns=["Read(*node_modules*)"],
+        )
+        engine.start_session()
+        stored = engine.ingest([
+            EventInput(
+                type="tool_call",
+                content='Read({"path":"./node_modules/foo.js"})',
+            ),
+            EventInput(
+                type="tool_call",
+                content='Read({"path":"src/main.py"})',
+            ),
+        ])
+        assert len(stored) == 1
+        assert "main.py" in stored[0].content
+        assert engine.ingestion_stats()["skipped_tool_calls"] == 1
+
+    def test_non_tool_events_never_skipped(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_filters(
+            memory_db,
+            skip_tools=["prompt", "response"],
+            skip_patterns=["*"],
+        )
+        engine.start_session()
+        stored = engine.ingest([
+            EventInput(type="prompt", content="prompt body"),
+            EventInput(type="response", content="response body"),
+        ])
+        assert len(stored) == 2
+        assert engine.ingestion_stats()["skipped_tool_calls"] == 0
+
+    def test_default_config_skips_nothing(self, engine: MemoryEngine) -> None:
+        engine.start_session()
+        stored = engine.ingest([
+            EventInput(type="tool_call", content='Glob({"pattern":"*.py"})'),
+        ])
+        assert len(stored) == 1
+        assert engine.ingestion_stats()["skipped_tool_calls"] == 0
+
+
+class TestFileContext:
+    def _seed_entity_linked_to(
+        self, engine: MemoryEngine, file_path: str,
+        entity_type: str = "feature",
+        title: str = "Implemented something",
+        synopsis: str | None = None,
+        created_at: str | None = None,
+    ) -> str:
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=engine.project_id,
+            source_event_id=None,
+            type=entity_type,
+            title=title,
+            content=title,
+            synopsis=synopsis,
+        )
+        if created_at is not None:
+            entity.created_at = created_at
+            entity.updated_at = created_at
+        row = entity.to_row()
+        conn = engine.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, archived_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"], row["status"],
+                    row["priority"], row["pinned"], row["created_at"],
+                    row["updated_at"], row["resolved_at"], row["metadata"],
+                    row["archived_at"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO entity_files (entity_id, file_path, relation) "
+                "VALUES (?, ?, 'related')",
+                (row["id"], file_path),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return row["id"]
+
+    def test_unknown_file_returns_no_observations(
+        self, engine: MemoryEngine,
+    ) -> None:
+        result = engine.get_file_context("src/never_touched.py")
+        assert result["has_observations"] is False
+        assert result["observation_count"] == 0
+        assert result["timeline"] == []
+        assert engine.file_context_stats() == {
+            "calls": 1, "hits": 0, "misses": 1,
+        }
+
+    def test_known_file_returns_ordered_timeline(
+        self, engine: MemoryEngine,
+    ) -> None:
+        path = "src/auth/middleware.py"
+        self._seed_entity_linked_to(
+            engine, path, entity_type="feature",
+            title="Created JWT middleware", created_at="2026-04-01T10:00:00",
+        )
+        self._seed_entity_linked_to(
+            engine, path, entity_type="bugfix",
+            title="Fixed token expiry", created_at="2026-04-05T12:00:00",
+            synopsis="Off-by-one in expiry check",
+        )
+
+        result = engine.get_file_context(path)
+        assert result["has_observations"] is True
+        assert result["observation_count"] == 2
+        assert result["first_seen"] == "2026-04-01"
+        assert result["last_modified"] == "2026-04-05"
+        assert [row["type"] for row in result["timeline"]] == [
+            "feature", "bugfix",
+        ]
+        assert engine.file_context_stats()["hits"] == 1
+
+    def test_basename_fallback_matches_different_relative_path(
+        self, engine: MemoryEngine,
+    ) -> None:
+        self._seed_entity_linked_to(
+            engine, "src/auth/middleware.py",
+            title="Only match via basename",
+        )
+        result = engine.get_file_context("./middleware.py")
+        assert result["has_observations"] is True
+        assert result["observation_count"] == 1
+
+    def test_include_content_returns_file_bytes_when_present(
+        self, engine: MemoryEngine, tmp_path,
+    ) -> None:
+        real_file = tmp_path / "example.txt"
+        real_file.write_text("hello from disk")
+        result = engine.get_file_context(
+            str(real_file), include_content=True,
+        )
+        assert result["has_observations"] is False
+        assert result["current_content"] == "hello from disk"
+
+
 class TestProjectAutoCreation:
     def test_project_created_on_first_use(self, engine: MemoryEngine) -> None:
         assert engine.project_id is not None

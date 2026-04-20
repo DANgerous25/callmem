@@ -39,7 +39,7 @@ class TestToolDefinitions:
             "mem_session_start", "mem_session_end", "mem_ingest",
             "mem_search", "mem_get_briefing", "mem_get_tasks", "mem_pin",
             "mem_search_index", "mem_timeline", "mem_get_entities",
-            "mem_search_by_file", "mem_vault_review",
+            "mem_search_by_file", "mem_file_context", "mem_vault_review",
             "mem_mark_stale", "mem_mark_current",
         }
         assert names == expected
@@ -232,6 +232,86 @@ class TestGetEntities:
         result = handle_get_entities(engine, {"ids": [f"#{eid[-8:]}"]})
         data = _parse_result(result)
         assert data["count"] == 1
+
+
+class TestFileContextTool:
+    def _seed_entity_with_file(
+        self, memory_db: Database, engine: MemoryEngine, path: str,
+    ) -> None:
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=engine.project_id,
+            source_event_id=None,
+            type="feature",
+            title="Wrote JWT middleware",
+            content="Wrote JWT middleware",
+        )
+        row = entity.to_row()
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, archived_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"], row["status"],
+                    row["priority"], row["pinned"], row["created_at"],
+                    row["updated_at"], row["resolved_at"], row["metadata"],
+                    row["archived_at"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO entity_files (entity_id, file_path, relation) "
+                "VALUES (?, ?, 'related')",
+                (row["id"], path),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_tool_is_registered(self) -> None:
+        from callmem.mcp.tools import _HANDLERS
+
+        assert "mem_file_context" in _HANDLERS
+
+    def test_missing_path_returns_error(self, memory_db: Database) -> None:
+        from callmem.mcp.tools import handle_file_context
+
+        engine = _make_engine(memory_db)
+        result = handle_file_context(engine, {})
+        data = _parse_result(result)
+        assert "error" in data
+
+    def test_unknown_file_not_an_error(self, memory_db: Database) -> None:
+        from callmem.mcp.tools import handle_file_context
+
+        engine = _make_engine(memory_db)
+        result = handle_file_context(engine, {"path": "src/x.py"})
+        data = _parse_result(result)
+        assert data["has_observations"] is False
+        assert data["observation_count"] == 0
+
+    def test_known_file_returns_timeline(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.mcp.tools import handle_file_context
+
+        engine = _make_engine(memory_db)
+        self._seed_entity_with_file(
+            memory_db, engine, "src/auth/middleware.py",
+        )
+        result = handle_file_context(
+            engine, {"path": "src/auth/middleware.py"},
+        )
+        data = _parse_result(result)
+        assert data["has_observations"] is True
+        assert data["observation_count"] == 1
+        assert data["timeline"][0]["type"] == "feature"
 
 
 class TestPin:

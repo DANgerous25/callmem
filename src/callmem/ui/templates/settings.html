@@ -82,6 +82,18 @@
     </label>
 </fieldset>
 
+<fieldset>
+    <legend>Ingestion filters</legend>
+    <label>
+        Skip tools <small>(comma-separated tool names — matches tool_call events only)</small>
+        <input type="text" name="ingestion_skip_tools" value="{{ form.ingestion_skip_tools }}" placeholder="Glob, TodoWrite, BashOutput">
+    </label>
+    <label>
+        Skip patterns <small>(comma-separated globs on event content, e.g. <code>Read(*node_modules*)</code>)</small>
+        <input type="text" name="ingestion_skip_patterns" value="{{ form.ingestion_skip_patterns }}">
+    </label>
+</fieldset>
+
 <button type="submit">Save Settings</button>
 </form>
 

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}callmem — {{ path }}{% endblock %}
+{% block content %}
+<p><a href="/files">&larr; Files</a></p>
+<h2><code>{{ path }}</code></h2>
+
+{% if not context %}
+<article>No path specified.</article>
+{% elif not context.has_observations %}
+<article>
+    <strong>No observations for this file.</strong>
+    <p>{{ context.recommendation }}</p>
+</article>
+{% else %}
+<p>
+    <strong>{{ context.observation_count }}</strong> observations
+    &middot; first seen {{ context.first_seen }}
+    &middot; last modified {{ context.last_modified }}
+</p>
+<p><em>{{ context.recommendation }}</em></p>
+
+{% if context.current_state %}
+<h3>Current state</h3>
+<article>{{ context.current_state }}</article>
+{% endif %}
+
+<h3>Timeline</h3>
+<table>
+    <thead>
+        <tr><th>Date</th><th>Type</th><th>Summary</th></tr>
+    </thead>
+    <tbody>
+    {% for e in context.timeline %}
+    <tr>
+        <td>{{ e.date }}</td>
+        <td><span class="badge badge-{{ e.type }}">{{ e.type }}</span></td>
+        <td>{{ e.summary }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% if context.timeline_truncated and context.timeline_truncated > 0 %}
+<p><small>{{ context.timeline_truncated }} additional observations not shown.</small></p>
+{% endif %}
+{% endif %}
+{% endblock %}
