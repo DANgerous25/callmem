@@ -460,3 +460,153 @@ class TestAutoResolution:
         ).fetchone()
         conn.close()
         assert updated["status"] == "open"
+
+
+class TestSweepResolutions:
+    """Retroactive sweep closes items the live hook missed."""
+
+    @staticmethod
+    def _insert_entity(
+        db: Database,
+        project_id: str,
+        type: str,
+        title: str,
+        status: str | None = None,
+        stale: int = 0,
+    ) -> str:
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=project_id, type=type, title=title,
+            content=title, status=status,
+        )
+        row = entity.to_row()
+        conn = db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, "
+                "archived_at, stale) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"], row["status"],
+                    row["priority"], row["pinned"], row["created_at"],
+                    row["updated_at"], row["resolved_at"], row["metadata"],
+                    row["archived_at"], stale,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return entity.id
+
+    def test_sweep_closes_todo_missed_by_live_hook(
+        self, memory_db: Database,
+    ) -> None:
+        """Driver inserted before the TODO — live hook misses, sweep catches."""
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        # Feature inserted first (as if extracted before TODO existed)
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+        )
+        # TODO inserted afterwards — never matched by live auto-resolve
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector",
+            status="open",
+        )
+
+        records = extractor.sweep_resolutions(engine.project_id)
+        assert any(r["id"] == todo_id for r in records)
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        assert row["status"] == "done"
+
+    def test_sweep_dry_run_does_not_modify(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+        )
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector",
+            status="open",
+        )
+
+        records = extractor.sweep_resolutions(
+            engine.project_id, dry_run=True,
+        )
+        assert any(r["id"] == todo_id for r in records)
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        assert row["status"] == "open"
+
+    def test_sweep_ignores_stale_drivers(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+            stale=1,
+        )
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector",
+            status="open",
+        )
+
+        records = extractor.sweep_resolutions(engine.project_id)
+        assert not any(r["id"] == todo_id for r in records)
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        assert row["status"] == "open"
+
+    def test_sweep_skips_already_closed(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+        )
+        # Already resolved — should not show up as "closed" in the sweep
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector",
+            status="done",
+        )
+
+        records = extractor.sweep_resolutions(engine.project_id)
+        assert not any(r["id"] == todo_id for r in records)
+
+    def test_sweep_with_no_drivers_returns_empty(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Something lonely", status="open",
+        )
+        records = extractor.sweep_resolutions(engine.project_id)
+        assert records == []
