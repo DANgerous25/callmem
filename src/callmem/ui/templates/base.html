@@ -167,6 +167,67 @@
         .badge-agent      { background: #4a5568; }
         .badge-model      { background: #1e3a5f; color: #93c5fd; font-weight: 500; text-transform: none; font-size: 0.65rem; letter-spacing: 0; }
         .badge-extractor  { background: #1c3a2e; color: #86efac; font-weight: 500; text-transform: none; font-size: 0.65rem; letter-spacing: 0; }
+
+        /* Feed status bar (above the filter menu) */
+        .feed-status-bar {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+            padding: 0.45rem 0.75rem;
+            margin-bottom: 0.6rem;
+            background: #0f172a;
+            border: 1px solid #1e293b;
+            border-radius: 0.5rem;
+            font-size: 0.8rem;
+        }
+        .feed-status-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            background: #1e293b;
+        }
+        .feed-status-item[hidden] { display: none; }
+        .feed-status-dot {
+            width: 0.55rem;
+            height: 0.55rem;
+            border-radius: 50%;
+            background: #64748b;
+            flex-shrink: 0;
+        }
+        .feed-status-count {
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            color: #e2e8f0;
+        }
+        .feed-status-label {
+            color: #94a3b8;
+        }
+        .feed-status-idle      .feed-status-dot   { background: #475569; }
+        .feed-status-idle      .feed-status-label { color: #64748b; }
+        .feed-status-pending   .feed-status-dot   { background: #f59e0b; }
+        .feed-status-running   .feed-status-dot   { background: #3b82f6; }
+        .feed-status-failed    .feed-status-dot   { background: #ef4444; }
+        .feed-status-spacer    { flex: 1; }
+        .feed-status-model {
+            color: #94a3b8;
+            font-size: 0.75rem;
+        }
+        .feed-status-model code {
+            color: #86efac;
+            background: transparent;
+            padding: 0;
+            font-size: 0.75rem;
+        }
+        .feed-status-dot-pulse {
+            animation: feed-status-pulse 1.2s ease-in-out infinite;
+        }
+        @keyframes feed-status-pulse {
+            0%, 100% { opacity: 1; }
+            50%      { opacity: 0.35; }
+        }
         .feed-project {
             font-size: 0.8rem;
             opacity: 0.6;

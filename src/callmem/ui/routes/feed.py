@@ -214,6 +214,14 @@ async def feed(request: Request) -> HTMLResponse:
         conn2.close()
     projects = [{"id": r["id"], "name": r["name"]} for r in prows]
 
+    # Which LLM is currently wired for extraction — shown in the status bar
+    extraction_model: str | None = None
+    backend = engine.config.llm.backend
+    if backend == "ollama":
+        extraction_model = engine.config.ollama.model
+    elif backend == "openai_compat":
+        extraction_model = engine.config.openai_compat.model
+
     return render_template(
         request.app,
         "feed.html",
@@ -228,6 +236,7 @@ async def feed(request: Request) -> HTMLResponse:
         active_query=None,
         active_order="desc",
         include_stale=include_stale,
+        extraction_model=extraction_model,
     )
 
 
