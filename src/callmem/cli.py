@@ -365,17 +365,68 @@ def ui(project: Path, port: int | None, host: str | None) -> None:
     uvicorn.run(app, host=actual_host, port=actual_port, log_level="info")
 
 
-@main.command()
-@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
-def status(project: Path) -> None:
-    """Show memory status for a project."""
+def _systemd_unit_state(project: Path) -> str | None:
+    """Return 'active'/'inactive'/'failed'/... for callmem-<project>.service, or None."""
+    import subprocess
+
+    unit = f"callmem-{project.resolve().name}.service"
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    state = result.stdout.strip()
+    # `is-active` returns non-zero for inactive/failed/unknown but still prints the state.
+    if not state or state == "unknown":
+        # Check if unit exists at all; if not, don't claim "unknown".
+        try:
+            exists = subprocess.run(
+                ["systemctl", "--user", "cat", unit],
+                capture_output=True, text=True, timeout=2,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        if exists.returncode != 0:
+            return None
+    return state or "unknown"
+
+
+def _probe_ui(host: str, port: int) -> bool:
+    """Return True if something on host:port speaks HTTP.
+
+    A plain TCP connect would false-positive any random listener;
+    a full GET follows redirects and loads the page. We send a
+    GET but treat *any* HTTP response — including 4xx/5xx — as up,
+    since those still mean a live HTTP server.
+    """
+    import http.client
+
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    try:
+        conn = http.client.HTTPConnection(probe_host, port, timeout=0.5)
+        try:
+            conn.request("GET", "/")
+            conn.getresponse()
+            return True
+        finally:
+            conn.close()
+    except (ConnectionError, TimeoutError, OSError):
+        return False
+
+
+def _render_status(project: Path) -> bool:
+    """Print status for a single project. Returns False if no DB was found."""
+    from callmem.core.config import load_config
     from callmem.core.database import Database
 
+    project = project.resolve()
     db_path = project / ".callmem" / "memory.db"
     if not db_path.exists():
         click.echo(f"No callmem database found at {db_path}")
         click.echo("Run 'callmem init' first.")
-        return
+        return False
 
     db = Database(db_path)
     conn = db.connect()
@@ -400,6 +451,63 @@ def status(project: Path) -> None:
         click.echo(f"  Last session: {last}")
     finally:
         conn.close()
+
+    # UI + service info (best-effort; never errors out if config/systemd unavailable).
+    try:
+        config = load_config(project)
+        ui_host, ui_port = config.ui.host, config.ui.port
+        reachable = _probe_ui(ui_host, ui_port)
+        status_word = "up" if reachable else "down"
+        click.echo(f"  UI:           http://{ui_host}:{ui_port}  ({status_word})")
+    except Exception:  # noqa: BLE001 — status is diagnostic; config errors shouldn't abort it
+        pass
+
+    svc_state = _systemd_unit_state(project)
+    if svc_state is not None:
+        click.echo(f"  Service:      callmem-{project.name}.service ({svc_state})")
+
+    return True
+
+
+def _discover_callmem_projects() -> list[Path]:
+    """Return project paths from installed callmem-*.service user units."""
+    systemd_dir = Path.home() / ".config" / "systemd" / "user"
+    if not systemd_dir.is_dir():
+        return []
+    projects: list[Path] = []
+    for unit in sorted(systemd_dir.glob("callmem-*.service")):
+        for line in unit.read_text().splitlines():
+            if line.startswith("WorkingDirectory="):
+                projects.append(Path(line.split("=", 1)[1].strip()))
+                break
+    return projects
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option(
+    "--all",
+    "show_all",
+    is_flag=True,
+    help="Show status for every project with an installed callmem-*.service unit.",
+)
+def status(project: Path, show_all: bool) -> None:
+    """Show memory status for a project (or all projects with --all)."""
+    if show_all:
+        projects = _discover_callmem_projects()
+        if not projects:
+            click.echo(
+                "No callmem-*.service units found in "
+                "~/.config/systemd/user/. Falling back to current project."
+            )
+            _render_status(project)
+            return
+        for i, p in enumerate(projects):
+            if i > 0:
+                click.echo()
+            _render_status(p)
+        return
+    _render_status(project)
 
 
 @main.command("stats")
