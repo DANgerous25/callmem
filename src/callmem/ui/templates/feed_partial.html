@@ -8,7 +8,10 @@
     <span class="badge badge-agent">{{ item.agent_name | upper }}</span>
     {% endif %}
     {% if item.model_name %}
-    <span class="badge badge-model">{{ item.model_name }}</span>
+    <span class="badge badge-model" title="Coding agent model">{{ item.model_name }}</span>
+    {% endif %}
+    {% if item.extracted_by %}
+    <span class="badge badge-extractor" title="Extraction LLM — the model that built this entity">{{ item.extracted_by }}</span>
     {% endif %}
     <span class="feed-card-title-inline">{{ item.title }}</span>
     <span class="feed-project">{{ item.project_name }}</span>
