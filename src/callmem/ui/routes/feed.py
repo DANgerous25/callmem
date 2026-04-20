@@ -20,22 +20,24 @@ ENTITY_TYPES = [
 def _resolve_event_session_map(
     engine: Any, source_event_ids: list[str],
 ) -> dict[str, dict[str, str | None]]:
-    """Batch-resolve source_event_id -> {session_id, model_name}."""
+    """Batch-resolve source_event_id -> {session_id, model_name, event_timestamp}."""
     if not source_event_ids:
         return {}
 
     event_to_session: dict[str, str | None] = {}
+    event_timestamp: dict[str, str | None] = {}
     session_model_cache: dict[str, str | None] = {}
 
     conn = engine.db.connect()
     try:
         placeholders = ",".join("?" for _ in source_event_ids)
         rows = conn.execute(
-            f"SELECT id, session_id FROM events WHERE id IN ({placeholders})",
+            f"SELECT id, session_id, timestamp FROM events WHERE id IN ({placeholders})",
             source_event_ids,
         ).fetchall()
         for row in rows:
             event_to_session[row["id"]] = row["session_id"]
+            event_timestamp[row["id"]] = row["timestamp"]
     finally:
         conn.close()
 
@@ -59,6 +61,7 @@ def _resolve_event_session_map(
         result[eid] = {
             "session_id": sid,
             "model_name": session_model_cache.get(sid) if sid else None,
+            "event_timestamp": event_timestamp.get(eid),
         }
     return result
 
@@ -139,6 +142,7 @@ def _build_feed_items(
                 "agent_name": None,
                 "model_name": es_map.get("model_name"),
                 "extracted_by": e.get("extracted_by"),
+                "event_timestamp": es_map.get("event_timestamp"),
                 "session_id": es_map.get("session_id"),
                 "project_name": project_name,
                 "files": files,

@@ -15,7 +15,10 @@
     {% endif %}
     <span class="feed-card-title-inline">{{ item.title }}</span>
     <span class="feed-project">{{ item.project_name }}</span>
-    <span class="feed-card-time-inline" title="{{ item.timestamp[:19] | replace('T', ' ') }}">{{ item.timestamp | relative_time }}</span>
+    {% set primary_ts = item.event_timestamp or item.timestamp %}
+    <span class="feed-card-time-inline" title="{% if item.event_timestamp %}event: {{ item.event_timestamp[:19] | replace('T', ' ') }}&#10;extracted: {{ item.timestamp[:19] | replace('T', ' ') }}{% else %}{{ item.timestamp[:19] | replace('T', ' ') }}{% endif %}">
+      {{ primary_ts | relative_time }}{% if item.event_timestamp and item.event_timestamp[:19] != item.timestamp[:19] %}<span class="feed-card-extracted-at"> &middot; extracted {{ item.timestamp | relative_time }}</span>{% endif %}
+    </span>
   </summary>
   {% if item.kind == 'entity' and (item.key_points or item.content) %}
   <div class="feed-card-content">
