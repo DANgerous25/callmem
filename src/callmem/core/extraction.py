@@ -152,55 +152,121 @@ class EntityExtractor:
 
         return entities
 
+    _RESOLUTION_DRIVER_TYPES = frozenset({"bugfix", "feature", "change"})
+    _RESOLVABLE_TYPES = frozenset({"todo", "failure"})
+    _KEYWORD_STOPWORDS = frozenset({
+        "implement", "update", "add", "fix", "create", "remove",
+        "build", "write", "setup", "configure", "install", "test",
+        "also", "with", "from", "that", "this", "which", "where",
+    })
+
     def _auto_resolve(
         self, project_id: str, new_entities: list[Entity]
     ) -> int:
-        """Auto-resolve open TODOs/failures that match new bugfixes/features/changes.
+        """Auto-resolve open TODOs/failures matching newly-extracted drivers.
 
-        When a new bugfix/feature/change is extracted, search for open TODOs
-        or unresolved failures with similar titles and mark them as done/resolved.
-        Returns the number of entities auto-resolved.
+        Called at the end of each extraction job with the entities that
+        were just created. Delegates keyword matching and resolution to
+        ``_resolve_by_drivers``; ``sweep_resolutions`` uses the same
+        helper to retroactively close items the live hook missed.
         """
-        resolution_types = {"bugfix", "feature", "change"}
-        resolvable_types = {"todo", "failure"}
-        new_titles: list[tuple[str, str]] = []
+        drivers = [
+            (e.title, e.type) for e in new_entities
+            if e.type in self._RESOLUTION_DRIVER_TYPES and e.title
+        ]
+        return self._resolve_by_drivers(project_id, drivers)
 
-        for e in new_entities:
-            if e.type in resolution_types and e.title:
-                new_titles.append((e.title, e.type))
+    def sweep_resolutions(
+        self,
+        project_id: str,
+        dry_run: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Retroactively auto-resolve TODOs/failures against prior drivers.
 
-        if not new_titles:
-            return 0
+        The live auto-resolve hook only fires at extraction time, so
+        any TODO created after its resolving feature was extracted
+        never gets matched. This sweep walks every non-stale driver
+        entity in the project against the current open pool. Returns
+        a list of ``{id, type, title, status, driver_title}`` dicts
+        describing what was (or would be) closed.
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT type, title FROM entities "
+                "WHERE project_id = ? AND type IN (?, ?, ?) "
+                "AND stale = 0 AND title IS NOT NULL "
+                "ORDER BY created_at ASC",
+                (project_id, "bugfix", "feature", "change"),
+            ).fetchall()
+            drivers = [(r["title"], r["type"]) for r in rows]
+        finally:
+            conn.close()
+
+        return self._resolve_by_drivers(
+            project_id, drivers, dry_run=dry_run, collect=True,
+        )
+
+    def _resolve_by_drivers(
+        self,
+        project_id: str,
+        drivers: list[tuple[str, str]],
+        dry_run: bool = False,
+        collect: bool = False,
+    ) -> Any:
+        """Run resolution logic for a list of (title, type) driver pairs.
+
+        When ``collect`` is True, returns a list of resolution records
+        suitable for CLI output; otherwise returns the count.
+        """
+        if not drivers:
+            return [] if collect else 0
 
         from callmem.core.repository import Repository
 
         repo = Repository(self.db)
-        resolved = 0
+        open_statuses = ["open", "unresolved"]
+        records: list[dict[str, Any]] = []
+        closed_ids: set[str] = set()
+        count = 0
 
-        for title, _source_type in new_titles:
-            words = [w for w in title.split() if len(w) > 3 and w.lower() not in {
-                "implement", "update", "add", "fix", "create", "remove",
-                "build", "write", "setup", "configure", "install", "test",
-                "also", "with", "from", "that", "this", "which", "where",
-            }]
+        for title, _source_type in drivers:
+            words = [
+                w for w in title.split()
+                if len(w) > 3 and w.lower() not in self._KEYWORD_STOPWORDS
+            ]
             if len(words) < 2:
                 continue
 
-            open_statuses = ["open", "unresolved"]
             matches = repo.find_open_entities_by_keywords(
                 project_id=project_id,
-                entity_types=list(resolvable_types),
+                entity_types=list(self._RESOLVABLE_TYPES),
                 statuses=open_statuses,
                 keywords=words,
                 limit=3,
             )
 
             for match in matches:
+                if match["id"] in closed_ids:
+                    continue
                 resolved_status = (
                     "done" if match["type"] == "todo" else "resolved"
                 )
+                record = {
+                    "id": match["id"],
+                    "type": match["type"],
+                    "title": match["title"],
+                    "status": resolved_status,
+                    "driver_title": title,
+                }
+                if dry_run:
+                    closed_ids.add(match["id"])
+                    records.append(record)
+                    continue
                 if repo.resolve_entity(match["id"], resolved_status):
-                    resolved += 1
+                    closed_ids.add(match["id"])
+                    count += 1
+                    records.append(record)
                     logger.info(
                         "Auto-resolved %s '%s' -> %s (matched by '%s')",
                         match["type"],
@@ -209,7 +275,7 @@ class EntityExtractor:
                         title[:60],
                     )
 
-        return resolved
+        return records if collect else count
 
     def _fetch_events(
         self, event_ids: list[str]

@@ -1481,6 +1481,61 @@ def _resolve_project_id(db, config):
     return None
 
 
+# ── Resolve command (sweep stale TODOs closed by prior features) ─────
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Report what would be closed without updating the database.",
+)
+def resolve(project: Path, dry_run: bool) -> None:
+    """Retroactively close open TODOs/failures matched by prior drivers.
+
+    The extraction loop auto-closes TODOs when a resolving feature is
+    extracted afterwards, but mis-ordered pairs (TODO extracted *after*
+    its driver, or extraction skipped the match) accumulate over time.
+    This sweep walks every non-stale feature/bugfix/change in the project
+    against the current open pool and applies the same keyword matcher.
+    """
+    from callmem.core.database import Database
+    from callmem.core.extraction import EntityExtractor
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}", err=True)
+        raise SystemExit(1)
+
+    db = Database(db_path)
+    db.initialize()
+
+    from callmem.core.config import load_config
+
+    config = load_config(project)
+    project_id = _resolve_project_id(db, config)
+    if project_id is None:
+        click.echo(f"No project named {config.project.name!r} found.", err=True)
+        raise SystemExit(1)
+
+    extractor = EntityExtractor(db, ollama=None)  # type: ignore[arg-type]
+    records = extractor.sweep_resolutions(project_id, dry_run=dry_run)
+
+    if not records:
+        click.echo("Nothing to resolve — all TODOs/failures already closed.")
+        return
+
+    prefix = "Would close" if dry_run else "Closed"
+    click.echo(f"{prefix} {len(records)} item(s):")
+    for r in records:
+        short = r["id"][-8:]
+        arrow = f"→ {r['status']}"
+        click.echo(
+            f"  #{short} [{r['type']}] {r['title'][:60]} {arrow}"
+        )
+        click.echo(f"      matched by: {r['driver_title'][:70]}")
+
+
 # ── Migrate command (llm-mem → callmem) ──────────────────────────────
 
 
