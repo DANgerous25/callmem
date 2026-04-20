@@ -10,6 +10,34 @@
     </p>
 </hgroup>
 
+<div id="feed-status-bar" class="feed-status-bar" aria-live="polite">
+    <span class="feed-status-item feed-status-idle" data-state="idle">
+        <span class="feed-status-dot"></span>
+        <span class="feed-status-label">Idle</span>
+    </span>
+    <span class="feed-status-item feed-status-pending" data-state="pending" hidden>
+        <span class="feed-status-dot"></span>
+        <span class="feed-status-count" data-counter="pending">0</span>
+        <span class="feed-status-label">pending</span>
+    </span>
+    <span class="feed-status-item feed-status-running" data-state="running" hidden>
+        <span class="feed-status-dot feed-status-dot-pulse"></span>
+        <span class="feed-status-count" data-counter="running">0</span>
+        <span class="feed-status-label">processing</span>
+    </span>
+    <span class="feed-status-item feed-status-failed" data-state="failed" hidden>
+        <span class="feed-status-dot"></span>
+        <span class="feed-status-count" data-counter="failed">0</span>
+        <span class="feed-status-label">failed</span>
+    </span>
+    {% if extraction_model %}
+    <span class="feed-status-spacer"></span>
+    <span class="feed-status-model" title="Current extraction LLM (from config.toml)">
+        extraction: <code>{{ extraction_model }}</code>
+    </span>
+    {% endif %}
+</div>
+
 <div class="feed-filters" style="display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;margin-bottom:1rem;">
     <button class="filter-pill {% if not active_type %}filter-active{% endif %}"
             hx-get="/partials/feed" hx-target="#feed-content" hx-swap="innerHTML"
@@ -168,6 +196,53 @@
     }
 
     connectSSE();
+
+    // ── Feed status bar ──────────────────────────────────────────────
+    // Reuses the global /api/queue-status endpoint + the queue_updated
+    // SSE event already wired in base.html. This handler is additive —
+    // base.html still updates the nav pill, we just also update the
+    // more prominent bar above the filter menu.
+    (function() {
+        var bar = document.getElementById('feed-status-bar');
+        if (!bar) return;
+        var items = {
+            idle:    bar.querySelector('[data-state="idle"]'),
+            pending: bar.querySelector('[data-state="pending"]'),
+            running: bar.querySelector('[data-state="running"]'),
+            failed:  bar.querySelector('[data-state="failed"]'),
+        };
+        var counters = {
+            pending: bar.querySelector('[data-counter="pending"]'),
+            running: bar.querySelector('[data-counter="running"]'),
+            failed:  bar.querySelector('[data-counter="failed"]'),
+        };
+
+        function apply(data) {
+            var pending = data.pending || 0;
+            var running = data.running || 0;
+            var failed  = data.failed  || 0;
+            counters.pending.textContent = pending;
+            counters.running.textContent = running;
+            counters.failed.textContent  = failed;
+            items.pending.hidden = pending === 0;
+            items.running.hidden = running === 0;
+            items.failed.hidden  = failed  === 0;
+            items.idle.hidden = (pending + running + failed) > 0;
+        }
+
+        fetch('/api/queue-status')
+            .then(function(r) { return r.ok ? r.json() : null; })
+            .then(function(d) { if (d) apply(d); })
+            .catch(function() {});
+
+        if (typeof EventSource !== 'undefined') {
+            var es = new EventSource('/events');
+            es.addEventListener('queue_updated', function(e) {
+                try { apply(JSON.parse(e.data)); } catch (ex) { /* ignore */ }
+            });
+            es.onerror = function() { es.close(); };
+        }
+    })();
 })();
 </script>
 {% endblock %}

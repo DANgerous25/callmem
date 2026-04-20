@@ -195,7 +195,9 @@ class JobQueue:
             rows = conn.execute(
                 "SELECT status, COUNT(*) as c FROM jobs GROUP BY status"
             ).fetchall()
-            counts: dict[str, int] = {"pending": 0, "completed": 0, "failed": 0}
+            counts: dict[str, int] = {
+                "pending": 0, "running": 0, "completed": 0, "failed": 0,
+            }
             for r in rows:
                 counts[r["status"]] = r["c"]
             return counts
