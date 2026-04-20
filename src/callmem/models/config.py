@@ -51,6 +51,18 @@ class ExtractionConfig(BaseModel):
     batch_size: int = 10
 
 
+class IngestionConfig(BaseModel):
+    """Filtering rules applied before events are stored or queued.
+
+    ``skip_tools`` matches tool_call events by the tool name (the token
+    before the first ``(`` in the event content). ``skip_patterns``
+    applies ``fnmatch`` globs against the full event content (e.g.
+    ``Read(*node_modules*)``).
+    """
+    skip_tools: list[str] = Field(default_factory=list)
+    skip_patterns: list[str] = Field(default_factory=list)
+
+
 class CompactionConfig(BaseModel):
     enabled: bool = True
     schedule: str = "on_session_end"
@@ -93,6 +105,7 @@ class Config(BaseModel):
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)

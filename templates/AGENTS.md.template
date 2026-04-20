@@ -17,6 +17,7 @@ This project uses callmem for persistent memory across coding sessions.
 - When something fails unexpectedly, call `mem_ingest` with type "failure"
 - To recall past context about a topic, call `mem_search`
 - To see open tasks, call `mem_get_tasks`
+- **Before re-reading a file you've worked on before**, call `mem_file_context path=<file>`. If the returned timeline covers what you need, skip the raw read (saves ~95% of tokens).
 
 **End of session:**
 - Call `mem_session_end` to trigger summary generation

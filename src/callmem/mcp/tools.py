@@ -246,6 +246,33 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mem_file_context",
+        "description": (
+            "Return callmem's observation timeline for a file path. "
+            "Call this before re-reading a file you've worked on — "
+            "if the timeline covers your task, skip the raw read "
+            "(typically ~95% token savings)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path (relative or absolute)",
+                },
+                "include_content": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, also return the file's current "
+                        "on-disk content."
+                    ),
+                    "default": False,
+                },
+            },
+        },
+    },
+    {
         "name": "mem_search_by_file",
         "description": (
             "Find all memory entries related to a specific file."
@@ -547,6 +574,17 @@ def handle_search_by_file(
     return _make_result({"entities": results, "count": len(results)})
 
 
+def handle_file_context(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    path = args.get("path", "")
+    if not path:
+        return _make_error("path is required")
+    include_content = bool(args.get("include_content", False))
+    data = engine.get_file_context(path, include_content=include_content)
+    return _make_result(data)
+
+
 def handle_vault_review(
     engine: MemoryEngine, args: dict[str, Any]
 ) -> list[TextContent]:
@@ -608,6 +646,7 @@ _HANDLERS: dict[str, Any] = {
     "mem_timeline": handle_timeline,
     "mem_get_entities": handle_get_entities,
     "mem_search_by_file": handle_search_by_file,
+    "mem_file_context": handle_file_context,
     "mem_vault_review": handle_vault_review,
     "mem_mark_stale": handle_mark_stale,
     "mem_mark_current": handle_mark_current,

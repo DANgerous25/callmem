@@ -24,6 +24,14 @@ from pathlib import Path
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _toml_list(items: list[str]) -> str:
+    """Serialize a list of strings as a TOML array literal."""
+    if not items:
+        return "[]"
+    quoted = ", ".join(json.dumps(x) for x in items)
+    return f"[{quoted}]"
+
+
 def ask(prompt: str, default: str = "") -> str:
     suffix = f" [{default}]" if default else ""
     answer = input(f"  {prompt}{suffix}: ").strip()
@@ -715,6 +723,10 @@ _MCP_BLOCK_SNIPPET = (
     "- When something fails unexpectedly, call `mem_ingest` with type \"failure\"\n"
     "- To recall past context, call `mem_search` with keywords\n"
     "- To see open tasks, call `mem_get_tasks`\n\n"
+    "**Before re-reading a file you've worked on before:**\n"
+    "- Call `mem_file_context` with the file path\n"
+    "- If the returned timeline covers what you need, skip the raw read (saves tokens)\n"
+    "- If you need exact line-level details, read the file normally\n\n"
     "**End of session:**\n"
     "- Call `mem_session_end` to trigger summary generation\n\n"
     "**Guidelines:**\n"
@@ -1032,6 +1044,34 @@ def main() -> None:
         print("  Entity extraction, summarization, and compaction are disabled.")
         print("  You can change this later by re-running setup.")
 
+    # ── Event filtering ──────────────────────────────────────────
+    print()
+    print("── Event filtering ──")
+    print()
+    print("  Skip noisy tool calls to reduce extraction load.")
+    print("  Common candidates: Glob, TodoWrite, BashOutput.")
+    print()
+
+    existing_ingestion = existing.get("ingestion", {}) or {}
+    existing_skip_tools = existing_ingestion.get("skip_tools", []) or []
+    skip_tools_default = ", ".join(existing_skip_tools)
+    skip_tools_raw = ask(
+        "Skip tools (comma-separated, empty for none)", skip_tools_default,
+    )
+    skip_tools = [
+        s.strip() for s in skip_tools_raw.split(",") if s.strip()
+    ]
+
+    existing_skip_patterns = existing_ingestion.get("skip_patterns", []) or []
+    skip_patterns_default = ", ".join(existing_skip_patterns)
+    skip_patterns_raw = ask(
+        "Skip patterns (glob on event content, comma-separated)",
+        skip_patterns_default,
+    )
+    skip_patterns = [
+        s.strip() for s in skip_patterns_raw.split(",") if s.strip()
+    ]
+
     # ── UI ────────────────────────────────────────────────────────
     print()
     print("── Web UI ──")
@@ -1182,6 +1222,10 @@ enabled = {str(sensitive_enabled).lower()}
 pattern_scan = true
 llm_scan = {str(llm_scan).lower()}
 vault_mode = "{vault_mode}"
+
+[ingestion]
+skip_tools = {_toml_list(skip_tools)}
+skip_patterns = {_toml_list(skip_patterns)}
 """
 
     if config_path.exists():

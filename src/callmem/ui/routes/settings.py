@@ -32,7 +32,13 @@ def _config_to_form(config: Any) -> dict[str, Any]:
         "ui_port": config.ui.port,
         "ui_host": config.ui.host,
         "extraction_batch_size": config.extraction.batch_size,
+        "ingestion_skip_tools": ", ".join(config.ingestion.skip_tools),
+        "ingestion_skip_patterns": ", ".join(config.ingestion.skip_patterns),
     }
+
+
+def _split_csv(raw: str) -> list[str]:
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 @router.get("/settings")
@@ -111,6 +117,13 @@ async def save_settings(request: Request) -> HTMLResponse:
 
     existing.setdefault("extraction", {})["batch_size"] = int(
         form_data.get("extraction_batch_size", 10)
+    )
+
+    existing.setdefault("ingestion", {})["skip_tools"] = _split_csv(
+        str(form_data.get("ingestion_skip_tools", ""))
+    )
+    existing["ingestion"]["skip_patterns"] = _split_csv(
+        str(form_data.get("ingestion_skip_patterns", ""))
     )
 
     try:

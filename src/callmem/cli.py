@@ -42,6 +42,10 @@ _MCP_BLOCK_SNIPPET = (
     "- When something fails unexpectedly, call `mem_ingest` with type \"failure\"\n"
     "- To recall past context, call `mem_search` with keywords\n"
     "- To see open tasks, call `mem_get_tasks`\n\n"
+    "**Before re-reading a file you've worked on before:**\n"
+    "- Call `mem_file_context` with the file path\n"
+    "- If the returned timeline covers what you need, skip the raw read (saves tokens)\n"
+    "- If you need exact line-level details, read the file normally\n\n"
     "**End of session:**\n"
     "- Call `mem_session_end` to trigger summary generation\n\n"
     "**Guidelines:**\n"
@@ -392,6 +396,57 @@ def status(project: Path) -> None:
         click.echo(f"  Last session: {last}")
     finally:
         conn.close()
+
+
+@main.command("stats")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def stats_cmd(project: Path) -> None:
+    """Show ingestion and filtering statistics."""
+    from callmem.core.config import load_config
+    from callmem.core.database import Database
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}")
+        return
+
+    config = load_config(project)
+    db = Database(db_path)
+    conn = db.connect()
+    try:
+        events = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
+        tool_calls = conn.execute(
+            "SELECT COUNT(*) as c FROM events WHERE type = 'tool_call'"
+        ).fetchone()["c"]
+        pending = conn.execute(
+            "SELECT COUNT(*) as c FROM jobs WHERE status = 'pending'"
+        ).fetchone()["c"]
+        tracked_files = conn.execute(
+            "SELECT COUNT(DISTINCT file_path) as c FROM entity_files"
+        ).fetchone()["c"]
+    finally:
+        conn.close()
+
+    skip_tools = config.ingestion.skip_tools
+    skip_patterns = config.ingestion.skip_patterns
+
+    click.echo(f"callmem stats — {project.resolve()}")
+    click.echo(f"  Events ingested:         {events}")
+    click.echo(f"  Events (tool_call):      {tool_calls}")
+    click.echo(f"  Pending extraction jobs: {pending}")
+    click.echo(f"  Files tracked:           {tracked_files}")
+    click.echo()
+    click.echo("  Tool filter config:")
+    tools_display = ", ".join(skip_tools) if skip_tools else "(none)"
+    patterns_display = ", ".join(skip_patterns) if skip_patterns else "(none)"
+    click.echo(f"    skip_tools:    {tools_display}")
+    click.echo(f"    skip_patterns: {patterns_display}")
+    click.echo()
+    click.echo(
+        "  Note: live skip/file-context counters are in-memory per "
+        "running engine. Open the /files page in the web UI to see "
+        "the current counts."
+    )
 
 
 @main.command("stale")
