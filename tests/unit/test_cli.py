@@ -125,6 +125,56 @@ class TestStatus:
         assert str(tmp_path) in result.output
 
 
+class TestVacuum:
+    def test_reports_size_before_and_after(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        result = runner.invoke(main, ["vacuum", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "VACUUM complete" in result.output
+        assert "reclaimed" in result.output
+
+    def test_missing_database_errors(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["vacuum", "--project", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "No callmem database found" in result.output
+
+    def test_reclaims_space_after_deletion(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        db_path = tmp_path / ".callmem" / "memory.db"
+
+        # Inflate the DB, then delete rows — SQLite will not shrink
+        # the file on its own; VACUUM should reclaim the pages.
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS _bloat "
+                "(id INTEGER PRIMARY KEY, blob TEXT)"
+            )
+            conn.executemany(
+                "INSERT INTO _bloat (blob) VALUES (?)",
+                [("x" * 5000,) for _ in range(500)],
+            )
+            conn.commit()
+            inflated = db_path.stat().st_size
+            conn.execute("DELETE FROM _bloat")
+            conn.commit()
+        finally:
+            conn.close()
+
+        before_vacuum = db_path.stat().st_size
+        assert before_vacuum >= inflated - 100  # file still holds free pages
+
+        result = runner.invoke(main, ["vacuum", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+        after_vacuum = db_path.stat().st_size
+        assert after_vacuum < before_vacuum
+
+
 class TestEnsureAgentsMcpBlock:
     def test_appends_mcp_block_to_existing_agents(self, tmp_path: Path) -> None:
         agents = tmp_path / "AGENTS.md"

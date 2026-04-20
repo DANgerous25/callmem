@@ -1536,6 +1536,55 @@ def resolve(project: Path, dry_run: bool) -> None:
         click.echo(f"      matched by: {r['driver_title'][:70]}")
 
 
+# ── Vacuum command (SQLite space reclamation) ────────────────────────
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def vacuum(project: Path) -> None:
+    """Reclaim free pages in the SQLite database via ``VACUUM``.
+
+    Heavy cleanups — stale-entity archival, re-extraction, large event
+    purges — leave free pages inside ``memory.db`` that SQLite won't
+    return to the filesystem until a ``VACUUM`` rewrites the file.
+    Run this after any bulk deletion if disk footprint matters.
+    """
+    from callmem.core.database import Database
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}", err=True)
+        raise SystemExit(1)
+
+    size_before = db_path.stat().st_size
+    db = Database(db_path)
+    conn = db.connect()
+    try:
+        conn.isolation_level = None  # VACUUM cannot run inside a transaction
+        conn.execute("VACUUM")
+    finally:
+        conn.close()
+
+    size_after = db_path.stat().st_size
+    reclaimed = size_before - size_after
+    click.echo(
+        f"VACUUM complete: "
+        f"{_format_bytes(size_before)} → {_format_bytes(size_after)} "
+        f"(reclaimed {_format_bytes(reclaimed)})"
+    )
+
+
+def _format_bytes(n: int) -> str:
+    """Format a byte count with human-readable units."""
+    if n < 0:
+        return f"-{_format_bytes(-n)}"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
 # ── Migrate command (llm-mem → callmem) ──────────────────────────────
 
 
