@@ -58,16 +58,19 @@
         source.addEventListener('entity_created', function(e) {
             var data = JSON.parse(e.data);
             prependCard(data, 'entity');
+            scheduleRealRefresh();
         });
 
         source.addEventListener('session_started', function(e) {
             var data = JSON.parse(e.data);
             prependCard(data, 'session');
+            scheduleRealRefresh();
         });
 
         source.addEventListener('session_ended', function(e) {
             var data = JSON.parse(e.data);
             prependCard(data, 'summary');
+            scheduleRealRefresh();
         });
 
         source.addEventListener('error', function() {
@@ -139,10 +142,29 @@
 
     function startFallbackPolling() {
         fallbackInterval = setInterval(function() {
-            fetch('/partials/feed').then(function(r) { return r.text(); }).then(function(html) {
+            fetch('/partials/feed', {headers: {'HX-Request': 'true'}}).then(function(r) { return r.text(); }).then(function(html) {
                 container.innerHTML = html;
             });
         }, 30000);
+    }
+
+    // After an SSE event fires a stub card, refetch the real partial so
+    // the stub gets replaced by the fully-rendered expandable <details>
+    // card. Debounced so a burst of extractions triggers one refresh.
+    var refreshTimer = null;
+    function scheduleRealRefresh() {
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(function() {
+            refreshTimer = null;
+            // Preserve current filter/order params from the active URL
+            var url = '/partials/feed' + window.location.search;
+            fetch(url, {headers: {'HX-Request': 'true'}})
+                .then(function(r) { return r.ok ? r.text() : null; })
+                .then(function(html) {
+                    if (html !== null) container.innerHTML = html;
+                })
+                .catch(function() { /* silent — next SSE will retry */ });
+        }, 750);
     }
 
     connectSSE();

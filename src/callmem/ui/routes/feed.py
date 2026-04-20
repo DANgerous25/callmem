@@ -138,6 +138,7 @@ def _build_feed_items(
                 "staleness_reason": e.get("staleness_reason"),
                 "agent_name": None,
                 "model_name": es_map.get("model_name"),
+                "extracted_by": e.get("extracted_by"),
                 "session_id": es_map.get("session_id"),
                 "project_name": project_name,
                 "files": files,

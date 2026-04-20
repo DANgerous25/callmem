@@ -138,6 +138,7 @@ class EntityExtractor:
                     synopsis=synopsis,
                     status=item.get("status"),
                     priority=item.get("priority"),
+                    extracted_by=getattr(self.ollama, "model", None),
                 )
                 self._insert_entity(entity)
                 entities.append(entity)
@@ -336,14 +337,14 @@ class EntityExtractor:
             conn.execute(
                 "INSERT INTO entities "
                 "(id, project_id, source_event_id, type, title, content, "
-                "key_points, synopsis, "
+                "key_points, synopsis, extracted_by, "
                 "status, priority, pinned, created_at, updated_at, "
                 "resolved_at, metadata, archived_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["id"], row["project_id"], row["source_event_id"],
                     row["type"], row["title"], row["content"],
-                    row["key_points"], row["synopsis"],
+                    row["key_points"], row["synopsis"], row["extracted_by"],
                     row["status"], row["priority"], row["pinned"],
                     row["created_at"], row["updated_at"],
                     row["resolved_at"], row["metadata"], row["archived_at"],

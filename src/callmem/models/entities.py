@@ -46,6 +46,7 @@ class Entity(BaseModel):
     stale: bool = False
     superseded_by: str | None = None
     staleness_reason: str | None = None
+    extracted_by: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -68,6 +69,7 @@ class Entity(BaseModel):
             "stale": 1 if self.stale else 0,
             "superseded_by": self.superseded_by,
             "staleness_reason": self.staleness_reason,
+            "extracted_by": self.extracted_by,
         }
 
     @classmethod
