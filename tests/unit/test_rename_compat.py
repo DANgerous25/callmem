@@ -139,6 +139,72 @@ def test_legacy_api_key_env_fallback(monkeypatch) -> None:
     assert client.api_key == "legacy-key-value"
 
 
+def test_dual_import_no_conflict() -> None:
+    """Importing both packages in the same process must not raise."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import callmem  # noqa: F401
+        import llm_mem  # noqa: F401
+        from callmem.mcp import server as new_server
+        from llm_mem.mcp import server as legacy_server
+
+    # Same main callable on both — configs invoking either path
+    # end up executing the identical function.
+    assert legacy_server.main is new_server.main
+
+
+def test_shim_reexports_all_public_server_symbols() -> None:
+    """Every public name on ``callmem.mcp.server`` must resolve on the shim.
+
+    The shim uses ``from callmem.mcp.server import *`` — if future edits
+    add a new public function to ``callmem.mcp.server`` but forget to
+    refresh the shim semantics, this test will catch the drift.
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from callmem.mcp import server as new_server
+        from llm_mem.mcp import server as legacy_server
+
+    new_public = {
+        name for name in dir(new_server) if not name.startswith("_")
+    }
+    for name in new_public:
+        # Modules imported by new_server won't be re-exported by ``*``
+        # if they aren't in its ``__all__``; only check callables and
+        # non-module attributes.
+        new_attr = getattr(new_server, name)
+        if type(new_attr).__name__ == "module":
+            continue
+        assert hasattr(legacy_server, name), (
+            f"shim missing public symbol {name!r}"
+        )
+        assert getattr(legacy_server, name) is new_attr, (
+            f"shim's {name!r} is a different object than callmem's"
+        )
+
+
+def test_llm_mem_module_dash_m_resolvable() -> None:
+    """``python -m llm_mem.mcp.server`` must resolve as a runnable module.
+
+    Protects the promise that legacy ``.mcp.json`` / ``opencode.json``
+    configs using the old module path continue to boot. We verify the
+    module spec rather than actually running main() (which blocks on
+    stdio).
+    """
+    import importlib.util
+
+    spec = importlib.util.find_spec("llm_mem.mcp.server")
+    assert spec is not None
+    assert spec.origin is not None
+    cli_spec = importlib.util.find_spec("llm_mem.cli")
+    assert cli_spec is not None
+    assert cli_spec.origin is not None
+
+
 @pytest.mark.parametrize("legacy,new,expected", [
     ("legacy-only", None, "legacy-only"),
     (None, "new-only", "new-only"),
