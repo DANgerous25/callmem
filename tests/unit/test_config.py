@@ -191,6 +191,37 @@ class TestSetNested:
         assert d == {"a": 2}
 
 
+class TestEndlessModeConfig:
+    def test_defaults(self) -> None:
+        config = Config()
+        assert config.endless_mode.enabled is True
+        assert config.endless_mode.context_limit is None
+        assert config.endless_mode.compress_threshold == 0.8
+        assert config.endless_mode.chunk_size == 30
+
+    def test_from_dict_partial(self) -> None:
+        config = Config.from_dict({
+            "endless_mode": {"context_limit": 32000, "chunk_size": 50},
+        })
+        assert config.endless_mode.context_limit == 32000
+        assert config.endless_mode.chunk_size == 50
+        assert config.endless_mode.compress_threshold == 0.8
+
+    def test_toml_override(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / ".callmem"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text(
+            "[endless_mode]\n"
+            "enabled = false\n"
+            "context_limit = 65536\n"
+            "compress_threshold = 0.9\n",
+        )
+        config = load_config(tmp_path)
+        assert config.endless_mode.enabled is False
+        assert config.endless_mode.context_limit == 65536
+        assert config.endless_mode.compress_threshold == 0.9
+
+
 class TestGenerateDefaultConfig:
     def test_contains_all_sections(self) -> None:
         text = generate_default_config("my-project")

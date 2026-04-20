@@ -246,6 +246,65 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mem_check_context",
+        "description": (
+            "Advisory check for long sessions: returns whether you "
+            "should compress older context. Call every ~30 messages "
+            "with your approximate message count (and estimated "
+            "tokens if you can compute them). Response 'status' is "
+            "'ok' or 'compress_recommended'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["message_count"],
+            "properties": {
+                "message_count": {
+                    "type": "integer",
+                    "description": "Approximate messages in this session",
+                },
+                "estimated_tokens": {
+                    "type": "integer",
+                    "description": (
+                        "Optional — estimated token usage so far "
+                        "(improves the recommendation)."
+                    ),
+                    "default": 0,
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_compress_context",
+        "description": (
+            "Record a summary of older conversation you are about to "
+            "drop from your context. callmem stores it as a chunk "
+            "summary and returns a short marker to drop in place of "
+            "the compressed exchanges."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Your summary of what was compressed — "
+                        "preserve decisions, TODOs, and failures "
+                        "verbatim."
+                    ),
+                },
+                "message_range": {
+                    "type": "string",
+                    "description": (
+                        "Optional human-readable range, e.g. "
+                        "'messages 1-80'"
+                    ),
+                    "default": "",
+                },
+            },
+        },
+    },
+    {
         "name": "mem_file_context",
         "description": (
             "Return callmem's observation timeline for a file path. "
@@ -585,6 +644,34 @@ def handle_file_context(
     return _make_result(data)
 
 
+def handle_check_context(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    message_count = int(args.get("message_count", 0))
+    estimated_tokens = int(args.get("estimated_tokens", 0))
+    data = engine.check_context(
+        message_count=message_count,
+        estimated_tokens=estimated_tokens,
+    )
+    return _make_result(data)
+
+
+def handle_compress_context(
+    engine: MemoryEngine, args: dict[str, Any]
+) -> list[TextContent]:
+    summary = args.get("summary", "")
+    if not summary:
+        return _make_error("summary is required")
+    try:
+        data = engine.compress_context(
+            summary=summary,
+            message_range=args.get("message_range", ""),
+        )
+    except ValueError as exc:
+        return _make_error(str(exc))
+    return _make_result(data)
+
+
 def handle_vault_review(
     engine: MemoryEngine, args: dict[str, Any]
 ) -> list[TextContent]:
@@ -647,6 +734,8 @@ _HANDLERS: dict[str, Any] = {
     "mem_get_entities": handle_get_entities,
     "mem_search_by_file": handle_search_by_file,
     "mem_file_context": handle_file_context,
+    "mem_check_context": handle_check_context,
+    "mem_compress_context": handle_compress_context,
     "mem_vault_review": handle_vault_review,
     "mem_mark_stale": handle_mark_stale,
     "mem_mark_current": handle_mark_current,

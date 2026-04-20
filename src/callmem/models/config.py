@@ -87,6 +87,22 @@ class SensitiveDataConfig(BaseModel):
     vault_mode: str = "auto"
 
 
+class EndlessModeConfig(BaseModel):
+    """Advisory context compression for long-running sessions.
+
+    callmem cannot mutate the agent's context window directly; it exposes
+    ``mem_check_context`` + ``mem_compress_context`` tools that the agent
+    calls when it approaches the configured threshold.
+
+    ``context_limit`` is the model's context window in tokens. When
+    ``None`` the caller derives it from ``ollama.num_ctx`` at runtime.
+    """
+    enabled: bool = True
+    context_limit: int | None = None
+    compress_threshold: float = 0.8
+    chunk_size: int = 30
+
+
 class AdaptersConfig(BaseModel):
     """Which live session adapters to run inside the daemon."""
 
@@ -108,6 +124,7 @@ class Config(BaseModel):
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)
+    endless_mode: EndlessModeConfig = Field(default_factory=EndlessModeConfig)
     adapters: AdaptersConfig = Field(default_factory=AdaptersConfig)
 
     @model_validator(mode="after")

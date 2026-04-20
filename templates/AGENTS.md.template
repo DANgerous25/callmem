@@ -18,6 +18,7 @@ This project uses callmem for persistent memory across coding sessions.
 - To recall past context about a topic, call `mem_search`
 - To see open tasks, call `mem_get_tasks`
 - **Before re-reading a file you've worked on before**, call `mem_file_context path=<file>`. If the returned timeline covers what you need, skip the raw read (saves ~95% of tokens).
+- **Long sessions (50+ messages):** every ~30 messages, call `mem_check_context message_count=<n>`. If it returns `compress_recommended`, summarize the oldest ~30 messages (preserve decisions, TODOs, and failures verbatim) and call `mem_compress_context summary=<text>`. Replace the compressed span with the returned marker; recall specifics later via `mem_search`.
 
 **End of session:**
 - Call `mem_session_end` to trigger summary generation
