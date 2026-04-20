@@ -74,6 +74,13 @@
     </button>
 </div>
 
+<button id="feed-back-to-top" type="button" hidden
+        title="Catch up on new items and return to top">
+    <span class="feed-back-to-top-arrow" aria-hidden="true">&uarr;</span>
+    <span id="feed-back-to-top-count">0</span>
+    <span class="feed-back-to-top-label">new</span>
+</button>
+
 <div id="feed-content">
 {% include "feed_partial.html" %}
 </div>
@@ -90,19 +97,19 @@
 
         source.addEventListener('entity_created', function(e) {
             var data = JSON.parse(e.data);
-            prependCard(data, 'entity');
+            if (!isFrozen()) prependCard(data, 'entity');
             scheduleRealRefresh();
         });
 
         source.addEventListener('session_started', function(e) {
             var data = JSON.parse(e.data);
-            prependCard(data, 'session');
+            if (!isFrozen()) prependCard(data, 'session');
             scheduleRealRefresh();
         });
 
         source.addEventListener('session_ended', function(e) {
             var data = JSON.parse(e.data);
-            prependCard(data, 'summary');
+            if (!isFrozen()) prependCard(data, 'summary');
             scheduleRealRefresh();
         });
 
@@ -175,30 +182,134 @@
 
     function startFallbackPolling() {
         fallbackInterval = setInterval(function() {
-            fetch('/partials/feed', {headers: {'HX-Request': 'true'}}).then(function(r) { return r.text(); }).then(function(html) {
-                container.innerHTML = html;
-            });
+            if (isFrozen()) return;
+            doRefetch();
         }, 30000);
     }
 
-    // After an SSE event fires a stub card, refetch the real partial so
-    // the stub gets replaced by the fully-rendered expandable <details>
-    // card. Debounced so a burst of extractions triggers one refresh.
+    // ── Freeze-aware refresh ─────────────────────────────────────────
+    // The background refetch replaces container.innerHTML, which wipes
+    // any <details open> the user expanded. Two behaviors:
+    //   1. If the user has expanded a card or scrolled past the top,
+    //      we *freeze* refetching and just count new items.
+    //   2. While frozen, a floating "↑ N new" button appears; clicking
+    //      it closes expanded cards, scrolls to top, and refreshes.
+    // Outside freeze, refetch still preserves any card the user happens
+    // to have open at the moment of swap (race-proof).
+
+    var pendingNew = 0;
     var refreshTimer = null;
+    var backBtn = document.getElementById('feed-back-to-top');
+    var backBtnCount = document.getElementById('feed-back-to-top-count');
+    var FREEZE_SCROLL_THRESHOLD = 80;  // px — ignore tiny scroll nudges
+
+    function isFrozen() {
+        if (container.querySelector('details[open]')) return true;
+        if (window.scrollY > FREEZE_SCROLL_THRESHOLD) return true;
+        return false;
+    }
+
+    function captureOpenState() {
+        var state = {};
+        container.querySelectorAll('details.feed-card[open]').forEach(function(d) {
+            var view = 'keypoints';
+            var active = d.querySelector('.toggle-btn.toggle-active');
+            if (active) view = active.getAttribute('data-view') || 'keypoints';
+            state[d.id] = {open: true, view: view};
+        });
+        return state;
+    }
+
+    function restoreOpenState(state) {
+        Object.keys(state).forEach(function(id) {
+            var el = document.getElementById(id);
+            if (!el || el.tagName !== 'DETAILS') return;
+            el.open = true;
+            var view = state[id].view;
+            if (view === 'synopsis') {
+                // Simulate the Synopsis tab click by toggling classes + visibility
+                el.querySelectorAll('.toggle-btn').forEach(function(b) {
+                    b.classList.remove('toggle-active');
+                });
+                var btn = el.querySelector('.toggle-btn[data-view="synopsis"]');
+                if (btn) btn.classList.add('toggle-active');
+                var kp = el.querySelector('.feed-card-keypoints');
+                var syn = el.querySelector('.feed-card-synopsis');
+                if (kp) kp.style.display = 'none';
+                if (syn) syn.style.display = '';
+            }
+        });
+    }
+
+    function doRefetch() {
+        var state = captureOpenState();
+        var url = '/partials/feed' + window.location.search;
+        return fetch(url, {headers: {'HX-Request': 'true'}})
+            .then(function(r) { return r.ok ? r.text() : null; })
+            .then(function(html) {
+                if (html === null) return;
+                container.innerHTML = html;
+                restoreOpenState(state);
+                pendingNew = 0;
+                updateBackBtn();
+            })
+            .catch(function() { /* silent — next SSE will retry */ });
+    }
+
+    function updateBackBtn() {
+        if (pendingNew > 0 && isFrozen()) {
+            backBtnCount.textContent = pendingNew;
+            backBtn.hidden = false;
+        } else {
+            backBtn.hidden = true;
+        }
+    }
+
     function scheduleRealRefresh() {
+        if (isFrozen()) {
+            pendingNew += 1;
+            updateBackBtn();
+            return;
+        }
         if (refreshTimer) clearTimeout(refreshTimer);
         refreshTimer = setTimeout(function() {
             refreshTimer = null;
-            // Preserve current filter/order params from the active URL
-            var url = '/partials/feed' + window.location.search;
-            fetch(url, {headers: {'HX-Request': 'true'}})
-                .then(function(r) { return r.ok ? r.text() : null; })
-                .then(function(html) {
-                    if (html !== null) container.innerHTML = html;
-                })
-                .catch(function() { /* silent — next SSE will retry */ });
+            doRefetch();
         }, 750);
     }
+
+    backBtn.addEventListener('click', function() {
+        // Close any expanded cards so the freeze lifts, then swap + scroll.
+        container.querySelectorAll('details.feed-card[open]').forEach(function(d) {
+            d.open = false;
+        });
+        doRefetch().then(function() {
+            window.scrollTo({top: 0, behavior: 'smooth'});
+        });
+    });
+
+    // `toggle` doesn't bubble — listen in capture phase at the container
+    container.addEventListener('toggle', function() {
+        // When the user closes their last open card AND is near the top,
+        // freeze lifts. If pending events accrued, catch up immediately.
+        if (!isFrozen() && pendingNew > 0) {
+            doRefetch();
+        } else {
+            updateBackBtn();
+        }
+    }, true);
+
+    var scrollTimer = null;
+    window.addEventListener('scroll', function() {
+        if (scrollTimer) clearTimeout(scrollTimer);
+        scrollTimer = setTimeout(function() {
+            if (!isFrozen() && pendingNew > 0) {
+                doRefetch();
+            } else {
+                updateBackBtn();
+            }
+        }, 150);
+    }, {passive: true});
 
     connectSSE();
 
