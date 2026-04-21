@@ -1885,6 +1885,29 @@ def migrate(path: Path, dry_run: bool) -> None:
         if modified and not dry_run:
             cfg_path.write_text(json.dumps(data, indent=2) + "\n")
 
+    # 3. Backfill integration template files (idempotent, detection-gated).
+    #    Templates ship with the repo; syncs may add files or update stale ones.
+    from callmem.core.integrations import (
+        ensure_claude_code_commands,
+        ensure_opencode_plugin,
+    )
+    opencode_detected = (
+        (project / "opencode.json").exists()
+        or (project / ".opencode.json").exists()
+    )
+    claude_detected = (project / ".mcp.json").exists()
+    _silent = lambda m: None  # noqa: E731
+    if opencode_detected:
+        for name in ensure_opencode_plugin(
+            project, echo=_silent, dry_run=dry_run,
+        ):
+            changes.append(f"sync template: .opencode/.../{name}")
+    if claude_detected:
+        for name in ensure_claude_code_commands(
+            project, echo=_silent, dry_run=dry_run,
+        ):
+            changes.append(f"sync template: .claude/commands/{name}")
+
     # Report
     if not changes:
         click.echo("Nothing to migrate — this project is already on callmem.")

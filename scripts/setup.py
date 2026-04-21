@@ -276,82 +276,12 @@ def _claude_md_is_separate_file(claude_path: Path, agents_path: Path) -> bool:
     return True
 
 
-def _ensure_claude_code_mcp(project: Path) -> None:
-    """Ensure .mcp.json has callmem MCP server configured for Claude Code."""
-    mcp_path = project / ".mcp.json"
-
-    config: dict = {}
-    if mcp_path.exists():
-        try:
-            config = json.loads(mcp_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            print(f"  Warning: could not parse {mcp_path.name}, leaving unchanged")
-            return
-
-    detected = _detect_mcp_command(project)
-    command, args = detected[0], detected[1:]
-
-    servers = config.get("mcpServers") or {}
-    existing = servers.get("callmem", {})
-    if existing.get("command") == command and existing.get("args") == args:
-        print(f"  {mcp_path.name} already has callmem MCP server")
-        return
-
-    servers["callmem"] = {"command": command, "args": args}
-    config["mcpServers"] = servers
-
-    mcp_path.write_text(json.dumps(config, indent=2) + "\n")
-    action = "Updated" if existing else "Wrote"
-    print(f"  {action} callmem MCP server in {mcp_path.name}")
-
-
-def _detect_mcp_command(project: Path) -> list[str]:
-    """Detect the best command to run the callmem MCP server.
-
-    Checks in order:
-    1. System Python can import callmem → use python3 directly.
-    2. We're inside the callmem project itself → use uv run.
-    3. Find callmem install path → use uv run --directory.
-    4. Fallback → use python3 (best-effort).
-    """
-    import subprocess
-
-    # 1. Check if callmem is importable from system Python
-    try:
-        result = subprocess.run(
-            ["python3", "-c", "import callmem"],
-            capture_output=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return ["python3", "-m", "callmem.mcp.server", "--project", "."]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # 2. Check if we're in the callmem project itself
-    if (project / "src" / "callmem").is_dir():
-        return ["uv", "run", "python", "-m", "callmem.mcp.server", "--project", "."]
-
-    # 3. Fall back to uv with --directory pointing to callmem source
-    try:
-        result = subprocess.run(
-            [
-                "python3", "-c",
-                "import callmem; from pathlib import Path; "
-                "print(Path(callmem.__file__).parent.parent.parent)",
-            ],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            callmem_dir = result.stdout.strip()
-            return [
-                "uv", "run", "--directory", callmem_dir,
-                "python", "-m", "callmem.mcp.server", "--project", ".",
-            ]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # 4. Ultimate fallback
-    return ["python3", "-m", "callmem.mcp.server", "--project", "."]
+from callmem.core.integrations import (
+    detect_mcp_command as _detect_mcp_command,
+    ensure_claude_code_commands as _ensure_claude_code_commands,
+    ensure_claude_code_mcp as _ensure_claude_code_mcp,
+    ensure_opencode_plugin as _ensure_opencode_plugin,
+)
 
 
 # ── Session import ───────────────────────────────────────────────────
@@ -754,69 +684,6 @@ def _ensure_agents_mcp_block(agents_path: Path) -> None:
     content += _MCP_BLOCK_SNIPPET
     agents_path.write_text(content, encoding="utf-8")
     print("  Patched AGENTS.md with callmem MCP tool instructions")
-
-
-# ── OpenCode plugin / command provisioning ─────────────────────────
-
-
-def _ensure_opencode_plugin(project: Path) -> None:
-    """Install OpenCode auto-briefing plugin and /briefing command if missing or outdated."""
-    import filecmp
-
-    templates_dir = Path(__file__).parent / "templates" / "opencode"
-    # When running as scripts/setup.py the templates dir is a sibling
-    if not templates_dir.is_dir():
-        templates_dir = Path(__file__).parent.parent / "templates" / "opencode"
-    if not templates_dir.is_dir():
-        return
-
-    targets = [
-        (templates_dir / "plugins" / "auto-briefing.js", project / ".opencode" / "plugins" / "auto-briefing.js"),
-        (templates_dir / "commands" / "briefing.md", project / ".opencode" / "commands" / "briefing.md"),
-    ]
-
-    installed: list[str] = []
-    for src, dst in targets:
-        if not src.exists():
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
-            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-            installed.append(dst.name)
-
-    if installed:
-        print(f"  Installed OpenCode files: {', '.join(installed)}")
-    else:
-        print("  OpenCode plugin and command already up to date")
-
-
-def _ensure_claude_code_commands(project: Path) -> None:
-    """Install Claude Code /briefing slash command if missing or outdated."""
-    import filecmp
-
-    templates_dir = Path(__file__).parent / "templates" / "claude"
-    if not templates_dir.is_dir():
-        templates_dir = Path(__file__).parent.parent / "templates" / "claude"
-    if not templates_dir.is_dir():
-        return
-
-    targets = [
-        (templates_dir / "commands" / "briefing.md", project / ".claude" / "commands" / "briefing.md"),
-    ]
-
-    installed: list[str] = []
-    for src, dst in targets:
-        if not src.exists():
-            continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
-            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-            installed.append(dst.name)
-
-    if installed:
-        print(f"  Installed Claude Code commands: {', '.join(installed)}")
-    else:
-        print("  Claude Code commands already up to date")
 
 
 # ── Initial briefing generation ────────────────────────────────────
