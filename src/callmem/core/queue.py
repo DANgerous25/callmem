@@ -188,6 +188,56 @@ class JobQueue:
         finally:
             conn.close()
 
+    def reap_orphaned_running(self, stale_after_seconds: int = 300) -> int:
+        """Recover jobs stuck in 'running' after a daemon crash/restart.
+
+        Workers mark a job 'running' when they dequeue it and only flip it
+        to 'completed' or 'failed' when they're done. If the daemon is
+        killed mid-inference, the job stays 'running' forever and nothing
+        else picks it up.
+
+        This is safe because the queue is single-writer per DB: only one
+        callmem daemon ever points at a given .callmem/memory.db, so any
+        'running' row older than ``stale_after_seconds`` is ours and it's
+        orphaned. We push it back to 'pending' (or to 'failed' once it
+        has burned through max_attempts) so the next dequeue picks it up.
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, attempts, max_attempts FROM jobs "
+                "WHERE status = 'running' "
+                "AND (started_at IS NULL "
+                "     OR started_at <= datetime('now', ?))",
+                (f"-{int(stale_after_seconds)} seconds",),
+            ).fetchall()
+
+            reaped = 0
+            for r in rows:
+                if r["attempts"] >= r["max_attempts"]:
+                    conn.execute(
+                        "UPDATE jobs SET status = 'failed', "
+                        "error = 'orphaned — daemon died mid-run, retries exhausted' "
+                        "WHERE id = ?",
+                        (r["id"],),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE jobs SET status = 'pending', "
+                        "started_at = NULL "
+                        "WHERE id = ?",
+                        (r["id"],),
+                    )
+                reaped += 1
+            conn.commit()
+            if reaped:
+                logger.info(
+                    "Reaped %d orphaned 'running' job(s) on startup", reaped,
+                )
+            return reaped
+        finally:
+            conn.close()
+
     def get_status_summary(self) -> dict[str, int]:
         """Return counts by status."""
         conn = self.db.connect()
