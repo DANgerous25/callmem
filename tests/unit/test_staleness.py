@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from click.testing import CliRunner
@@ -29,6 +30,17 @@ if TYPE_CHECKING:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _hours_ago(hours: float) -> str:
+    """ISO-8601 UTC timestamp N hours before test run.
+
+    Using relative dates (instead of hardcoded ``2026-04-19T…``) keeps the
+    staleness tests from rotting every time the real clock moves past the
+    StalenessChecker default lookback window.
+    """
+    moment = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return moment.isoformat()
+
+
 def _make_engine(project: Path) -> MemoryEngine:
     runner = CliRunner()
     result = runner.invoke(main, ["init", "--project", str(project)])
@@ -45,8 +57,12 @@ def _insert_entity(
     etype: str,
     title: str,
     content: str,
-    created_at: str = "2026-04-19T10:00:00+00:00",
+    created_at: str | None = None,
 ) -> str:
+    if created_at is None:
+        # Default to "2 hours ago" so entities land well inside any
+        # reasonable lookback window regardless of test run time.
+        created_at = _hours_ago(2)
     entity = Entity(
         project_id=project_id, type=etype,
         title=title, content=content,
@@ -284,21 +300,21 @@ class TestAutomaticDetection:
         self, tmp_path: Path,
     ) -> None:
         engine = _make_engine(tmp_path)
-        # Older entity — created in the past.
+        # Older entity — still inside the 24h lookback window.
         older = _insert_entity(
             engine.repo, engine.project_id,
             "decision",
             "auth uses JWT tokens",
             "tokens signed with RS256 keypair rotated quarterly",
-            created_at="2026-04-19T09:00:00+00:00",
+            created_at=_hours_ago(12),
         )
-        # Newer entity — sits inside the default lookback window.
+        # Newer entity — also inside the window, but more recent.
         _insert_entity(
             engine.repo, engine.project_id,
             "decision",
             "auth uses session cookies",
             "cookie-backed sessions, replaced JWT auth approach",
-            created_at="2026-04-19T11:00:00+00:00",
+            created_at=_hours_ago(1),
         )
 
         llm = _StubLLM(verdict="superseded")
@@ -319,12 +335,12 @@ class TestAutomaticDetection:
         older = _insert_entity(
             engine.repo, engine.project_id,
             "fact", "queue backend is Redis", "used for background jobs",
-            created_at="2026-04-19T09:00:00+00:00",
+            created_at=_hours_ago(12),
         )
         _insert_entity(
             engine.repo, engine.project_id,
             "fact", "Redis serves caching layer", "distinct use case",
-            created_at="2026-04-19T11:00:00+00:00",
+            created_at=_hours_ago(1),
         )
         llm = _StubLLM(verdict="coexists")
         checker = StalenessChecker(engine.db, llm, lookback_minutes=24 * 60)
@@ -336,7 +352,7 @@ class TestAutomaticDetection:
         _insert_entity(
             engine.repo, engine.project_id,
             "change", "bumped dep", "bumped click version",
-            created_at="2026-04-19T11:00:00+00:00",
+            created_at=_hours_ago(1),
         )
         llm = _StubLLM(verdict="superseded")
         checker = StalenessChecker(engine.db, llm, lookback_minutes=24 * 60)
@@ -348,7 +364,7 @@ class TestAutomaticDetection:
         _insert_entity(
             engine.repo, engine.project_id,
             "decision", "a title", "some content",
-            created_at="2026-04-19T11:00:00+00:00",
+            created_at=_hours_ago(1),
         )
         checker = StalenessChecker(engine.db, ollama=None)
         assert checker.run(engine.project_id) == []
