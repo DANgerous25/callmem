@@ -59,6 +59,17 @@ class WorkerRunner:
 
     def start(self) -> None:
         """Start the worker loop in a background daemon thread."""
+        # Recover jobs left in 'running' from a prior daemon that died
+        # mid-inference (e.g. systemctl restart during an Ollama call).
+        # Without this they sit frozen forever because dequeue() only
+        # picks up 'pending' rows.
+        try:
+            reaped = self.queue.reap_orphaned_running()
+            if reaped:
+                self._publish_queue_status()
+        except Exception as exc:  # noqa: BLE001 — reaper must never block startup
+            logger.warning("Orphaned-job reaper failed: %s", exc)
+
         self.running = True
         self._thread = threading.Thread(
             target=self._run_loop, daemon=True, name="callmem-worker"
