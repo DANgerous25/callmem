@@ -93,7 +93,7 @@ class KnowledgeAgent:
             context=context, question=question
         )
 
-        response = self.ollama._generate(prompt)
+        response = self.ollama.extract(prompt)
         if response is None:
             return "LLM unavailable — cannot answer query."
         return response

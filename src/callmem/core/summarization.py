@@ -78,7 +78,7 @@ class Summarizer:
             f"[{e['type']}] {e['content']}" for e in events
         )
         prompt = CHUNK_SUMMARY_PROMPT.format(events_text=events_text)
-        response = self.ollama._generate(prompt)
+        response = self.ollama.extract(prompt)
         if response is None:
             raise RuntimeError("Ollama returned no response for chunk summary")
 
@@ -117,7 +117,7 @@ class Summarizer:
             chunks_text=chunks_text or "None",
             remaining_events_text=remaining_text or "None",
         )
-        response = self.ollama._generate(prompt)
+        response = self.ollama.extract(prompt)
         if response is None:
             raise RuntimeError("Ollama returned no response for session summary")
 
@@ -153,7 +153,7 @@ class Summarizer:
             sessions_text=sessions_text,
             max_tokens=max_tokens,
         )
-        response = self.ollama._generate(prompt)
+        response = self.ollama.extract(prompt)
         if response is None:
             raise RuntimeError("Ollama returned no response for cross-session summary")
 

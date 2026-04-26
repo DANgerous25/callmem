@@ -84,37 +84,40 @@ class JobQueue:
         """Claim the next pending job, optionally filtered by type.
 
         Sets status to 'running' and increments attempts.
-        Returns None if no jobs are available.
+        Uses a single atomic UPDATE with RETURNING so concurrent workers
+        never claim the same job. Returns None if no jobs are available.
         """
         conn = self.db.connect()
         try:
             if job_type is not None:
                 row = conn.execute(
-                    "SELECT * FROM jobs "
-                    "WHERE status = 'pending' AND type = ? "
-                    "ORDER BY created_at ASC LIMIT 1",
+                    "UPDATE jobs SET status = 'running', "
+                    "started_at = datetime('now'), "
+                    "attempts = attempts + 1 "
+                    "WHERE id = ("
+                    "  SELECT id FROM jobs "
+                    "  WHERE status = 'pending' AND type = ? "
+                    "  ORDER BY created_at ASC LIMIT 1"
+                    ") RETURNING *",
                     (job_type,),
                 ).fetchone()
             else:
                 row = conn.execute(
-                    "SELECT * FROM jobs "
-                    "WHERE status = 'pending' "
-                    "ORDER BY created_at ASC LIMIT 1",
+                    "UPDATE jobs SET status = 'running', "
+                    "started_at = datetime('now'), "
+                    "attempts = attempts + 1 "
+                    "WHERE id = ("
+                    "  SELECT id FROM jobs "
+                    "  WHERE status = 'pending' "
+                    "  ORDER BY created_at ASC LIMIT 1"
+                    ") RETURNING *",
                 ).fetchone()
 
             if row is None:
                 return None
 
-            job = Job.from_row(dict(row))
-            conn.execute(
-                "UPDATE jobs SET status = 'running', started_at = datetime('now'), "
-                "attempts = attempts + 1 WHERE id = ?",
-                (job.id,),
-            )
             conn.commit()
-            job.status = "running"
-            job.attempts += 1
-            return job
+            return Job.from_row(dict(row))
         finally:
             conn.close()
 

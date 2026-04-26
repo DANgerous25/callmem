@@ -34,6 +34,7 @@ ENTITY_TYPE_MAP = {
 }
 
 EXTRACTION_BATCH_SIZE = 10
+MAX_EVENTS_PER_JOB = 50
 
 
 class EntityExtractor:
@@ -52,12 +53,33 @@ class EntityExtractor:
 
     def enqueue_extraction(
         self, event_ids: list[str], session_id: str | None = None
-    ) -> str:
-        """Queue an extraction job for the given events."""
-        payload: dict[str, Any] = {"event_ids": event_ids}
-        if session_id is not None:
-            payload["session_id"] = session_id
-        return self.queue.enqueue("extract_entities", payload)
+    ) -> list[str]:
+        """Queue extraction jobs for the given events.
+
+        If the event count exceeds MAX_EVENTS_PER_JOB, the batch is split
+        into multiple jobs to avoid exceeding the LLM context window.
+        Returns the list of job IDs created.
+        """
+        max_events = MAX_EVENTS_PER_JOB
+        if max_events <= 0 or len(event_ids) <= max_events:
+            payload: dict[str, Any] = {"event_ids": event_ids}
+            if session_id is not None:
+                payload["session_id"] = session_id
+            return [self.queue.enqueue("extract_entities", payload)]
+
+        job_ids: list[str] = []
+        for i in range(0, len(event_ids), max_events):
+            chunk = event_ids[i:i + max_events]
+            payload = {"event_ids": chunk}
+            if session_id is not None:
+                payload["session_id"] = session_id
+            job_ids.append(self.queue.enqueue("extract_entities", payload))
+            logger.info(
+                "Split extraction job: %d events (batch %d/%d)",
+                len(chunk), (i // max_events) + 1,
+                (len(event_ids) + max_events - 1) // max_events,
+            )
+        return job_ids
 
     def process_pending(self) -> list[Entity]:
         """Process all pending extraction jobs.
@@ -95,7 +117,7 @@ class EntityExtractor:
 
         events_text = self._format_events(events)
         prompt = EXTRACTION_PROMPT.format(events_text=events_text)
-        response = self.ollama._generate(prompt)
+        response = self.ollama.extract(prompt)
         if response is None:
             raise RuntimeError("Ollama returned no response for extraction")
 

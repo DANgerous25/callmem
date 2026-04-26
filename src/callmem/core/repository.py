@@ -70,6 +70,15 @@ class Repository:
         finally:
             conn.close()
 
+    def list_projects(self) -> list[dict[str, Any]]:
+        """List all projects with id and name."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute("SELECT id, name FROM projects ORDER BY name").fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     # ── Sessions ─────────────────────────────────────────────────────
 
     def insert_session(self, session: Session) -> None:
@@ -149,6 +158,23 @@ class Repository:
                 (project_id, limit, offset),
             ).fetchall()
             return [Session.from_row(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    def get_sessions_by_ids(
+        self, session_ids: list[str]
+    ) -> list[dict[str, Any]]:
+        """Fetch sessions by IDs, returning raw dicts."""
+        if not session_ids:
+            return []
+        conn = self.db.connect()
+        try:
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = conn.execute(
+                f"SELECT * FROM sessions WHERE id IN ({placeholders})",
+                session_ids,
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 
@@ -257,6 +283,142 @@ class Repository:
                 f"SELECT COUNT(*) as c FROM events WHERE {where}", params
             ).fetchone()
             return row["c"]
+        finally:
+            conn.close()
+
+    def get_events_by_ids(
+        self, event_ids: list[str], order_by: str = "timestamp ASC"
+    ) -> list[dict[str, Any]]:
+        """Fetch events by their IDs. Returns raw dicts."""
+        if not event_ids:
+            return []
+        conn = self.db.connect()
+        try:
+            placeholders = ",".join("?" for _ in event_ids)
+            rows = conn.execute(
+                f"SELECT * FROM events WHERE id IN ({placeholders}) "
+                f"ORDER BY {order_by}",
+                event_ids,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def count_all(
+        self, table: str, project_id: str | None = None,
+    ) -> int:
+        """Count rows in a table, optionally filtered by project_id."""
+        conn = self.db.connect()
+        try:
+            if project_id:
+                row = conn.execute(
+                    f"SELECT COUNT(*) as c FROM {table} WHERE project_id = ?",
+                    (project_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    f"SELECT COUNT(*) as c FROM {table}",
+                ).fetchone()
+            return row["c"]
+        finally:
+            conn.close()
+
+    def get_session_event_ids_for_summary(
+        self, session_id: str, chunk_size: int, offset: int,
+    ) -> list[str]:
+        """Get event IDs for a chunk summary at the given offset."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM events "
+                "WHERE session_id = ? ORDER BY timestamp ASC "
+                "LIMIT ? OFFSET ?",
+                (session_id, chunk_size, offset),
+            ).fetchall()
+            return [r["id"] for r in rows]
+        finally:
+            conn.close()
+
+    def count_ended_sessions(self, project_id: str) -> int:
+        """Count ended sessions for a project."""
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM sessions "
+                "WHERE project_id = ? AND status = 'ended'",
+                (project_id,),
+            ).fetchone()
+            return row["c"]
+        finally:
+            conn.close()
+
+    def insert_summary(self, id: str, project_id: str, session_id: str | None,
+                       level: str, content: str,
+                       event_range_start: str | None,
+                       event_range_end: str | None,
+                       event_count: int | None,
+                       token_count: int,
+                       created_at: str,
+                       metadata: str | None) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO summaries "
+                "(id, project_id, session_id, level, content, "
+                "event_range_start, event_range_end, event_count, "
+                "token_count, created_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (id, project_id, session_id, level, content,
+                 event_range_start, event_range_end, event_count,
+                 token_count, created_at, metadata),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ── FTS5 ─────────────────────────────────────────────────────────
+
+    def search_events_fts(
+        self, project_id: str, query: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search events using FTS5, filtered by project."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.id, e.type, e.content, e.timestamp, e.session_id, "
+                "e.archived_at "
+                "FROM events_fts f "
+                "JOIN events e ON e.rowid = f.rowid "
+                "WHERE events_fts MATCH ? AND e.project_id = ? "
+                "ORDER BY rank LIMIT ?",
+                (query, project_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def search_entities_fts_by_type(
+        self, project_id: str, query: str, entity_type: str,
+        before: str, exclude_id: str, limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Search entities using FTS5, filtered by project and type."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.id, e.type, e.title, e.content, e.created_at "
+                "FROM entities_fts f "
+                "JOIN entities e ON e.rowid = f.rowid "
+                "WHERE entities_fts MATCH ? "
+                "AND e.project_id = ? AND e.type = ? "
+                "AND e.stale = 0 AND e.archived_at IS NULL "
+                "AND e.created_at < ? "
+                "AND e.id != ? "
+                "ORDER BY e.created_at DESC LIMIT ?",
+                (query, project_id, entity_type, before, exclude_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:  # pragma: no cover — bad FTS query
+            return []
         finally:
             conn.close()
 
@@ -380,6 +542,24 @@ class Repository:
         try:
             row = conn.execute(
                 "SELECT * FROM entities WHERE id = ?", (entity_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(Entity.from_row(dict(row)).to_row())
+        finally:
+            conn.close()
+
+    def get_entity_by_short_id(self, short_id: str) -> dict[str, Any] | None:
+        """Look up an entity by its short ID prefix or suffix."""
+        from callmem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM entities "
+                "WHERE id LIKE ? OR id LIKE ? "
+                "LIMIT 1",
+                (f"{short_id}%", f"%{short_id}"),
             ).fetchone()
             if row is None:
                 return None

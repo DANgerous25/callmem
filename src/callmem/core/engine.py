@@ -346,38 +346,8 @@ class MemoryEngine:
         self, query: str, project_id: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
         """Search events using FTS5 full-text search."""
-        conn = self.db.connect()
-        try:
-            if project_id:
-                rows = conn.execute(
-                    "SELECT e.id, e.type, e.content, e.timestamp, e.session_id "
-                    "FROM events_fts f "
-                    "JOIN events e ON e.rowid = f.rowid "
-                    "WHERE events_fts MATCH ? AND e.project_id = ? "
-                    "ORDER BY rank LIMIT ?",
-                    (query, project_id, limit),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT e.id, e.type, e.content, e.timestamp, e.session_id "
-                    "FROM events_fts f "
-                    "JOIN events e ON e.rowid = f.rowid "
-                    "WHERE events_fts MATCH ? "
-                    "ORDER BY rank LIMIT ?",
-                    (query, limit),
-                ).fetchall()
-            return [
-                {
-                    "id": r["id"],
-                    "type": r["type"],
-                    "content": r["content"],
-                    "timestamp": r["timestamp"],
-                    "session_id": r["session_id"],
-                }
-                for r in rows
-            ]
-        finally:
-            conn.close()
+        pid = project_id or self.project_id
+        return self.repo.search_events_fts(pid, query, limit)
 
     def get_entities(
         self,
@@ -587,30 +557,19 @@ class MemoryEngine:
             {"source": "endless_mode", "message_range": message_range or None},
         )
 
-        conn = self.db.connect()
-        try:
-            conn.execute(
-                "INSERT INTO summaries "
-                "(id, project_id, session_id, level, content, "
-                "event_range_start, event_range_end, event_count, "
-                "token_count, created_at, metadata) "
-                "VALUES (?, ?, ?, 'chunk', ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    summary_id,
-                    session.project_id,
-                    session_id,
-                    summary,
-                    message_range or None,
-                    message_range or None,
-                    None,
-                    len(summary) // 4,
-                    now,
-                    meta_blob,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        self.repo.insert_summary(
+            id=summary_id,
+            project_id=session.project_id,
+            session_id=session_id,
+            level="chunk",
+            content=summary,
+            event_range_start=message_range or None,
+            event_range_end=message_range or None,
+            event_count=None,
+            token_count=len(summary) // 4,
+            created_at=now,
+            metadata=meta_blob,
+        )
 
         metadata = dict(session.metadata or {})
         compressions = int(metadata.get("compression_events", 0)) + 1
@@ -859,18 +818,9 @@ class MemoryEngine:
         if session.event_count % chunk_size != 0:
             return
 
-        conn = self.db.connect()
-        try:
-            rows = conn.execute(
-                "SELECT id FROM events "
-                "WHERE session_id = ? ORDER BY timestamp ASC "
-                "LIMIT ? OFFSET ?",
-                (session.id, chunk_size, session.event_count - chunk_size),
-            ).fetchall()
-        finally:
-            conn.close()
-
-        event_ids = [r["id"] for r in rows]
+        event_ids = self.repo.get_session_event_ids_for_summary(
+            session.id, chunk_size, session.event_count - chunk_size,
+        )
         if not event_ids:
             return
 
@@ -892,16 +842,7 @@ class MemoryEngine:
         if interval <= 0:
             return
 
-        conn = self.db.connect()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM sessions "
-                "WHERE project_id = ? AND status = 'ended'",
-                (project_id,),
-            ).fetchone()
-            ended_count = row["c"]
-        finally:
-            conn.close()
+        ended_count = self.repo.count_ended_sessions(project_id)
 
         if ended_count % interval != 0:
             return

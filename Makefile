@@ -58,3 +58,11 @@ typecheck:
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache __pycache__ dist/
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+
+# Build package for PyPI
+build:
+	uv build
+
+# Publish to PyPI (requires PYPI_TOKEN or uv auth configured)
+publish: build
+	uv publish

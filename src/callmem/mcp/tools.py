@@ -598,23 +598,12 @@ def handle_get_entities(
         eid = (raw_eid or "").lstrip("#").strip()
         if not eid:
             continue
-        conn = engine.db.connect()
-        try:
-            row = conn.execute(
-                "SELECT * FROM entities WHERE id = ?", (eid,)
-            ).fetchone()
-            if row is None and len(eid) < 26:
-                row = conn.execute(
-                    "SELECT * FROM entities "
-                    "WHERE id LIKE ? OR id LIKE ? "
-                    "LIMIT 2",
-                    (f"{eid}%", f"%{eid}"),
-                ).fetchone()
-        finally:
-            conn.close()
+        row = engine.repo.get_entity(eid)
+        if row is None and len(eid) < 26:
+            row = engine.repo.get_entity_by_short_id(eid)
         if row:
             from callmem.models.entities import Entity
-            entity = Entity.from_row(dict(row))
+            entity = Entity.from_row(row)
             full_id = row["id"]
             files = engine.repo.get_files_for_entity(full_id)
             d = entity.to_row()
