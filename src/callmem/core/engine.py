@@ -311,6 +311,11 @@ class MemoryEngine:
                 "session_id": r.session_id,
                 "key_points": r.key_points,
                 "synopsis": r.synopsis,
+                "extracted_by": r.extracted_by,
+                "status": r.status,
+                "priority": r.priority,
+                "pinned": r.pinned,
+                "stale": r.stale,
             }
             for r in results
         ]
