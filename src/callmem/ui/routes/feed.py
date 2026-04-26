@@ -24,43 +24,26 @@ def _resolve_event_session_map(
     if not source_event_ids:
         return {}
 
+    events = engine.repo.get_events_by_ids(source_event_ids)
     event_to_session: dict[str, str | None] = {}
     event_timestamp: dict[str, str | None] = {}
-    session_model_cache: dict[str, str | None] = {}
-
-    conn = engine.db.connect()
-    try:
-        placeholders = ",".join("?" for _ in source_event_ids)
-        rows = conn.execute(
-            f"SELECT id, session_id, timestamp FROM events WHERE id IN ({placeholders})",
-            source_event_ids,
-        ).fetchall()
-        for row in rows:
-            event_to_session[row["id"]] = row["session_id"]
-            event_timestamp[row["id"]] = row["timestamp"]
-    finally:
-        conn.close()
+    for ev in events:
+        event_to_session[ev["id"]] = ev.get("session_id")
+        event_timestamp[ev["id"]] = ev.get("timestamp")
 
     session_ids = {sid for sid in event_to_session.values() if sid}
+    session_model_map: dict[str, str | None] = {}
     if session_ids:
-        conn = engine.db.connect()
-        try:
-            placeholders = ",".join("?" for _ in session_ids)
-            rows = conn.execute(
-                f"SELECT id, model_name FROM sessions WHERE id IN ({placeholders})",
-                list(session_ids),
-            ).fetchall()
-            for row in rows:
-                session_model_cache[row["id"]] = row["model_name"]
-        finally:
-            conn.close()
+        sessions = engine.repo.get_sessions_by_ids(list(session_ids))
+        for s in sessions:
+            session_model_map[s["id"]] = s.get("model_name")
 
     result: dict[str, dict[str, str | None]] = {}
     for eid in source_event_ids:
         sid = event_to_session.get(eid)
         result[eid] = {
             "session_id": sid,
-            "model_name": session_model_cache.get(sid) if sid else None,
+            "model_name": session_model_map.get(sid) if sid else None,
             "event_timestamp": event_timestamp.get(eid),
         }
     return result
@@ -197,22 +180,13 @@ async def feed(request: Request) -> HTMLResponse:
     project_name = engine.config.project.name or "default"
     include_stale = request.query_params.get("include_stale") == "true"
 
-    conn = engine.db.connect()
-    try:
-        event_count = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
-        entity_count = conn.execute("SELECT COUNT(*) as c FROM entities").fetchone()["c"]
-        session_count = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()["c"]
-    finally:
-        conn.close()
+    event_count = engine.repo.count_all("events")
+    entity_count = engine.repo.count_all("entities")
+    session_count = engine.repo.count_all("sessions")
 
     items = _build_feed_items(engine, include_stale=include_stale)
 
-    conn2 = engine.db.connect()
-    try:
-        prows = conn2.execute("SELECT id, name FROM projects").fetchall()
-    finally:
-        conn2.close()
-    projects = [{"id": r["id"], "name": r["name"]} for r in prows]
+    projects = engine.repo.list_projects()
 
     # Which LLM is currently wired for extraction — shown in the status bar
     extraction_model: str | None = None

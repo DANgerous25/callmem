@@ -21,15 +21,9 @@ async def dashboard(request: Request) -> HTMLResponse:
 
     sessions = engine.list_sessions(limit=5)
     entities = engine.get_entities(limit=5)
-
-    conn = engine.db.connect()
-    try:
-        event_count = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
-        entity_count = conn.execute("SELECT COUNT(*) as c FROM entities").fetchone()["c"]
-        session_count = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()["c"]
-    finally:
-        conn.close()
-
+    event_count = engine.repo.count_all("events")
+    entity_count = engine.repo.count_all("entities")
+    session_count = engine.repo.count_all("sessions")
     active_session = engine.get_active_session()
 
     return render_template(
@@ -54,15 +48,9 @@ async def dashboard_partial(request: Request) -> HTMLResponse:
 
     sessions = engine.list_sessions(limit=5)
     entities = engine.get_entities(limit=5)
-
-    conn = engine.db.connect()
-    try:
-        event_count = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
-        entity_count = conn.execute("SELECT COUNT(*) as c FROM entities").fetchone()["c"]
-        session_count = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()["c"]
-    finally:
-        conn.close()
-
+    event_count = engine.repo.count_all("events")
+    entity_count = engine.repo.count_all("entities")
+    session_count = engine.repo.count_all("sessions")
     active_session = engine.get_active_session()
 
     return render_template(

@@ -147,19 +147,7 @@ class RetrievalEngine:
         results: dict[str, SearchResult],
         types: list[str] | None,
     ) -> None:
-        conn = self.repo.db.connect()
-        try:
-            rows = conn.execute(
-                "SELECT e.id, e.type, e.content, e.timestamp, e.session_id, "
-                "e.metadata, e.archived_at "
-                "FROM events_fts f "
-                "JOIN events e ON e.rowid = f.rowid "
-                "WHERE events_fts MATCH ? AND e.project_id = ? "
-                "ORDER BY rank LIMIT ?",
-                (query, project_id, limit),
-            ).fetchall()
-        finally:
-            conn.close()
+        rows = self.repo.search_events_fts(project_id, query, limit)
 
         now = datetime.now(UTC).isoformat()
         for r in rows:
@@ -176,7 +164,7 @@ class RetrievalEngine:
                 score=score,
                 timestamp=r["timestamp"],
                 session_id=r["session_id"],
-                metadata={"archived_at": r["archived_at"]},
+                metadata={"archived_at": r.get("archived_at")},
             )
 
     def _search_entities(
