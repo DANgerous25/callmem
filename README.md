@@ -102,14 +102,16 @@ ollama pull qwen3:8b
 ### 2. Install callmem
 
 ```bash
-git clone https://github.com/DANgerous25/callmem.git
+# Install with pip (recommended)
+pip install callmem
+
+# Or with uv
+uv pip install callmem
+
+# Or install from source for development
+git clone https://github.com/callmem/callmem.git
 cd callmem
-
-# Install with uv (recommended)
-uv sync
-
-# Or with pip
-pip install -e .
+uv sync --extra dev
 ```
 
 ### 3. Run the Setup Wizard
@@ -323,11 +325,8 @@ callmem/
 │   ├── mcp/            # MCP server and tool definitions
 │   ├── models/         # Data models, config, entity types
 │   └── ui/             # Web UI (FastAPI + Jinja2 + htmx + SSE)
-├── scripts/            # Setup wizard, session helpers
-├── tests/              # 400+ tests (unit + integration)
-├── docs/
-│   ├── work-orders/    # Implementation tickets
-│   └── ...             # Architecture, schema, config, roadmap docs
+├── tests/              # 630+ tests (unit + integration)
+├── docs/               # Architecture, schema, config, roadmap docs
 └── pyproject.toml
 ```
 

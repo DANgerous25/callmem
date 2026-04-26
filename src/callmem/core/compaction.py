@@ -278,7 +278,7 @@ class Compactor:
                     project_id,
                     now,
                     stats.events_archived,
-                    0,
+                    stats.summaries_archived,
                     stats.entities_archived,
                     stats.duration_ms,
                     json.dumps({

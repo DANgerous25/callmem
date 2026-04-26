@@ -1,0 +1,140 @@
+# callmem default configuration
+# Copy this to .callmem/config.toml in your project root and edit as needed.
+# All settings have sensible defaults — you only need to override what you
+# want to change.
+
+# ── LLM backend ──────────────────────────────────────────
+[llm]
+# Which model to use for memory maintenance (extraction, summarization, etc.)
+# Options: "ollama", "openai_compat", "none"
+#   "ollama"        — local Ollama instance (recommended)
+#   "openai_compat" — any OpenAI-compatible API (LM Studio, vLLM, GLM, etc.)
+#   "none"          — pattern matching only, no LLM features
+backend = "ollama"
+
+# ── Ollama backend ───────────────────────────────────────
+[ollama]
+# Ollama API endpoint
+endpoint = "http://localhost:11434"
+# Model to use for extraction and summarization
+# Recommended: qwen3:8b (4GB VRAM) or qwen3:30b (16GB VRAM)
+model = "qwen3:8b"
+# Request timeout in seconds
+timeout = 120
+# Context window size (null = model default)
+num_ctx = null
+
+# ── OpenAI-compatible backend ────────────────────────────
+# Only used when [llm].backend = "openai_compat"
+[openai_compat]
+endpoint = "https://open.bigmodel.cn/api/paas/v4"
+model = "glm-4-flash"
+# Environment variable containing the API key
+api_key_env = "CALLMEM_API_KEY"
+timeout = 120
+
+# ── Web UI ───────────────────────────────────────────────
+[ui]
+# Port to serve the web interface on
+port = 9090
+# Bind address. 0.0.0.0 enables access from other machines on your network
+# (e.g., via Tailscale). Use 127.0.0.1 for local-only access.
+host = "0.0.0.0"
+
+# ── Briefing ─────────────────────────────────────────────
+[briefing]
+# Maximum token budget for the startup briefing
+max_tokens = 2000
+# Automatically write SESSION_SUMMARY.md to the project root
+auto_write_session_summary = true
+# Filename for the session summary
+session_summary_filename = "SESSION_SUMMARY.md"
+# Max entities per type in the briefing
+max_per_type = 20
+# Include the most recent session in the briefing
+include_last_session = true
+# Default content view: "key_points" or "synopsis"
+default_view = "key_points"
+# Optional focus filter (null = show everything)
+focus = null
+# Only include specific entity types (empty list = all types). Example:
+# entity_types = ["decision", "fact", "todo"]
+
+# ── Extraction ───────────────────────────────────────────
+[extraction]
+# Number of events to send to the LLM in each extraction batch
+batch_size = 10
+
+# ── Ingestion filters ────────────────────────────────────
+[ingestion]
+# Tool names to skip recording (e.g., tool names to filter out).
+# Each entry is matched against the part before the first "(" in tool_call content.
+# skip_tools = ["Read", "Write", "Edit"]
+skip_tools = []
+# Glob patterns to skip entire events by content
+# skip_patterns = ["Read(*node_modules*)"]
+skip_patterns = []
+
+# ── Summarization ────────────────────────────────────────
+[summarization]
+# Number of events before a chunk summary is generated
+chunk_size = 20
+# Number of sessions before a cross-session summary is generated
+cross_session_interval = 5
+
+# ── Compaction ───────────────────────────────────────────
+[compaction]
+# Enable automatic archival of old events
+enabled = true
+# When to compact: "on_session_end" or "interval"
+schedule = "on_session_end"
+# Max events before triggering compaction
+max_events = 500
+
+# ── Sensitive data handling ──────────────────────────────
+[sensitive_data]
+# Enable sensitive data detection (pattern matching + optional LLM scan)
+enabled = true
+# Vault key management mode: "auto" (random key), "passphrase" (from env var),
+# or "disabled" (no encryption — not recommended)
+vault_mode = "auto"
+# Pattern-based scan for credentials, API keys, tokens, etc.
+pattern_scan = true
+# LLM-based contextual scan (requires a working LLM backend)
+llm_scan = true
+# Minimum confidence threshold for LLM scan results (0.0 - 1.0)
+llm_scan_confidence = 0.7
+
+# ── Adapters ─────────────────────────────────────────────
+[adapters]
+# Enable the OpenCode SSE adapter for real-time event capture
+opencode = true
+# Enable the Claude Code JSONL tailer
+claude_code = true
+# Seconds before an idle Claude Code session is automatically ended
+claude_code_idle_timeout = 300.0
+# Seconds between polling for new JSONL files
+claude_code_poll_interval = 2.0
+
+# ── Endless mode (context compression) ───────────────────
+[endless_mode]
+# Enable advisory context compression tools
+enabled = true
+# Model context window in tokens (null = derive from ollama.num_ctx)
+context_limit = null
+# Context usage ratio that triggers a compression recommendation
+compress_threshold = 0.8
+# Number of oldest messages to compress each time
+chunk_size = 30
+
+# ── Environment variable overrides ───────────────────────
+# Any config value can be overridden at runtime via environment variables
+# using the format: CALLMEM_<SECTION>__<KEY>
+#
+# Examples:
+#   CALLMEM_OLLAMA__MODEL=qwen3:30b
+#   CALLMEM_UI__PORT=9091
+#   CALLMEM_SENSITIVE_DATA__LLM_SCAN=false
+#   CALLMEM_ADAPTERS__OPENCODE=false
+#
+# Nested keys use double underscores. The env var always wins over TOML values.
