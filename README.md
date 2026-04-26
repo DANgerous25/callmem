@@ -109,7 +109,7 @@ pip install callmem
 uv pip install callmem
 
 # Or install from source for development
-git clone https://github.com/callmem/callmem.git
+git clone https://github.com/DANgerous25/callmem.git
 cd callmem
 uv sync --extra dev
 ```
