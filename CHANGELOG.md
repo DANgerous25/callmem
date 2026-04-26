@@ -18,7 +18,7 @@ The project has a new name. Everything works the same; identifiers changed:
 | Global config | `~/.config/llm-mem/` | `~/.config/callmem/` |
 | Env var prefix | `LLM_MEM_` | `CALLMEM_` |
 | Systemd unit | `llm-mem-<proj>.service` | `callmem-<proj>.service` |
-| GitHub repo | `DANgerous25/llm-mem` | `DANgerous25/callmem` |
+| GitHub repo | `llm-mem/llm-mem` | `callmem/callmem` |
 
 ### Backward compatibility
 

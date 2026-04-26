@@ -82,7 +82,7 @@ Read [docs/architecture.md](docs/architecture.md) for an overview of the system 
 
 ## Work Orders
 
-Implementation tasks are tracked as work orders in `docs/work-orders/`. Each is a self-contained ticket with acceptance criteria. If you want to tackle one, check the open ones and comment on the corresponding issue.
+Implementation tasks are tracked as work orders in `docs/`. If you want to tackle one, check the open GitHub issues.
 
 ## Reporting Issues
 

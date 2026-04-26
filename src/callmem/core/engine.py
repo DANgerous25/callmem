@@ -309,6 +309,8 @@ class MemoryEngine:
                 "score": round(r.score, 4),
                 "timestamp": r.timestamp,
                 "session_id": r.session_id,
+                "key_points": r.key_points,
+                "synopsis": r.synopsis,
             }
             for r in results
         ]
@@ -341,19 +343,29 @@ class MemoryEngine:
         }
 
     def search_fts(
-        self, query: str, limit: int = 20
+        self, query: str, project_id: str | None = None, limit: int = 20
     ) -> list[dict[str, Any]]:
         """Search events using FTS5 full-text search."""
         conn = self.db.connect()
         try:
-            rows = conn.execute(
-                "SELECT e.id, e.type, e.content, e.timestamp, e.session_id "
-                "FROM events_fts f "
-                "JOIN events e ON e.rowid = f.rowid "
-                "WHERE events_fts MATCH ? "
-                "ORDER BY rank LIMIT ?",
-                (query, limit),
-            ).fetchall()
+            if project_id:
+                rows = conn.execute(
+                    "SELECT e.id, e.type, e.content, e.timestamp, e.session_id "
+                    "FROM events_fts f "
+                    "JOIN events e ON e.rowid = f.rowid "
+                    "WHERE events_fts MATCH ? AND e.project_id = ? "
+                    "ORDER BY rank LIMIT ?",
+                    (query, project_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT e.id, e.type, e.content, e.timestamp, e.session_id "
+                    "FROM events_fts f "
+                    "JOIN events e ON e.rowid = f.rowid "
+                    "WHERE events_fts MATCH ? "
+                    "ORDER BY rank LIMIT ?",
+                    (query, limit),
+                ).fetchall()
             return [
                 {
                     "id": r["id"],

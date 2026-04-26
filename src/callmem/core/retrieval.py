@@ -34,6 +34,13 @@ class SearchResult:
     timestamp: str
     session_id: str | None
     metadata: dict[str, Any] | None
+    key_points: str | None = None
+    synopsis: str | None = None
+    extracted_by: str | None = None
+    status: str | None = None
+    priority: str | None = None
+    pinned: bool = False
+    stale: bool = False
 
 
 def _recency_factor(timestamp: str, now: str | None = None) -> float:
@@ -229,10 +236,14 @@ class RetrievalEngine:
                 timestamp=r["updated_at"],
                 session_id=None,
                 metadata={
-                    "status": r["status"],
-                    "priority": r["priority"],
-                    "stale": bool(r["stale"]),
                     "superseded_by": r["superseded_by"],
                     "staleness_reason": r["staleness_reason"],
                 },
+                key_points=r["key_points"],
+                synopsis=r["synopsis"],
+                extracted_by=r["extracted_by"],
+                status=r["status"],
+                priority=r["priority"],
+                pinned=bool(r["pinned"]),
+                stale=bool(r["stale"]),
             )
