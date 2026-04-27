@@ -58,7 +58,7 @@ def project_slug(project_path: Path) -> str:
     """Derive the Claude Code project slug from a worktree path.
 
     CC encodes an absolute path by replacing ``/`` with ``-``, so
-    ``/home/dan/callmem`` becomes ``-home-dan-callmem``.
+    ``/home/user/my-project`` becomes ``-home-user-my-project``.
     """
     return str(project_path.resolve()).replace("/", "-")
 
