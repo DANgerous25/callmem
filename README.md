@@ -74,8 +74,8 @@ Exposes tools via the Model Context Protocol so compatible agents can query memo
 
 | Environment | Status |
 |---|---|
-| Ubuntu 24.04, x86_64 (Hetzner VPS) | Tested |
-| Ubuntu 24.04, ARM64 (Hetzner CAX31) | Tested |
+| Ubuntu 24.04, x86_64 | Tested |
+| Ubuntu 24.04, ARM64 | Tested |
 | Ollama with qwen3:8b | Tested |
 | Ollama with qwen3:30b | Tested |
 | Ollama with gemma4:e4b | Tested |
