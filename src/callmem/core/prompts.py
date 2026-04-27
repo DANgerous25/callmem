@@ -1,11 +1,12 @@
 """Prompt templates for memory-maintenance LLM operations.
 
-These prompts are sent to the local Ollama model, NOT the interactive coding model.
-See WO-06 and WO-08 for usage.
+These prompts are sent to the local Ollama model,
+NOT the interactive coding model.
 """
 
 from __future__ import annotations
 
+# ruff: noqa: E501
 EXTRACTION_PROMPT = """Analyze this coding session exchange and extract ONLY significant, non-trivial information.
 
 Events:

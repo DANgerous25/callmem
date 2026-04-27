@@ -468,10 +468,10 @@ class MemoryEngine:
 
         # Prefer the agent's own token estimate; fall back to a
         # coarse 500 tok/msg heuristic if only message_count was given.
-        TOKENS_PER_MESSAGE = 500
+        tokens_per_message = 500
         effective_tokens = (
             estimated_tokens if estimated_tokens > 0
-            else message_count * TOKENS_PER_MESSAGE
+            else message_count * tokens_per_message
         )
         usage = (
             min(1.0, effective_tokens / context_limit)
@@ -497,7 +497,7 @@ class MemoryEngine:
             return base
 
         if usage >= threshold:
-            free_hint = cfg.chunk_size * TOKENS_PER_MESSAGE
+            free_hint = cfg.chunk_size * tokens_per_message
             base["status"] = "compress_recommended"
             base["reason"] = (
                 f"Session has {message_count} messages "
@@ -508,9 +508,9 @@ class MemoryEngine:
                 f"oldest {cfg.chunk_size} messages will free context."
             )
             base["action"] = (
-                "Summarize the oldest ~{n} messages and call "
-                "mem_compress_context with the summary."
-            ).format(n=cfg.chunk_size)
+                f"Summarize the oldest ~{cfg.chunk_size} messages and call "
+                f"mem_compress_context with the summary."
+            )
             base["recommended_chunk_size"] = cfg.chunk_size
             base["free_tokens_hint"] = free_hint
             return base

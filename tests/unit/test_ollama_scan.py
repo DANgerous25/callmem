@@ -208,7 +208,11 @@ class TestGenerateHttpErrors:
         with patch("callmem.core.ollama.httpx.post") as mock_post:
             import httpx
             mock_post.return_value.raise_for_status.side_effect = (
-                httpx.HTTPStatusError("500", request=httpx.Request("POST", "http://x"), response=httpx.Response(500))
+                httpx.HTTPStatusError(
+                    "500",
+                    request=httpx.Request("POST", "http://x"),
+                    response=httpx.Response(500),
+                )
             )
             result = client._generate("test")
         assert result is None
