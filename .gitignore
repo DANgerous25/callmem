@@ -70,7 +70,7 @@ uv.lock
 /config.toml
 
 # Local Claude Code settings (contains local paths)
-.claude/
+.claude/settings.local.json
 
 # Auto-generated Claude Code offset tracking
 .callmem/claude_code_offsets.json
