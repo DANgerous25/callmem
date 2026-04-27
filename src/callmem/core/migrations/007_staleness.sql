@@ -1,4 +1,4 @@
--- callmem schema v7: entity staleness detection (WO-37)
+-- callmem schema v7: entity staleness detection
 --
 -- Adds fields so outdated entities can be suppressed from briefings
 -- and search results without deleting them. `stale` is the main flag

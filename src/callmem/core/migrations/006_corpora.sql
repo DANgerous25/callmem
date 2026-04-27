@@ -1,4 +1,4 @@
--- WO-19: Knowledge agents corpus tables
+-- v6: Knowledge agents corpus tables
 
 CREATE TABLE IF NOT EXISTS corpora (
     id TEXT PRIMARY KEY,

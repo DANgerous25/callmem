@@ -14,7 +14,7 @@ When the user says one of these phrases, execute the corresponding action:
 | **status** | Call `mem_get_tasks` and report open items. |
 | **dfn** (done for now) | Run tests, commit, and push. |
 | **dfd** (done for day) | Run tests, commit, and push. Assume the next reader is a fresh agent tomorrow — spell out specific next steps in the commit message body. |
-| **do WO-XX** | Open `docs/work-orders/WO-XX-*.md`, read it fully, implement everything specified. Run tests after each change. Commit after each file. When all acceptance criteria pass, mark it complete via `mem_ingest` (type `"todo"`, status `"resolved"`). |
+| **do <task>** | Read the relevant task document, implement everything specified. Run tests after each change. Commit after each file. |
 
 ## Memory is automatic
 
@@ -42,7 +42,7 @@ Raw events are captured automatically — focus ingest calls on decisions/todos,
 ### Commit messages
 - Use conventional commit format: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`
 - Be specific: `feat: implement FTS5 search in retrieval engine` not `feat: add search`
-- Reference work order when applicable: `feat(WO-04): implement event ingest pipeline`
+- Be specific: `feat: implement event ingest pipeline` not `feat: add things`
 - Never exceed 72 characters in the subject line
 - Use the body for detail when needed
 
@@ -53,7 +53,7 @@ Raw events are captured automatically — focus ingest calls on decisions/todos,
 
 ### Branching
 - Work on `main` for now (single developer, iterative build)
-- If a work order is large, use a branch: `wo-04/core-engine`
+- If a task is large, use a branch: `feat/core-engine`
 - Always push branches
 
 ## Code Quality Norms
@@ -113,7 +113,7 @@ Raw events are captured automatically — focus ingest calls on decisions/todos,
 
 ### Starting a task
 1. Read `SESSION_SUMMARY.md` or call `mem_get_briefing`
-2. Read the relevant work order in `docs/work-orders/` (if applicable)
+2. Read the relevant task specification (if applicable)
 3. Read the files you'll modify to understand current state
 4. Plan before coding — understand the interfaces you need to match
 
@@ -143,7 +143,7 @@ Rules:
 - Never log, print, or include raw sensitive values in error messages
 - Never skip detection — all ingest paths must go through `redaction.py`
 - Vault key files (`vault.key`, `vault.salt`) are in `.gitignore` — never commit them
-- See [docs/sensitive-data.md](docs/sensitive-data.md) and WO-04b for implementation details
+- See [docs/sensitive-data.md](docs/sensitive-data.md) for implementation details
 
 ## Architecture Rules
 
@@ -180,14 +180,12 @@ src/callmem/
 └── models/         # Data models — the shared contracts
 ```
 
-## Work Order Execution
+## Task Execution
 
-Work orders live in `docs/work-orders/`. Execute them in order (WO-01 → WO-04 → WO-04b → WO-05 → ... → WO-12).
-Each work order specifies:
+Each task specifies:
 - Files to create/modify
 - Constraints
 - Acceptance criteria
 - Suggested tests
 
-Do not skip ahead. Do not partially implement a work order and start the next one.
-Complete all acceptance criteria before moving on.
+Do not skip ahead. Complete all acceptance criteria before moving on.

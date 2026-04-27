@@ -1,4 +1,4 @@
--- WO-49: Track which LLM extracted each entity
+-- v8: Track which LLM extracted each entity
 --
 -- The UI's "model" pill historically showed sessions.model_name,
 -- which is the *coding agent* model (Claude Code / OpenCode). For

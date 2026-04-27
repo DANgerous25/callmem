@@ -1,4 +1,4 @@
-"""Tests for staleness detection (WO-37)."""
+"""Tests for staleness detection."""
 
 from __future__ import annotations
 

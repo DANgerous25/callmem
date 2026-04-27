@@ -52,10 +52,10 @@ test: add integration tests for SSE endpoint
 refactor: extract briefing formatting into separate module
 ```
 
-For work-order implementations, prefix with the WO number:
+For feature implementations, use descriptive prefixes:
 
 ```
-feat(WO-16): file tracking and progressive disclosure search
+feat: add file-level observation tracking
 ```
 
 ## Pull Requests
@@ -80,9 +80,9 @@ Read [docs/architecture.md](docs/architecture.md) for an overview of the system 
 | MCP server | `src/callmem/mcp/server.py` |
 | OpenCode adapter | `src/callmem/adapters/opencode.py` |
 
-## Work Orders
+## Issues
 
-Implementation tasks are tracked as work orders in `docs/`. If you want to tackle one, check the open GitHub issues.
+Implementation tasks are tracked as GitHub issues. If you want to tackle one, check the open issues.
 
 ## Reporting Issues
 

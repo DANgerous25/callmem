@@ -1,4 +1,4 @@
-"""Tests for the Claude Code transcript importer (WO-37 batch path)."""
+"""Tests for the Claude Code transcript importer (batch path)."""
 
 from __future__ import annotations
 
