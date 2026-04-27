@@ -1,4 +1,4 @@
--- WO-16: File-level observation tracking
+-- v5: File-level observation tracking
 
 CREATE TABLE IF NOT EXISTS entity_files (
     entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,

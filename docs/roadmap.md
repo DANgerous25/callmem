@@ -2,7 +2,7 @@
 
 ## v0: Repo scaffold and contracts
 
-**Goal**: Establish the project skeleton, data models, schema, and interfaces so that implementation work orders can proceed independently.
+**Goal**: Establish the project skeleton, data models, schema, and interfaces so that implementation tasks can proceed independently.
 
 | Deliverable | Status |
 |---|---|

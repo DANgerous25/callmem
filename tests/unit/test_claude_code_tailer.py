@@ -1,4 +1,4 @@
-"""Tests for the live Claude Code tailer (WO-37 live path)."""
+"""Tests for the live Claude Code tailer."""
 
 from __future__ import annotations
 

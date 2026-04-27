@@ -1,4 +1,4 @@
-"""Tests for Claude Code MCP integration (WO-36)."""
+"""Tests for Claude Code MCP integration."""
 
 from __future__ import annotations
 

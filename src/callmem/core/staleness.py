@@ -1,4 +1,4 @@
-"""Staleness detection for entities (WO-37).
+"""Staleness detection for entities.
 
 Periodically asks the local LLM whether newer entities supersede or
 contradict older ones of the same type, and flags the older entity
