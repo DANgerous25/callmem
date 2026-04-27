@@ -7,7 +7,7 @@ Resources are read-only data endpoints:
 - memory://facts
 - memory://session/current
 
-Stub implementation — full resources come in a later WO.
+Stub implementation — full resources will be added in a future release.
 """
 
 from __future__ import annotations
