@@ -65,3 +65,6 @@ Thumbs.db
 
 # uv
 uv.lock
+
+# Legacy root config (not used, code reads .callmem/config.toml)
+/config.toml
