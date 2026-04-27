@@ -6,7 +6,7 @@ callmem is composed of five subsystems that communicate through a shared SQLite 
 
 ```mermaid
 graph TB
-    subgraph "Coding Agent (OpenCode / GLM / etc.)"
+    subgraph "Coding Agent"
         A[Interactive LLM]
     end
 
@@ -56,7 +56,7 @@ graph TB
 
 ### 1. MCP Server (`src/callmem/mcp/`)
 
-The external interface. Exposes MCP tools, resources, and prompts that coding agents call. Runs as a subprocess launched by OpenCode (stdio transport) or as a standalone HTTP server (SSE transport for future adapters).
+The external interface. Exposes MCP tools, resources, and prompts that coding agents call. Runs as a subprocess launched by the parent process (stdio transport) or as a standalone HTTP server (SSE transport for future adapters).
 
 Responsibilities:
 - Accept `mem_ingest` calls with raw events (prompts, responses, tool calls, file changes)
