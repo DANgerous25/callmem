@@ -48,8 +48,10 @@ _MCP_BLOCK_SNIPPET = (
     "- If you need exact line-level details, read the file normally\n\n"
     "**Long sessions (50+ messages):**\n"
     "- Every ~30 messages, call `mem_check_context` with your approximate message count\n"
-    "- If it returns `compress_recommended`, summarize the oldest ~30 messages (preserve decisions/TODOs/failures verbatim) and call `mem_compress_context`\n"
-    "- Replace the compressed span in your context with the returned marker; use `mem_search` to recall specifics\n\n"
+    "- If it returns `compress_recommended`, summarize the oldest ~30 messages "
+    "(preserve decisions/TODOs/failures verbatim) and call `mem_compress_context`\n"
+    "- Replace the compressed span in your context with the returned marker; "
+    "use `mem_search` to recall specifics\n\n"
     "**End of session:**\n"
     "- Call `mem_session_end` to trigger summary generation\n\n"
     "**Guidelines:**\n"
@@ -1394,10 +1396,11 @@ def watch(project: Path, interval: int, once: bool) -> None:
                 per_min = recent[2] / (secs / 60)
                 mins_left = pending / per_min if per_min > 0 else 0
                 rate = f"{per_min:.1f} jobs/min"
-                if mins_left > 60:
-                    eta = f"{mins_left / 60:.1f} hours"
-                else:
-                    eta = f"{mins_left:.0f} min"
+                eta = (
+                    f"{mins_left / 60:.1f} hours"
+                    if mins_left > 60
+                    else f"{mins_left:.0f} min"
+                )
 
         pct = int(completed / total * 100) if total > 0 else 0
         bar_len = 30
