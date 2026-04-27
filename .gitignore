@@ -68,3 +68,9 @@ uv.lock
 
 # Legacy root config (not used, code reads .callmem/config.toml)
 /config.toml
+
+# Local Claude Code settings (contains local paths)
+.claude/
+
+# Auto-generated Claude Code offset tracking
+.callmem/claude_code_offsets.json

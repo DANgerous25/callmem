@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in callmem, please report it privately by opening a GitHub Security Advisory at:
 
-https://github.com/callmem/callmem/security/advisories/new
+https://github.com/DANgerous25/callmem/security/advisories/new
 
 Alternatively, you can email the maintainers directly. We aim to acknowledge reports within 48 hours and provide a fix within 14 days.
 
