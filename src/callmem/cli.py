@@ -790,8 +790,8 @@ def daemon(
     else:
         click.echo("  Workers:  disabled")
 
-    # Adapters: OpenCode SSE + Claude Code JSONL tailer. Each is
-    # independently gated by --no-adapter and the [adapters] config.
+    # Adapters: OpenCode SSE + OpenCode DB + Claude Code JSONL tailer.
+    # Each is independently gated by --no-adapter and the [adapters] config.
     adapter_instances: list[Any] = []
     if not no_adapter:
         if config.adapters.opencode:
@@ -813,6 +813,31 @@ def daemon(
             click.echo(f"  OpenCode: {opencode_url}")
         else:
             click.echo("  OpenCode: disabled (config)")
+
+        if config.adapters.opencode_db:
+            from callmem.adapters.opencode_db import OpenCodeDBAdapter
+
+            ocdb = OpenCodeDBAdapter(
+                engine,
+                project_path=project.resolve(),
+                poll_interval=config.adapters.opencode_db_poll_interval,
+                idle_timeout=config.adapters.opencode_db_idle_timeout,
+            )
+            adapter_instances.append(ocdb)
+
+            def _run_ocdb(adapter: OpenCodeDBAdapter = ocdb) -> None:
+                import contextlib
+                with contextlib.suppress(Exception):
+                    adapter.run()
+
+            t = threading.Thread(
+                target=_run_ocdb, daemon=True, name="callmem-opencode-db-adapter",
+            )
+            t.start()
+            threads.append(t)
+            click.echo("  OpenCode DB: enabled")
+        else:
+            click.echo("  OpenCode DB: disabled (config)")
 
         if config.adapters.claude_code:
             from callmem.adapters.claude_code import ClaudeCodeAdapter
