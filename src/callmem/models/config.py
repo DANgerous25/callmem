@@ -107,6 +107,9 @@ class AdaptersConfig(BaseModel):
     """Which live session adapters to run inside the daemon."""
 
     opencode: bool = True
+    opencode_db: bool = True
+    opencode_db_poll_interval: float = 3.0
+    opencode_db_idle_timeout: float = 300.0
     claude_code: bool = True
     claude_code_idle_timeout: float = 300.0
     claude_code_poll_interval: float = 2.0
