@@ -132,31 +132,26 @@ The setup script is safe to re-run — it reconfigures without wiping data and b
 
 ### 4. Start the Daemon
 
-```bash
-# All-in-one: web UI + background workers + OpenCode SSE adapter
-# + Claude Code JSONL tailer. Each adapter is independently gated
-# by [adapters].opencode / [adapters].claude_code in config.toml.
-uv run callmem daemon
+If you opted into the systemd user service during `callmem setup`, the daemon is **already running** — the wizard starts it for you and enables it on boot. Skip ahead to step 5.
 
-# Or via make
-make daemon
-
-# Or via systemd (if installed during setup)
-make start
-```
-
-**Restarting after an upgrade or config change.** The systemd service holds the old code in memory, so `git pull` / `pip install -e .` / `config.toml` edits only take effect after a restart:
+Otherwise, run the daemon yourself (foreground; UI + background workers + OpenCode SSE adapter + Claude Code JSONL tailer; each adapter is independently gated by `[adapters].opencode` / `[adapters].claude_code` in `config.toml`):
 
 ```bash
-make restart          # this project (preferred)
-make logs             # tail journalctl for the service
-
-# Or raw systemctl — the unit is named callmem-<project-dir-name>:
-systemctl --user restart callmem-<project>.service
-systemctl --user status  callmem-<project>.service
+callmem daemon              # foreground — leave running in tmux/screen on a VPS
 ```
 
-Each project that ran `callmem setup` with systemd enabled has its own unit, so restart the one matching your project directory.
+**Managing the systemd service from your project directory.** Each project that ran `callmem setup` with systemd enabled gets its own unit, named `callmem-<project-dir-name>`. From inside your project, drive it with raw systemctl:
+
+```bash
+systemctl --user status   callmem-<project>     # is it running?
+systemctl --user restart  callmem-<project>     # after upgrade / config change
+systemctl --user stop     callmem-<project>
+journalctl --user -u      callmem-<project> -f  # tail logs
+```
+
+Replace `<project>` with the basename of your project directory (e.g. `boat-ess` for `~/code/boat-ess`).
+
+> The `make start` / `make restart` / `make logs` shortcuts in the callmem repo's `Makefile` are convenience wrappers around the above — they only work when run **from inside the callmem source repo**, not from your project directory.
 
 ### 5. Configure Your Coding Agent
 
