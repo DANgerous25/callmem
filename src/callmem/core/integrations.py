@@ -1,7 +1,7 @@
 """Coding-tool integration helpers (OpenCode + Claude Code).
 
-Shared between ``scripts/setup.py`` (wizard) and ``callmem migrate`` so both
-keep integration files in sync with the shipped templates.
+Shared between ``callmem.setup_wizard`` and ``callmem migrate`` so both keep
+integration files in sync with the shipped templates.
 
 Each helper is idempotent: it writes only when the destination is missing or
 differs from the template, and returns the list of files it installed.
@@ -16,17 +16,9 @@ from pathlib import Path
 
 
 def _find_templates_dir(kind: str) -> Path | None:
-    """Locate ``templates/<kind>/`` by walking up from this module.
-
-    Returns None when running from a pip install that didn't ship templates.
-    """
-    here = Path(__file__).resolve().parent
-    for _ in range(5):
-        candidate = here / "templates" / kind
-        if candidate.is_dir():
-            return candidate
-        here = here.parent
-    return None
+    """Locate ``templates/<kind>/`` shipped inside the ``callmem`` package."""
+    candidate = Path(__file__).resolve().parent.parent / "templates" / kind
+    return candidate if candidate.is_dir() else None
 
 
 def detect_mcp_command(project: Path) -> list[str]:

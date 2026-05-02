@@ -8,18 +8,14 @@ from every worktree, polluting sibling project DBs.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import setup  # noqa: E402  — path-injected above
+from callmem import setup_wizard as setup
 
 
 class TestBackgroundImportCommand:

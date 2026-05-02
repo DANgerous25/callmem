@@ -10,7 +10,6 @@ drift upward through unrelated ports.
 from __future__ import annotations
 
 import socket
-import sys
 import threading
 import time
 from pathlib import Path
@@ -19,11 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import setup  # noqa: E402  — path-injected above
+from callmem import setup_wizard as setup  # noqa: E402
 
 
 def _bound_socket() -> tuple[socket.socket, int]:

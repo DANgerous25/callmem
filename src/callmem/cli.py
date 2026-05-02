@@ -92,7 +92,7 @@ def _ensure_opencode_plugin(project: Path) -> None:
     """Install OpenCode auto-briefing plugin and /briefing command if missing or outdated."""
     import filecmp
 
-    templates_dir = Path(__file__).parent.parent.parent / "templates" / "opencode"
+    templates_dir = Path(__file__).parent / "templates" / "opencode"
 
     targets = [
         (
@@ -263,18 +263,13 @@ def _claude_md_is_separate_file(claude_path: Path, agents_path: Path) -> bool:
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 def setup(project: Path) -> None:
     """Interactive setup wizard for a new or existing project."""
-    import subprocess
-    import sys
+    import os
 
-    script = Path(__file__).parent.parent.parent / "scripts" / "setup.py"
-    if not script.exists():
-        # Fallback: try relative to the project
-        script = project / "scripts" / "setup.py"
+    if str(project) != ".":
+        os.chdir(project)
 
-    if script.exists():
-        subprocess.run([sys.executable, str(script)], check=False)
-    else:
-        click.echo("Setup script not found. Run: python scripts/setup.py")
+    from callmem.setup_wizard import main as wizard_main
+    wizard_main()
 
 
 @main.command()
@@ -300,7 +295,7 @@ def init(project: Path) -> None:
     if not config_path.exists():
         config_path.write_text(generate_default_config(project.name))
 
-    agents_template = Path(__file__).parent.parent.parent / "templates" / "AGENTS.md.template"
+    agents_template = Path(__file__).parent / "templates" / "AGENTS.md.template"
     agents_path = project / "AGENTS.md"
     if agents_template.exists() and not agents_path.exists():
         agents_path.write_text(agents_template.read_text())
