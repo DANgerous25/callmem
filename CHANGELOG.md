@@ -7,6 +7,7 @@ All notable changes to callmem are documented here.
 ### Bug fixes
 - **`callmem setup` broken on pip/uv installs**: Setup wizard moved from `scripts/setup.py` into the package as `callmem.setup_wizard`. Previously the wizard wasn't shipped in the wheel, so `callmem setup` printed "Setup script not found" on any non-source install.
 - **`callmem init` silently skipped templates on pip installs**: Template files (AGENTS.md, OpenCode plugin, briefing commands) moved from top-level `templates/` into `src/callmem/templates/` so they ship as package data. `_find_templates_dir` simplified to look inside the installed package.
+- **`callmem --version` reported a stale version**: `__version__` was a hardcoded string in `src/callmem/__init__.py` that drifted behind `pyproject.toml`. It now reads from package metadata via `importlib.metadata.version("callmem")` so it can never drift again.
 
 ### Internal
 - `Makefile` `setup` target now invokes `callmem setup` instead of the moved script path.
