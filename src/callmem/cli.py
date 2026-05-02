@@ -9,6 +9,7 @@ from typing import Any
 import click
 
 from callmem import __version__
+from callmem.core.integrations import detect_mcp_command as _detect_mcp_command
 
 
 @click.group()
@@ -111,55 +112,6 @@ def _ensure_opencode_plugin(project: Path) -> None:
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not dst.exists() or not filecmp.cmp(src, dst, shallow=False):
             dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
-
-
-def _detect_mcp_command(project: Path) -> list[str]:
-    """Detect the best command to run the callmem MCP server.
-
-    Checks in order:
-    1. System Python can import callmem → use python3 directly.
-    2. We're inside the callmem project itself → use uv run.
-    3. Find callmem install path → use uv run --directory.
-    4. Fallback → use python3 (best-effort).
-    """
-    import subprocess
-
-    # 1. Check if callmem is importable from system Python
-    try:
-        result = subprocess.run(
-            ["python3", "-c", "import callmem"],
-            capture_output=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return ["python3", "-m", "callmem.mcp.server", "--project", "."]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # 2. Check if we're in the callmem project itself
-    if (project / "src" / "callmem").is_dir():
-        return ["uv", "run", "python", "-m", "callmem.mcp.server", "--project", "."]
-
-    # 3. Fall back to uv with --directory pointing to callmem source
-    try:
-        result = subprocess.run(
-            [
-                "python3", "-c",
-                "import callmem; from pathlib import Path; "
-                "print(Path(callmem.__file__).parent.parent.parent)",
-            ],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            callmem_dir = result.stdout.strip()
-            return [
-                "uv", "run", "--directory", callmem_dir,
-                "python", "-m", "callmem.mcp.server", "--project", ".",
-            ]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    # 4. Ultimate fallback
-    return ["python3", "-m", "callmem.mcp.server", "--project", "."]
 
 
 def _ensure_opencode_instructions(project: Path) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import filecmp
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -21,46 +22,61 @@ def _find_templates_dir(kind: str) -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def _venv_python(project: Path) -> Path | None:
+    """Return ``project/.venv/bin/python`` (or ``Scripts/python.exe`` on Windows)
+    if it exists, else None.
+    """
+    candidates = [
+        project / ".venv" / "bin" / "python",
+        project / ".venv" / "Scripts" / "python.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _can_import_callmem(python: Path | str) -> bool:
+    try:
+        result = subprocess.run(
+            [str(python), "-c", "import callmem"],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
 def detect_mcp_command(project: Path) -> list[str]:
     """Detect the best command to run the callmem MCP server.
 
-    1. System python3 can import callmem → ``python3 -m callmem.mcp.server``.
-    2. Inside the callmem source repo → ``uv run python -m ...``.
-    3. Installed location reachable via python3 → ``uv run --directory <path>``.
-    4. Fallback → ``python3`` best-effort.
+    OpenCode and Claude Code spawn MCP subprocesses with cwd set to the
+    project, and may auto-activate a project-local ``.venv/`` ahead of
+    PATH. So a bare ``python3`` is unreliable — it can resolve to a venv
+    interpreter that doesn't have callmem installed. We prefer absolute
+    interpreter paths.
+
+    Order of preference:
+
+    1. ``<project>/.venv/bin/python`` — if it can import callmem. Most
+       natural since the agent is already using that interpreter.
+    2. ``sys.executable`` — the python running the wizard. Always has
+       callmem (the wizard imports from it). Absolute path survives
+       whatever the agent does to PATH when spawning the subprocess.
     """
-    try:
-        result = subprocess.run(
-            ["python3", "-c", "import callmem"],
-            capture_output=True, timeout=5,
-        )
-        if result.returncode == 0:
-            return ["python3", "-m", "callmem.mcp.server", "--project", "."]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    project_abs = str(project.resolve())
 
-    if (project / "src" / "callmem").is_dir():
-        return ["uv", "run", "python", "-m", "callmem.mcp.server", "--project", "."]
+    venv_python = _venv_python(project)
+    if venv_python is not None and _can_import_callmem(venv_python):
+        return [
+            str(venv_python), "-m", "callmem.mcp.server",
+            "--project", project_abs,
+        ]
 
-    try:
-        result = subprocess.run(
-            [
-                "python3", "-c",
-                "import callmem; from pathlib import Path; "
-                "print(Path(callmem.__file__).parent.parent.parent)",
-            ],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            callmem_dir = result.stdout.strip()
-            return [
-                "uv", "run", "--directory", callmem_dir,
-                "python", "-m", "callmem.mcp.server", "--project", ".",
-            ]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-
-    return ["python3", "-m", "callmem.mcp.server", "--project", "."]
+    return [
+        sys.executable, "-m", "callmem.mcp.server",
+        "--project", project_abs,
+    ]
 
 
 def ensure_claude_code_mcp(project: Path, echo=print) -> list[str]:

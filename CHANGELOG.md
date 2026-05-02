@@ -2,6 +2,15 @@
 
 All notable changes to callmem are documented here.
 
+## [0.3.2] — 2026-05-03
+
+### Bug fixes
+- **MCP command broke when project had its own `.venv/`**: Both OpenCode and Claude Code spawn the MCP subprocess with the project's `.venv/bin/python` ahead of PATH, so the bare `python3` in the generated config could resolve to a venv that didn't have callmem installed (`ModuleNotFoundError: No module named 'callmem'`). `detect_mcp_command` now emits absolute interpreter paths — preferring the project's venv if it has callmem, otherwise falling back to the wizard's own `sys.executable`. The `--project` arg is also now an absolute path.
+- **Duplicate `_detect_mcp_command` in `cli.py`**: removed; CLI now imports the canonical helper from `callmem.core.integrations`. Prevents future drift between the two copies.
+
+### Tests
+- Added `tests/unit/test_detect_mcp_command.py` covering: project venv preferred when callmem is importable, fallback to `sys.executable` when venv lacks callmem, no bare `python3` in output, absolute project path always emitted.
+
 ## [0.3.1] — 2026-05-02
 
 ### Bug fixes
