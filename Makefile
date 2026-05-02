@@ -13,7 +13,7 @@ dev:
 
 # Interactive setup wizard
 setup:
-	uv run python scripts/setup.py
+	uv run callmem setup
 
 # Start the daemon (UI + workers + adapter) in foreground
 daemon:

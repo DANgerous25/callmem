@@ -2,9 +2,9 @@
 """Interactive setup for callmem in a project.
 
 Run from any project root:
-    uv run python scripts/setup.py
-    make setup
     callmem setup
+    make setup
+    python -m callmem.setup_wizard
 
 Safe to run multiple times — never wipes data. On repeat runs:
 - Reads existing config and shows current values as defaults
