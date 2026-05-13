@@ -1895,5 +1895,189 @@ def migrate(path: Path, dry_run: bool) -> None:
         click.echo("\nRe-run without --dry-run to apply.")
 
 
+# ── Deduplication ───────────────────────────────────────────────────
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--threshold", type=float, default=0.82,
+              show_default=True,
+              help="Title similarity threshold (0..1). 0.82 catches real "
+                   "near-duplicates without merging distinct entities.")
+@click.option("--session-only", is_flag=True,
+              help="Only merge duplicates within the same session "
+                   "(safer for live runs).")
+@click.option("--dry-run", is_flag=True,
+              help="Report clusters without writing to the DB.")
+@click.option("--limit", type=int, default=40,
+              help="Cap on clusters printed in the report.")
+def dedupe(
+    project: Path, threshold: float, session_only: bool,
+    dry_run: bool, limit: int,
+) -> None:
+    """Find and merge near-duplicate entities by title similarity.
+
+    Losers are marked stale with ``superseded_by`` pointing to the
+    survivor (the oldest entity in each cluster). No rows are deleted —
+    you can always inspect the originals via ``callmem stale --show``.
+    """
+    from callmem.core.dedupe import apply_clusters, find_clusters
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}", err=True)
+        raise SystemExit(1)
+
+    clusters = find_clusters(
+        db_path, threshold=threshold, session_only=session_only,
+    )
+    if not clusters:
+        click.echo("No duplicate clusters found.")
+        return
+
+    total_losers = sum(len(c.losers) for c in clusters)
+    verb = "Would mark" if dry_run else "Marking"
+    click.echo(
+        f"{verb} {total_losers} entit{'y' if total_losers == 1 else 'ies'} "
+        f"stale across {len(clusters)} cluster"
+        f"{'' if len(clusters) == 1 else 's'} "
+        f"(threshold {threshold}, "
+        f"{'within-session' if session_only else 'cross-session'}):"
+    )
+    for c in clusters[:limit]:
+        click.echo(
+            f"\n  ★ survivor #{c.survivor_id[-8:]}: {c.survivor_title[:70]}"
+        )
+        for lid, lt in c.losers:
+            click.echo(f"    → drop #{lid[-8:]}: {lt[:70]}")
+    if len(clusters) > limit:
+        click.echo(f"\n  … {len(clusters) - limit} more cluster(s) suppressed.")
+
+    if dry_run:
+        click.echo("\nRe-run without --dry-run to apply.")
+        return
+    marked = apply_clusters(db_path, clusters, dry_run=False)
+    click.echo(f"\nMarked {marked} entit{'y' if marked == 1 else 'ies'} stale.")
+
+
+# ── Usage analytics ─────────────────────────────────────────────────
+
+
+def _resolve_callmem_projects(all_flag: bool, project: Path) -> list[Path]:
+    """When --all is set, discover sibling project DBs that share the same
+    parent as the requested project. Returns absolute paths to each project
+    root (the directory that holds .callmem/memory.db).
+    """
+    if not all_flag:
+        return [project.resolve()]
+    # Walk siblings of the parent of the current project for .callmem/memory.db
+    root = project.resolve().parent
+    found = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        if (child / ".callmem" / "memory.db").exists():
+            found.append(child)
+    return found or [project.resolve()]
+
+
+@main.command()
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--all", "all_projects", is_flag=True,
+              help="Scan sibling directories of the current project for callmem DBs.")
+@click.option("--since", default="30d",
+              help="Time window: e.g. 7d, 24h, 30d, or 'all'. Default: 30d.")
+@click.option("--json", "json_out", is_flag=True,
+              help="Emit JSON instead of human-readable tables.")
+@click.option("--per-session", is_flag=True,
+              help="Show one row per session in addition to the summary.")
+def usage(
+    project: Path, all_projects: bool, since: str,
+    json_out: bool, per_session: bool,
+) -> None:
+    """Report memory-usage signals: are agents actually reading callmem?
+
+    The metrics here come from the events table. We count:
+
+    \b
+      • mem_reads   — calls to mem_search / mem_get_* / mem_check_context …
+      • mem_writes  — calls to mem_ingest / mem_pin / mem_mark_* …
+      • briefing    — sessions where mem_get_briefing fired at least once
+      • citations   — #XXXXXXXX entity-ID references in agent responses
+      • tokens      — sum of token_count over the session's events
+
+    Citations are the strongest proof an agent actually used what memory
+    surfaced; a session can read memory and never cite it, but it cannot
+    cite without consuming. We deliberately do NOT report a "tokens
+    saved" number — that requires a controlled A/B (see `callmem ab`).
+    """
+    import json as _json
+
+    from callmem.core.usage import collect_session_usage, summarise
+
+    projects = _resolve_callmem_projects(all_projects, project)
+    payload: dict[str, Any] = {"since": since, "projects": []}
+    for proot in projects:
+        db_path = proot / ".callmem" / "memory.db"
+        if not db_path.exists():
+            continue
+        try:
+            usages = collect_session_usage(db_path, since=since)
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
+        summary = summarise(proot.name, usages)
+        payload["projects"].append({"summary": summary, "sessions": usages})
+
+    if json_out:
+        # dataclasses → dict via __dict__
+        out = {
+            "since": since,
+            "projects": [
+                {
+                    "summary": p["summary"].__dict__,
+                    "sessions": [s.__dict__ for s in p["sessions"]],
+                }
+                for p in payload["projects"]
+            ],
+        }
+        click.echo(_json.dumps(out, indent=2, default=str))
+        return
+
+    if not payload["projects"]:
+        click.echo("No callmem databases found.")
+        return
+
+    for entry in payload["projects"]:
+        s = entry["summary"]
+        click.echo(f"\n━━ {s.project} (last {since}) ━━")
+        click.echo(
+            f"  sessions:           {s.session_count}\n"
+            f"  memory used in:     {s.sessions_with_memory_used} "
+            f"({s.usage_rate * 100:.0f}%)\n"
+            f"  briefing fetched:   {s.sessions_with_briefing_fetched} "
+            f"({s.briefing_rate * 100:.0f}%)\n"
+            f"  mem reads:          {s.total_mem_reads}\n"
+            f"  mem writes:         {s.total_mem_writes}\n"
+            f"  entity citations:   {s.total_citations}\n"
+            f"  session tokens:     {s.total_session_tokens:,}"
+        )
+        if per_session and entry["sessions"]:
+            click.echo("\n  per-session detail:")
+            click.echo(
+                f"    {'when':16} {'sid':10} {'evt':>4} {'tok':>9} "
+                f"{'rd':>3} {'wr':>3} {'brf':>3} {'cite':>4}"
+            )
+            for u in entry["sessions"]:
+                when = (u.started_at or "")[:16]
+                click.echo(
+                    f"    {when:16} {u.short_id:10} {u.event_count:>4} "
+                    f"{u.session_tokens:>9,} {u.mem_reads:>3} "
+                    f"{u.mem_writes:>3} "
+                    f"{'Y' if u.briefing_fetched else '-':>3} "
+                    f"{u.citations:>4}"
+                )
+
+
 if __name__ == "__main__":
     main()

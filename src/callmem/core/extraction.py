@@ -116,7 +116,14 @@ class EntityExtractor:
             return []
 
         events_text = self._format_events(events)
-        prompt = EXTRACTION_PROMPT.format(events_text=events_text)
+        session_id = job.payload.get("session_id")
+        prior_titles = self._fetch_prior_titles(session_id) if session_id else ""
+        if not prior_titles:
+            prior_titles = "(none yet — this is the first extraction in the session)"
+        prompt = EXTRACTION_PROMPT.format(
+            events_text=events_text,
+            prior_titles=prior_titles,
+        )
         response = self.ollama.extract(prompt)
         if response is None:
             raise RuntimeError("Ollama returned no response for extraction")
@@ -316,6 +323,29 @@ class EntityExtractor:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def _fetch_prior_titles(self, session_id: str, limit: int = 40) -> str:
+        """Return a newline-separated `- type: title` list of entities already
+        extracted in this session, so the LLM can avoid emitting near-duplicates.
+
+        Capped at ``limit`` recent titles to bound the prompt size — extraction
+        jobs run roughly every ~20 events, so 40 prior titles is far more than
+        a healthy session should ever produce.
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT type, title FROM entities "
+                "WHERE source_event_id IN ("
+                "  SELECT id FROM events WHERE session_id = ?"
+                ") ORDER BY created_at DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return ""
+        return "\n".join(f"- {r['type']}: {r['title']}" for r in rows)
 
     def _format_events(self, events: list[dict[str, Any]]) -> str:
         """Format events into text for the extraction prompt."""
