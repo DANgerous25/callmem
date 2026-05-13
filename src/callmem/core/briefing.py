@@ -221,7 +221,7 @@ class BriefingGenerator:
             work_investment, 0.0,
         ))
         provisional_footer = "\n".join(self._build_footer_parts(
-            work_investment, read_tokens, 0.0, w,
+            work_investment, observations_loaded, 0, w,
         ))
         footer_tokens = _estimate_tokens(provisional_footer)
         body_budget = max(budget - footer_tokens, 0)
@@ -229,6 +229,10 @@ class BriefingGenerator:
             provisional_body = _truncate_to_tokens(provisional_body, body_budget)
         briefing_tokens = _estimate_tokens(provisional_body) + footer_tokens
 
+        # savings_pct kept for backwards-compat in components dict only — it is
+        # no longer rendered in the footer. The previous "captured/saved %" line
+        # was misleading (it was compression ratio against work the agent would
+        # never have read anyway, not real savings).
         if work_investment > 0 and briefing_tokens > 0:
             savings_pct = round(
                 (1 - briefing_tokens / work_investment) * 100, 1
@@ -242,7 +246,7 @@ class BriefingGenerator:
             work_investment, savings_pct,
         ))
         footer = "\n".join(self._build_footer_parts(
-            work_investment, read_tokens, savings_pct, w,
+            work_investment, observations_loaded, briefing_tokens, w,
         ))
         if _estimate_tokens(body) > body_budget:
             body = _truncate_to_tokens(body, body_budget)
@@ -415,22 +419,33 @@ class BriefingGenerator:
     def _build_footer_parts(
         self,
         work_investment: int,
-        read_tokens: int,
-        savings_pct: float,
+        entity_count: int,
+        briefing_tokens: int,
         w: int,
     ) -> list[str]:
         """Footer block (stats + optional update notice + Web UI URL).
 
         Always rendered last and never truncated, so the user can rely on
         the Web UI URL being the final line of the briefing.
+
+        Stats are intentionally factual, not derived: the briefing token
+        cost, the number of entities surfaced, and the raw captured size
+        — no "compression savings" claim, since the agent would not have
+        read raw events directly.
         """
         parts: list[str] = []
         parts.append(f"{_BOX_H * w}")
-        parts.append(
-            f"  {work_investment:,}t captured "
-            f"{_BOX_V} {read_tokens:,}t to read "
-            f"{_BOX_V} {savings_pct}% saved"
-        )
+        if briefing_tokens:
+            parts.append(
+                f"  briefing: {briefing_tokens:,}t "
+                f"{_BOX_V} {entity_count} entities surfaced "
+                f"{_BOX_V} {work_investment:,}t captured (full history in Web UI)"
+            )
+        else:
+            parts.append(
+                f"  {entity_count} entities surfaced "
+                f"{_BOX_V} {work_investment:,}t captured (full history in Web UI)"
+            )
         suppressed = getattr(self, "_suppressed_stale_count", 0) or 0
         if suppressed:
             parts.append(

@@ -12,13 +12,30 @@ EXTRACTION_PROMPT = """Analyze this coding session exchange and extract ONLY sig
 Events:
 {events_text}
 
-RULES:
-- Extract ONLY items that provide genuine, durable value to a future developer
-- Do NOT extract items that merely restate what happened — focus on WHY and WHAT NEXT
-- Do NOT create multiple items for the same concept (e.g., if a bug is found and fixed, create ONE bugfix entry, not a separate failure + todo + bugfix)
-- If an event is routine or low-signal (e.g., "ran tests", "pushed changes"), skip it entirely
-- key_points must contain SPECIFIC technical details (file paths, function names, error messages, exact config values), not vague restatements
-- Prefer fewer high-quality items over many shallow ones
+PRIOR ENTITIES IN THIS SESSION (do not re-emit near-duplicates of these — if the
+events extend or resolve an item below, update it as a different category like
+`bugfixes` or `changes` rather than re-creating it):
+{prior_titles}
+
+CORE RULES:
+- **Dedup hard.** One concept = one entity. The same observation captured as a
+  `failure`, then a `discovery`, then a `change`, then another `change` is the
+  failure mode we are explicitly trying to avoid. If a prior title above already
+  covers the concept, SKIP it. If the events resolve a prior `todo`/`failure`,
+  emit one `bugfix`/`change`/`feature` that says how — do not re-emit the
+  original.
+- **Be concrete.** key_points and content must contain SPECIFIC anchors when the
+  events contain them: file paths, line numbers, function/class names, exact
+  command strings, exact error messages. A title like "Fix FK constraint in
+  vault insertion" beats "Fix database issue" every time. If no concrete anchors
+  exist in the events, the entity is probably too vague to keep — skip it.
+- **Synopsis is at most one sentence.** Not a narrative paragraph. If you cannot
+  say something new beyond what title + key_points already convey, omit the
+  synopsis field entirely.
+- **Skip the routine.** "ran tests", "pushed changes", "read file X" — these are
+  noise. Capture decisions, surprises, failures, and durable facts only.
+- **Prefer fewer high-quality items.** A session that produces 2 sharp entities
+  is healthier than one producing 9 fuzzy ones.
 
 Categories (only include items that are clearly and meaningfully present):
 
@@ -33,10 +50,15 @@ Categories (only include items that are clearly and meaningfully present):
 9. **changes**: Notable code/architecture changes not covered above
 
 For each item:
-- "title": concise specific summary (not generic — "Fix FK constraint in vault insertion" not "Fix database issue")
-- "content": 1-3 sentences with concrete details (file paths, function names, values)
-- "key_points": 2-5 bullets with SPECIFIC technical details, NOT vague restatements of the title
-- "synopsis": 2-4 sentence narrative paragraph giving full context for someone who wasn't there
+- "title": concise specific summary with concrete anchors when available
+  ("Refactor _build_footer_parts in briefing.py:340 to split body/footer"
+  beats "Refactor footer rendering logic")
+- "content": 1-2 sentences with concrete details (file paths, function names,
+  values). No corporate prose ("The application architecture utilizes…").
+- "key_points": 2-5 bullets with SPECIFIC technical details. Each bullet should
+  name a thing (file, function, value, command) — not restate the title.
+- "synopsis": OPTIONAL. At most one sentence, only if it adds something the
+  title + key_points don't already convey. Omit if redundant.
 - "files": file paths mentioned or affected
 
 Respond in this exact JSON format:
