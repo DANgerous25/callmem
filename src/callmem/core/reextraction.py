@@ -201,7 +201,13 @@ class ReExtractor:
         extractor = EntityExtractor(self.db, self.ollama)
 
         events_text = extractor._format_events(events)
-        prompt = EXTRACTION_PROMPT.format(events_text=events_text)
+        # Re-extraction operates on historical events with no notion of a
+        # live session, so no prior-titles dedup hint is available — pass
+        # an explicit "none" sentinel to satisfy the prompt placeholder.
+        prompt = EXTRACTION_PROMPT.format(
+            events_text=events_text,
+            prior_titles="(none — running a historical re-extraction pass)",
+        )
         response = self.ollama._generate(prompt)
         if response is None:
             return []
