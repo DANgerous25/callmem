@@ -6,19 +6,28 @@ active TODOs, decisions, and summaries with rich visual formatting.
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from callmem import __version__ as _CALLMEM_VERSION
 from callmem.compat import UTC
 from callmem.core.retrieval import _estimate_tokens
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from callmem.core.ollama import OllamaClient
     from callmem.core.repository import Repository
     from callmem.models.config import Config
+
+logger = logging.getLogger(__name__)
+
+# How long to trust a cached PyPI lookup before re-checking
+_UPDATE_CHECK_TTL_SECONDS = 86_400  # 24h
+_UPDATE_CHECK_TIMEOUT = 2.0  # network call must be fast or skipped
+_PYPI_JSON_URL = "https://pypi.org/pypi/callmem/json"
 
 
 CATEGORY_EMOJI: dict[str, str] = {
@@ -102,6 +111,57 @@ def _session_hook(session: dict[str, Any], max_chars: int = 70) -> str:
     return first_line
 
 
+def _parse_version(s: str) -> tuple[int, ...] | None:
+    """Parse a dot-separated version into a tuple of ints.
+
+    Returns None for non-conforming strings (pre-release tags, ``+local`` suffixes,
+    or anything we'd rather not compare against). The briefing prefers to stay
+    quiet over misreporting an update.
+    """
+    if not s:
+        return None
+    head = s.split("+", 1)[0].split("-", 1)[0]
+    try:
+        return tuple(int(p) for p in head.split("."))
+    except ValueError:
+        return None
+
+
+def _check_latest_callmem_version(cache_dir: Path) -> str | None:
+    """Return the latest released callmem version on PyPI, or None.
+
+    Cached under ``<cache_dir>/.update_check.json`` for ``_UPDATE_CHECK_TTL_SECONDS``.
+    Any failure (offline, timeout, parse error) returns None silently \u2014 the
+    briefing is the wrong place to surface networking noise.
+    """
+    cache_path = cache_dir / ".update_check.json"
+    now = datetime.now(UTC).timestamp()
+    try:
+        cached = json.loads(cache_path.read_text())
+        if now - float(cached.get("checked_at", 0)) < _UPDATE_CHECK_TTL_SECONDS:
+            latest = cached.get("latest")
+            return str(latest) if latest else None
+    except (OSError, ValueError, TypeError):
+        pass
+
+    try:
+        import httpx
+        resp = httpx.get(_PYPI_JSON_URL, timeout=_UPDATE_CHECK_TIMEOUT)
+        resp.raise_for_status()
+        latest = resp.json().get("info", {}).get("version")
+    except Exception as exc:  # noqa: BLE001 \u2014 best-effort, never fail briefing
+        logger.debug("PyPI version check failed: %s", exc)
+        latest = None
+
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps({"checked_at": now, "latest": latest}))
+    except OSError as exc:
+        logger.debug("Could not write update cache: %s", exc)
+
+    return latest
+
+
 class BriefingGenerator:
     def __init__(
         self,
@@ -152,14 +212,22 @@ class BriefingGenerator:
         # agent actually reads (the final briefing, including its
         # envelope and the 2000-token budget truncation) vs. the total
         # captured work. Pass 2 re-renders with the correct percentage.
-        provisional = "\n".join(self._build_briefing_parts(
+        # The footer (stats + Web UI URL) is rendered separately and
+        # never truncated, so the URL is always the final line.
+        w = 58
+        provisional_body = "\n".join(self._build_briefing_parts(
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, 0.0,
         ))
-        if _estimate_tokens(provisional) > budget:
-            provisional = _truncate_to_tokens(provisional, budget)
-        briefing_tokens = _estimate_tokens(provisional)
+        provisional_footer = "\n".join(self._build_footer_parts(
+            work_investment, read_tokens, 0.0, w,
+        ))
+        footer_tokens = _estimate_tokens(provisional_footer)
+        body_budget = max(budget - footer_tokens, 0)
+        if _estimate_tokens(provisional_body) > body_budget:
+            provisional_body = _truncate_to_tokens(provisional_body, body_budget)
+        briefing_tokens = _estimate_tokens(provisional_body) + footer_tokens
 
         if work_investment > 0 and briefing_tokens > 0:
             savings_pct = round(
@@ -168,15 +236,17 @@ class BriefingGenerator:
         else:
             savings_pct = 0.0
 
-        parts = self._build_briefing_parts(
+        body = "\n".join(self._build_briefing_parts(
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, savings_pct,
-        )
-        assembled = "\n".join(parts)
-
-        if _estimate_tokens(assembled) > budget:
-            assembled = _truncate_to_tokens(assembled, budget)
+        ))
+        footer = "\n".join(self._build_footer_parts(
+            work_investment, read_tokens, savings_pct, w,
+        ))
+        if _estimate_tokens(body) > body_budget:
+            body = _truncate_to_tokens(body, body_budget)
+        assembled = body + "\n" + footer
 
         components = {}
         if all_entities:
@@ -337,17 +407,29 @@ class BriefingGenerator:
                     parts.append(f"    #{eid}  {emoji}  {title}")
                 parts.append("")
 
-        # ── Footer ──
+        # Body ends here; the footer is appended by the caller after
+        # any truncation so the Web UI URL and update notice always
+        # survive at the bottom of the output.
+        return parts
+
+    def _build_footer_parts(
+        self,
+        work_investment: int,
+        read_tokens: int,
+        savings_pct: float,
+        w: int,
+    ) -> list[str]:
+        """Footer block (stats + optional update notice + Web UI URL).
+
+        Always rendered last and never truncated, so the user can rely on
+        the Web UI URL being the final line of the briefing.
+        """
+        parts: list[str] = []
         parts.append(f"{_BOX_H * w}")
         parts.append(
             f"  {work_investment:,}t captured "
             f"{_BOX_V} {read_tokens:,}t to read "
             f"{_BOX_V} {savings_pct}% saved"
-        )
-        ui_port = self.config.ui.port
-        ui_host = self.config.ui.host
-        parts.append(
-            f"  Web UI: http://{ui_host}:{ui_port}"
         )
         suppressed = getattr(self, "_suppressed_stale_count", 0) or 0
         if suppressed:
@@ -356,6 +438,19 @@ class BriefingGenerator:
                 f"suppressed — run 'callmem stale' to review)"
             )
 
+        cache_dir = self.repo.db.db_path.parent
+        latest = _check_latest_callmem_version(cache_dir)
+        current = _parse_version(_CALLMEM_VERSION)
+        latest_parsed = _parse_version(latest or "")
+        if latest and current and latest_parsed and latest_parsed > current:
+            parts.append(
+                f"  📦 Update available: callmem {_CALLMEM_VERSION} → {latest} "
+                f"(pip install -U callmem)"
+            )
+
+        ui_port = self.config.ui.port
+        ui_host = self.config.ui.host
+        parts.append(f"  Web UI: http://{ui_host}:{ui_port}")
         return parts
 
     def _fetch_all_entities(
