@@ -39,7 +39,7 @@ class OpenAICompatConfig(BaseModel):
 class BriefingConfig(BaseModel):
     max_tokens: int = 2000
     focus: str | None = None
-    auto_write_session_summary: bool = True
+    auto_write_session_summary: bool = False
     session_summary_filename: str = "SESSION_SUMMARY.md"
     entity_types: list[str] = Field(default_factory=list)
     max_per_type: int = 20

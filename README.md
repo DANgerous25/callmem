@@ -15,7 +15,7 @@ Inspired by [claude-mem](https://github.com/anthropics/claude-mem), but built fr
 ## Key Features
 
 ### Automatic Context at Startup
-When a new session begins, callmem generates a structured briefing with context economics, an emoji-coded observation timeline, and a session summary. This is written to `SESSION_SUMMARY.md` in your project root, where your coding agent picks it up automatically — no manual context management needed.
+When a new session begins, callmem generates a structured briefing with context economics, an emoji-coded observation timeline, and a session summary. The briefing is served live via the `callmem briefing` CLI (wired into Claude Code as a SessionStart hook, and into OpenCode as a session.created plugin) and the `mem_get_briefing` MCP tool — no flat snapshot file to keep in sync.
 
 ### Real-Time Capture and Extraction
 During the session, callmem ingests prompts, responses, tool calls, and file changes from your coding agent — either via **OpenCode's SSE stream** or by **tailing Claude Code's JSONL transcripts** at `~/.claude/projects/<slug>/*.jsonl`. Both run concurrently, so a project using both agents sees unified history. A background worker runs entity extraction through your local LLM, pulling out decisions, facts, TODOs, bugs, features, and discoveries. New observations appear in the web UI within milliseconds via Server-Sent Events.
@@ -186,7 +186,7 @@ Replace `<project>` with the basename of your project directory (e.g. `boat-ess`
 
 Both can coexist; they share the same SQLite database.
 
-Once configured, you can type `/briefing` in OpenCode to display the startup briefing on demand. In Claude Code, ask the agent to call the `mem_get_briefing` MCP tool, or read `SESSION_SUMMARY.md` directly.
+Once configured, you can type `/briefing` in either OpenCode or Claude Code to display the startup briefing on demand. The slash command runs the live `callmem briefing` CLI; alternatively call the `mem_get_briefing` MCP tool directly.
 
 ### 6. Open the Web UI
 
@@ -221,7 +221,7 @@ Navigate to `http://localhost:9090` (or your configured host:port).
 1. **Capture**: The OpenCode adapter subscribes to its SSE stream; the Claude Code adapter tails each transcript file under `~/.claude/projects/<slug>/` using a persistent byte-offset, so a restart resumes mid-file instead of replaying or dropping records. Both run inside the same daemon process.
 2. **Extract**: A background worker sends event batches to your local LLM for entity extraction — decisions, facts, TODOs, bugs, features, discoveries. Switching the extraction model later does not invalidate past entities.
 3. **Compress**: Summaries are generated at chunk, session, and cross-session levels.
-4. **Serve**: The briefing writer generates `SESSION_SUMMARY.md` in your project root; the MCP server responds to on-demand queries from whichever agent you're using; the web UI shows everything in real-time.
+4. **Serve**: The `callmem briefing` CLI generates the briefing live from the DB on each invocation (Claude Code wires it into the SessionStart hook; OpenCode uses a session.created plugin); the MCP server responds to on-demand queries from whichever agent you're using; the web UI shows everything in real-time.
 
 ---
 
@@ -237,8 +237,7 @@ callmem import --source claude-code  --all  # Import Claude Code transcripts (JS
 callmem import --status                     # Show current/last import progress
 callmem status             # Show service status
 callmem search <query>     # Search memories from the command line
-callmem briefing           # Generate and print a briefing
-callmem briefing --write   # Write briefing to SESSION_SUMMARY.md
+callmem briefing           # Generate and print a briefing (live, from the DB)
 
 make restart               # Restart the systemd unit for this project
 make logs                  # Tail journalctl for the service
@@ -286,8 +285,7 @@ claude_code_idle_timeout = 300   # seconds before an idle CC session is closed
 
 [briefing]
 max_tokens = 2000                # Token budget for startup briefing
-auto_write_session_summary = true
-session_summary_filename = "SESSION_SUMMARY.md"
+auto_write_session_summary = false  # Deprecated; leave false — agents call the live CLI / MCP
 
 [extraction]
 batch_size = 10                  # Events per extraction batch

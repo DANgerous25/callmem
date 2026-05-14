@@ -13,7 +13,5 @@
       "enabled": true
     }
   },
-  "instructions": [
-    "SESSION_SUMMARY.md"
-  ]
+  "instructions": [".opencode/BRIEFING_INSTRUCTIONS.md"]
 }

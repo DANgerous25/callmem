@@ -45,9 +45,11 @@ host = "0.0.0.0"
 [briefing]
 # Maximum token budget for the startup briefing
 max_tokens = 2000
-# Automatically write SESSION_SUMMARY.md to the project root
-auto_write_session_summary = true
-# Filename for the session summary
+# Deprecated: the flat-file snapshot of the briefing.
+# Leave false — agents should call `callmem briefing` (CLI) or `mem_get_briefing` (MCP)
+# for a live briefing. Setting this to true rewrites a stale snapshot on each
+# extraction pass, which agents may then read and present as current.
+auto_write_session_summary = false
 session_summary_filename = "SESSION_SUMMARY.md"
 # Max entities per type in the briefing
 max_per_type = 20
