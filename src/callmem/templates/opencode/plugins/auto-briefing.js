@@ -1,5 +1,6 @@
 // Auto-displays callmem briefing when an OpenCode session starts.
-// Listens for session.created and injects a prompt to present SESSION_SUMMARY.md.
+// Listens for session.created and injects a prompt that runs `callmem briefing`
+// (the live CLI). SESSION_SUMMARY.md is deprecated — never read it; the DB is the source of truth.
 //
 // Known issue: session.created may not fire reliably for plugins (OpenCode #14808).
 // If the briefing doesn't appear automatically, use /briefing as a fallback.
@@ -19,7 +20,7 @@ export default async (ctx) => {
               parts: [
                 {
                   type: 'text',
-                  text: 'Read SESSION_SUMMARY.md and present the startup briefing. Greet the user, state the project name, summarize the most recent session activity, highlight any open TODOs or unresolved failures, and ask what they would like to work on.',
+                  text: 'Run the bash command `callmem briefing` and present its output verbatim (preserve the box-drawing). Then greet the user, briefly highlight any open TODOs or unresolved failures from the briefing, and ask what they would like to work on.',
                 },
               ],
             },
