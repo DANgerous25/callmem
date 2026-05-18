@@ -1236,6 +1236,29 @@ skip_patterns = {_toml_list(skip_patterns)}
         print("  Skipped coding tool integration.")
         print("  To configure later, re-run setup or edit opencode.json / .mcp.json manually.")
 
+    # ── Template drift sweep ─────────────────────────────────────
+    # Always re-sync shipped template files for integrations that already
+    # exist on disk, regardless of the choice above. Prevents the case
+    # where a project was set up before a template was updated and never
+    # gets the refresh because the user accepted defaults silently.
+    from callmem.core.integrations import check_integration_drift
+
+    oc_present = (project / ".opencode").is_dir()
+    claude_present = (
+        (project / ".claude").is_dir() or (project / ".mcp.json").exists()
+    )
+    if oc_present or claude_present:
+        drift = check_integration_drift(
+            project,
+            fix=True,
+            echo=lambda msg: print(msg) if msg.strip() else None,
+            check_opencode=oc_present,
+            check_claude=claude_present,
+        )
+        fixed = sum(len(v) for v in drift.values())
+        if fixed:
+            print(f"  Refreshed {fixed} integration file(s) from current templates.")
+
     # ── Autostart ─────────────────────────────────────────────────
     _offer_systemd_service(project, ui_host, ui_port)
 
