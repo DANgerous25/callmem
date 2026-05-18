@@ -270,6 +270,385 @@ def init(project: Path) -> None:
 
 
 @main.command()
+@click.option(
+    "--project", "-p",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=".",
+    help="Project root directory.",
+)
+@click.option(
+    "--fix", is_flag=True,
+    help="Repair stale or missing files instead of just reporting.",
+)
+def doctor(project: Path, fix: bool) -> None:
+    """Check that integration files match the shipped templates.
+
+    Detects when files like ``.claude/commands/briefing.md`` or
+    ``.opencode/plugins/auto-briefing.js`` have drifted from the version
+    callmem currently ships (e.g. after a callmem upgrade). With ``--fix``,
+    overwrites stale files. Without it, exits non-zero on drift — suitable
+    for CI or periodic checks.
+    """
+    from callmem.core.integrations import check_integration_drift
+
+    project = project.resolve()
+
+    has_opencode = (
+        (project / ".opencode").is_dir()
+        or (project / "opencode.json").exists()
+        or (project / ".opencode.json").exists()
+    )
+    has_claude = (
+        (project / ".claude").is_dir()
+        or (project / ".mcp.json").exists()
+    )
+
+    if not has_opencode and not has_claude:
+        click.echo(
+            "No coding-tool integration detected "
+            f"in {project} (no .opencode/, opencode.json, .claude/, or .mcp.json)."
+        )
+        click.echo("Run 'callmem setup' to install integration files.")
+        return
+
+    click.echo(f"Checking integration files in {project}...")
+    result = check_integration_drift(
+        project,
+        fix=fix,
+        echo=click.echo,
+        check_opencode=has_opencode,
+        check_claude=has_claude,
+    )
+
+    drifted_total = sum(len(v) for v in result.values())
+    if drifted_total == 0:
+        click.echo("All integration files match shipped templates.")
+        return
+
+    if fix:
+        click.echo(f"Repaired {drifted_total} file(s).")
+        return
+
+    click.echo()
+    click.echo(
+        f"{drifted_total} file(s) are stale or missing. "
+        "Re-run with --fix to repair."
+    )
+    raise click.exceptions.Exit(1)
+
+
+def _render_config_toml(
+    project_name: str,
+    ui_port: int,
+    donor: dict | None = None,
+) -> str:
+    """Render a config.toml string, optionally inheriting sections from a donor.
+
+    Always overrides ``[project].name`` and ``[ui].port`` so the new project
+    has its own identity and a non-conflicting port.
+    """
+    import json as _json
+
+    donor = donor or {}
+
+    def _section(name: str, defaults: dict) -> dict:
+        return {**defaults, **(donor.get(name) or {})}
+
+    llm = _section("llm", {"backend": "ollama"})
+    ollama = _section("ollama", {
+        "model": "qwen3:8b",
+        "endpoint": "http://localhost:11434",
+        "timeout": 120,
+    })
+    oai = _section("openai_compat", {
+        "endpoint": "https://open.bigmodel.cn/api/paas/v4",
+        "model": "glm-4-flash",
+        "api_key_env": "CALLMEM_API_KEY",
+        "timeout": 120,
+    })
+    briefing = _section("briefing", {"max_tokens": 2000})
+    compaction = _section("compaction", {"enabled": True, "schedule": "on_session_end"})
+    summarization = _section("summarization", {"chunk_size": 20, "cross_session_interval": 5})
+    sensitive = _section("sensitive_data", {
+        "enabled": True,
+        "pattern_scan": True,
+        "llm_scan": llm["backend"] != "none",
+        "vault_mode": "auto",
+    })
+    ingestion = _section("ingestion", {"skip_tools": [], "skip_patterns": []})
+    ui_host = (donor.get("ui") or {}).get("host", "0.0.0.0")
+
+    def _toml_list(items: list[str]) -> str:
+        if not items:
+            return "[]"
+        return "[" + ", ".join(_json.dumps(x) for x in items) + "]"
+
+    parts = [
+        "# callmem configuration",
+        "# See docs/config.md for all options",
+        "",
+        "[project]",
+        f'name = "{project_name}"',
+        "",
+        "[llm]",
+        f'backend = "{llm["backend"]}"',
+        "",
+        "[ollama]",
+        f'model = "{ollama["model"]}"',
+        f'endpoint = "{ollama["endpoint"]}"',
+        f'timeout = {int(ollama["timeout"])}',
+    ]
+    if ollama.get("num_ctx") is not None:
+        parts.append(f'num_ctx = {int(ollama["num_ctx"])}')
+    parts += [
+        "",
+        "[openai_compat]",
+        f'endpoint = "{oai["endpoint"]}"',
+        f'model = "{oai["model"]}"',
+        f'api_key_env = "{oai["api_key_env"]}"',
+        f'timeout = {int(oai["timeout"])}',
+        "",
+        "[briefing]",
+        f'max_tokens = {int(briefing["max_tokens"])}',
+        "",
+        "[compaction]",
+        f'enabled = {str(bool(compaction["enabled"])).lower()}',
+        f'schedule = "{compaction["schedule"]}"',
+        "",
+        "[summarization]",
+        f'chunk_size = {int(summarization["chunk_size"])}',
+        f'cross_session_interval = {int(summarization["cross_session_interval"])}',
+        "",
+        "[ui]",
+        f'port = {ui_port}',
+        f'host = "{ui_host}"',
+        "",
+        "[sensitive_data]",
+        f'enabled = {str(bool(sensitive["enabled"])).lower()}',
+        f'pattern_scan = {str(bool(sensitive["pattern_scan"])).lower()}',
+        f'llm_scan = {str(bool(sensitive["llm_scan"])).lower()}',
+        f'vault_mode = "{sensitive["vault_mode"]}"',
+        "",
+        "[ingestion]",
+        f'skip_tools = {_toml_list(ingestion["skip_tools"])}',
+        f'skip_patterns = {_toml_list(ingestion["skip_patterns"])}',
+        "",
+    ]
+    return "\n".join(parts)
+
+
+def _install_systemd_user_service(
+    project: Path, start: bool = True,
+) -> tuple[str, Path] | None:
+    """Install (and optionally start) a callmem systemd user service.
+
+    Non-interactive counterpart to ``setup_wizard._offer_systemd_service``.
+    Returns ``(service_name, unit_path)`` on success, ``None`` if not
+    installable on this platform.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys as _sys
+
+    if _sys.platform != "linux":
+        return None
+
+    systemd_dir = Path.home() / ".config" / "systemd" / "user"
+    if not systemd_dir.parent.exists():
+        return None
+
+    svc_name = f"callmem-{project.name}"
+    unit_path = systemd_dir / f"{svc_name}.service"
+
+    callmem_bin = shutil.which("callmem")
+    if callmem_bin is None:
+        callmem_bin = f"{shutil.which('uv') or 'uv'} run callmem"
+
+    env_lines = [
+        f"Environment=PATH={os.environ.get('PATH', '/usr/local/bin:/usr/bin:/bin')}",
+        f"Environment=HOME={Path.home()}",
+    ]
+    unit_content = f"""[Unit]
+Description=callmem daemon for {project.name}
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory={project}
+ExecStart={callmem_bin} daemon --project {project}
+Restart=on-failure
+RestartSec=5
+{chr(10).join(env_lines)}
+
+[Install]
+WantedBy=default.target
+"""
+
+    systemd_dir.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(unit_content)
+
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", svc_name],
+            check=True, capture_output=True,
+        )
+        if start:
+            subprocess.run(
+                ["systemctl", "--user", "restart", svc_name],
+                check=True, capture_output=True,
+            )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    return svc_name, unit_path
+
+
+def _pick_free_ui_port(target: Path, donor_port: int | None) -> int:
+    """Pick a UI port that doesn't collide with other callmem projects."""
+    from callmem.setup_wizard import _find_other_callmem_ports
+
+    used = _find_other_callmem_ports(target)
+    candidate = (donor_port + 1) if donor_port else 9090
+    while candidate in used:
+        candidate += 1
+    return candidate
+
+
+@main.command("new")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option(
+    "--from", "source",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Existing callmem project to inherit LLM/vault settings from.",
+)
+@click.option(
+    "--name", default=None,
+    help="Project name (default: target directory name).",
+)
+@click.option(
+    "--port", type=int, default=None,
+    help="UI port (default: next free port after the donor's, or 9090).",
+)
+@click.option(
+    "--service/--no-service", default=True,
+    help="Install and start a systemd user service (Linux only).",
+)
+def new_project(
+    path: Path,
+    source: Path | None,
+    name: str | None,
+    port: int | None,
+    service: bool,
+) -> None:
+    """Create a new callmem-ready project at PATH.
+
+    Initializes a fresh database in ``PATH/.callmem/``, installs the
+    OpenCode and Claude Code integration files (auto-briefing plugin,
+    /briefing commands, MCP entries), and — on Linux — installs a
+    systemd user service so the daemon starts on login.
+
+    With ``--from``, inherits LLM backend, model, and machine-wide
+    preferences from an existing project. The new project gets a fresh
+    database, vault key, project name, and UI port — donor memory data
+    is never copied.
+    """
+    from callmem.core.database import Database
+    from callmem.core.integrations import (
+        ensure_claude_code_commands,
+        ensure_claude_code_mcp,
+        ensure_opencode_plugin,
+    )
+
+    target = path.expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    callmem_dir = target / ".callmem"
+
+    if (callmem_dir / "config.toml").exists():
+        click.echo(
+            f"Error: {callmem_dir / 'config.toml'} already exists. "
+            "Use 'callmem setup' to reconfigure an existing project."
+        )
+        raise click.exceptions.Exit(1)
+
+    project_name = name or target.name
+    donor: dict | None = None
+    donor_port: int | None = None
+    if source is not None:
+        source = source.expanduser().resolve()
+        donor_config_path = source / ".callmem" / "config.toml"
+        if not donor_config_path.exists():
+            click.echo(f"Error: --from {source} has no .callmem/config.toml")
+            raise click.exceptions.Exit(1)
+        from callmem.setup_wizard import load_existing_config
+        donor = load_existing_config(donor_config_path)
+        donor_port = (donor.get("ui") or {}).get("port")
+        click.echo(f"Inheriting settings from {source.name}")
+
+    ui_port = port if port is not None else _pick_free_ui_port(target, donor_port)
+
+    callmem_dir.mkdir(exist_ok=True)
+    config_path = callmem_dir / "config.toml"
+    config_path.write_text(_render_config_toml(project_name, ui_port, donor))
+    click.echo(f"  Wrote {config_path}")
+
+    db_path = callmem_dir / "memory.db"
+    db = Database(db_path)
+    db.initialize()
+    click.echo(f"  Initialized database: {db_path} (schema v{db.get_schema_version()})")
+
+    agents_template = Path(__file__).parent / "templates" / "AGENTS.md.template"
+    agents_path = target / "AGENTS.md"
+    if agents_template.exists() and not agents_path.exists():
+        agents_path.write_text(agents_template.read_text())
+        click.echo(f"  Wrote {agents_path}")
+    _ensure_agents_session_summary(agents_path)
+    _ensure_agents_mcp_block(agents_path)
+
+    claude_md = target / "CLAUDE.md"
+    if _claude_md_is_separate_file(claude_md, agents_path):
+        _ensure_agents_mcp_block(claude_md)
+
+    _ensure_opencode_instructions(target)
+    ensure_opencode_plugin(target, echo=click.echo)
+    ensure_claude_code_mcp(target, echo=click.echo)
+    ensure_claude_code_commands(target, echo=click.echo)
+
+    gitignore_path = target / ".gitignore"
+    vault_entries = ["vault.key", "vault.salt"]
+    if gitignore_path.exists():
+        content = gitignore_path.read_text()
+        missing = [e for e in vault_entries if e not in content]
+        if missing:
+            with open(gitignore_path, "a") as f:
+                f.write("\n# callmem vault secrets\n")
+                for entry in missing:
+                    f.write(f"{entry}\n")
+            click.echo(f"  Added {', '.join(missing)} to .gitignore")
+
+    svc_info = None
+    if service:
+        svc_info = _install_systemd_user_service(target, start=True)
+        if svc_info:
+            click.echo(f"  Installed and started {svc_info[0]}")
+        else:
+            click.echo("  Skipped systemd service (not Linux or no systemd user dir).")
+
+    click.echo()
+    click.echo(f"Project '{project_name}' ready at {target}")
+    click.echo(f"  Web UI:  http://0.0.0.0:{ui_port}")
+    if svc_info:
+        click.echo(f"  Daemon:  {svc_info[0]}")
+    else:
+        click.echo(f"  Daemon:  start with 'callmem daemon --project {target}'")
+
+
+@main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--transport", type=click.Choice(["stdio", "sse"]), default="stdio")
 @click.option("--no-workers", is_flag=True, help="Disable background workers.")

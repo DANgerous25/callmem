@@ -160,3 +160,44 @@ def ensure_claude_code_commands(
     return _install_templates(
         mapping, echo=echo, label="Claude Code commands", dry_run=dry_run,
     )
+
+
+def _silent(*_args: object, **_kwargs: object) -> None:
+    pass
+
+
+def check_integration_drift(
+    project: Path,
+    fix: bool = False,
+    echo=_silent,
+    check_opencode: bool = True,
+    check_claude: bool = True,
+) -> dict[str, list[str]]:
+    """Detect stale or missing shipped-template integration files.
+
+    Runs the per-tool ``ensure_*`` helpers in dry-run mode (or in repair mode
+    when ``fix=True``) and returns a mapping of category → list of file
+    basenames that drifted. Empty lists mean the category is clean.
+
+    Args:
+        project: project root containing ``.opencode/`` and/or ``.claude/``.
+        fix: when True, repair drift in addition to reporting it.
+        echo: callable used by the underlying helpers when they report drift.
+            Defaults to a no-op so callers can format their own output.
+        check_opencode: whether to check OpenCode integration files.
+        check_claude: whether to check Claude Code integration files.
+
+    Returns:
+        ``{"opencode": [...], "claude_code": [...]}`` — only the categories
+        actually checked appear in the dict.
+    """
+    result: dict[str, list[str]] = {}
+    if check_opencode:
+        result["opencode"] = ensure_opencode_plugin(
+            project, echo=echo, dry_run=not fix,
+        )
+    if check_claude:
+        result["claude_code"] = ensure_claude_code_commands(
+            project, echo=echo, dry_run=not fix,
+        )
+    return result
