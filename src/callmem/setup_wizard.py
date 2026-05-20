@@ -614,28 +614,32 @@ WantedBy=default.target
 
 # ── AGENTS.md patching ──────────────────────────────────────────────
 
-_SESSION_SUMMARY_SNIPPET = (
+_STARTUP_BRIEFING_SNIPPET = (
     "\n## Startup briefing\n\n"
-    "At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) "
-    "if it exists. It contains an auto-generated briefing with recent context, key "
-    "entities, and open tasks from previous sessions.\n\n"
-    "After reading it, present a brief summary to the user: greet them, state the "
-    "project name, mention the most recent session activity, highlight any open TODOs "
-    "or unresolved failures, and ask what they'd like to work on.\n"
+    "At the **start of every session**, run `callmem briefing` (or call "
+    "`mem_get_briefing` via MCP). It returns a live briefing with recent "
+    "context, key entities, and open tasks — generated fresh from "
+    "`.callmem/memory.db` on each invocation.\n\n"
+    "After reading it, present a brief summary to the user: greet them, "
+    "state the project name, mention the most recent session activity, "
+    "highlight any open TODOs or unresolved failures, and ask what "
+    "they'd like to work on.\n"
 )
 
+_STARTUP_BRIEFING_SENTINELS = ("## Startup briefing", "callmem briefing", "mem_get_briefing")
 
-def _ensure_agents_session_summary(agents_path: Path) -> None:
-    """Patch an existing AGENTS.md to reference SESSION_SUMMARY.md if missing."""
+
+def _ensure_agents_startup_briefing(agents_path: Path) -> None:
+    """Patch an existing AGENTS.md with the startup-briefing snippet if missing."""
     if not agents_path.exists():
         return
     content = agents_path.read_text(encoding="utf-8")
-    if "SESSION_SUMMARY.md" in content:
-        print("  AGENTS.md already references SESSION_SUMMARY.md")
+    if any(s in content for s in _STARTUP_BRIEFING_SENTINELS):
+        print("  AGENTS.md already has startup-briefing instructions")
         return
-    content += _SESSION_SUMMARY_SNIPPET
+    content += _STARTUP_BRIEFING_SNIPPET
     agents_path.write_text(content, encoding="utf-8")
-    print("  Patched AGENTS.md with SESSION_SUMMARY.md startup reference")
+    print("  Patched AGENTS.md with startup-briefing instructions")
 
 
 _MCP_BLOCK_SNIPPET = (
@@ -643,7 +647,7 @@ _MCP_BLOCK_SNIPPET = (
     "\n## Memory (callmem)\n\n"
     "This project uses callmem for persistent memory via MCP tools.\n\n"
     "**Start of session:**\n"
-    "1. Read `SESSION_SUMMARY.md` (if it exists) for an auto-generated briefing\n"
+    "1. Run `callmem briefing` (or call `mem_get_briefing` via MCP) for a live briefing\n"
     "2. Call `mem_session_start` to register this session\n"
     "3. Present a brief summary: greet the user, mention recent activity, highlight open TODOs\n\n"
     "**During the session:**\n"
@@ -684,37 +688,6 @@ def _ensure_agents_mcp_block(agents_path: Path) -> None:
     content += _MCP_BLOCK_SNIPPET
     agents_path.write_text(content, encoding="utf-8")
     print("  Patched AGENTS.md with callmem MCP tool instructions")
-
-
-# ── Initial briefing generation ────────────────────────────────────
-
-
-def _generate_initial_briefing(project: Path, db_path: Path) -> None:
-    """Generate SESSION_SUMMARY.md so agents get context on first launch."""
-    if not db_path.exists():
-        return
-    try:
-        from callmem.core.briefing import BriefingGenerator
-        from callmem.core.config import load_config
-        from callmem.core.database import Database
-        from callmem.core.engine import MemoryEngine
-
-        config = load_config(project)
-        db = Database(db_path)
-        db.initialize()
-        engine = MemoryEngine(db, config)
-        gen = BriefingGenerator(engine.repo, config, engine.ollama)
-
-        project_name = config.project.name or "default"
-        briefing = gen.write_session_summary(
-            project_id=engine.project_id,
-            project_name=project_name,
-            worktree_path=project,
-        )
-        print(f"  Wrote SESSION_SUMMARY.md ({briefing.token_count} tokens)")
-    except Exception as exc:
-        print(f"  Could not generate SESSION_SUMMARY.md: {exc}")
-        print("  Generate manually: callmem briefing --write -p .")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -1139,17 +1112,14 @@ skip_patterns = {_toml_list(skip_patterns)}
     # ── Session import ───────────────────────────────────────────
     _offer_session_import(project, db_path)
 
-    # ── AGENTS.md / CLAUDE.md — ensure SESSION_SUMMARY + MCP reference ──
+    # ── AGENTS.md / CLAUDE.md — ensure startup-briefing + MCP reference ──
     agents_path = project / "AGENTS.md"
     claude_path = project / "CLAUDE.md"
-    _ensure_agents_session_summary(agents_path)
+    _ensure_agents_startup_briefing(agents_path)
     _ensure_agents_mcp_block(agents_path)
     if _claude_md_is_separate_file(claude_path, agents_path):
-        _ensure_agents_session_summary(claude_path)
+        _ensure_agents_startup_briefing(claude_path)
         _ensure_agents_mcp_block(claude_path)
-
-    # ── Generate initial briefing ────────────────────────────────
-    _generate_initial_briefing(project, db_path)
 
     # ── Coding tool integration ──────────────────────────────────
     print()
@@ -1216,10 +1186,16 @@ skip_patterns = {_toml_list(skip_patterns)}
             print("  Updated MCP server command in opencode.json")
 
         instructions = oc_config.get("instructions", [])
-        if "SESSION_SUMMARY.md" not in instructions:
-            instructions.append("SESSION_SUMMARY.md")
-            oc_config["instructions"] = instructions
-            print("  Added SESSION_SUMMARY.md to OpenCode instructions")
+        briefing_ref = ".opencode/BRIEFING_INSTRUCTIONS.md"
+        # Drop any legacy SESSION_SUMMARY.md reference — it's deprecated and
+        # would otherwise leave a dead pointer in opencode.json.
+        if "SESSION_SUMMARY.md" in instructions:
+            instructions = [i for i in instructions if i != "SESSION_SUMMARY.md"]
+            print("  Removed deprecated SESSION_SUMMARY.md from OpenCode instructions")
+        if briefing_ref not in instructions:
+            instructions.append(briefing_ref)
+            print(f"  Added {briefing_ref} to OpenCode instructions")
+        oc_config["instructions"] = instructions
 
         oc_config_path.write_text(json.dumps(oc_config, indent=2) + "\n")
         print(f"  Wrote MCP config to {oc_config_path.name}")

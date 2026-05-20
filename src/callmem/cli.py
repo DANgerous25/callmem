@@ -18,22 +18,26 @@ def main() -> None:
     """callmem: Persistent memory for coding agents."""
 
 
-_SESSION_SUMMARY_SNIPPET = (
+_STARTUP_BRIEFING_SNIPPET = (
     "\n## Startup briefing\n\n"
-    "At the **start of every session**, read `SESSION_SUMMARY.md` (in the project root) "
-    "if it exists. It contains an auto-generated briefing with recent context, key "
-    "entities, and open tasks from previous sessions.\n\n"
-    "After reading it, present a brief summary to the user: greet them, state the "
-    "project name, mention the most recent session activity, highlight any open TODOs "
-    "or unresolved failures, and ask what they'd like to work on.\n"
+    "At the **start of every session**, run `callmem briefing` (or call "
+    "`mem_get_briefing` via MCP). It returns a live briefing with recent "
+    "context, key entities, and open tasks — generated fresh from "
+    "`.callmem/memory.db` on each invocation.\n\n"
+    "After reading it, present a brief summary to the user: greet them, "
+    "state the project name, mention the most recent session activity, "
+    "highlight any open TODOs or unresolved failures, and ask what "
+    "they'd like to work on.\n"
 )
+
+_STARTUP_BRIEFING_SENTINELS = ("## Startup briefing", "callmem briefing", "mem_get_briefing")
 
 _MCP_BLOCK_SNIPPET = (
 
     "\n## Memory (callmem)\n\n"
     "This project uses callmem for persistent memory via MCP tools.\n\n"
     "**Start of session:**\n"
-    "1. Read `SESSION_SUMMARY.md` (if it exists) for an auto-generated briefing\n"
+    "1. Run `callmem briefing` (or call `mem_get_briefing` via MCP) for a live briefing\n"
     "2. Call `mem_session_start` to register this session\n"
     "3. Present a brief summary: greet the user, mention recent activity, highlight open TODOs\n\n"
     "**During the session:**\n"
@@ -65,14 +69,14 @@ _MCP_BLOCK_SNIPPET = (
 _MCP_SENTINELS = ("## Memory (callmem)", "mem_ingest", "mem_session_start")
 
 
-def _ensure_agents_session_summary(agents_path: Path) -> None:
-    """Patch an existing AGENTS.md to reference SESSION_SUMMARY.md if missing."""
+def _ensure_agents_startup_briefing(agents_path: Path) -> None:
+    """Patch an existing AGENTS.md with the startup-briefing snippet if missing."""
     if not agents_path.exists():
         return
     content = agents_path.read_text(encoding="utf-8")
-    if "SESSION_SUMMARY.md" in content:
+    if any(s in content for s in _STARTUP_BRIEFING_SENTINELS):
         return
-    content += _SESSION_SUMMARY_SNIPPET
+    content += _STARTUP_BRIEFING_SNIPPET
     agents_path.write_text(content, encoding="utf-8")
 
 
@@ -90,7 +94,8 @@ def _ensure_agents_mcp_block(agents_path: Path) -> None:
 
 
 def _ensure_opencode_plugin(project: Path) -> None:
-    """Install OpenCode auto-briefing plugin and /briefing command if missing or outdated."""
+    """Install OpenCode auto-briefing plugin, /briefing command, and
+    BRIEFING_INSTRUCTIONS.md if missing or outdated."""
     import filecmp
 
     templates_dir = Path(__file__).parent / "templates" / "opencode"
@@ -104,6 +109,10 @@ def _ensure_opencode_plugin(project: Path) -> None:
             templates_dir / "commands" / "briefing.md",
             project / ".opencode" / "commands" / "briefing.md",
         ),
+        (
+            templates_dir / "BRIEFING_INSTRUCTIONS.md",
+            project / ".opencode" / "BRIEFING_INSTRUCTIONS.md",
+        ),
     ]
 
     for src, dst in targets:
@@ -115,7 +124,8 @@ def _ensure_opencode_plugin(project: Path) -> None:
 
 
 def _ensure_opencode_instructions(project: Path) -> None:
-    """Ensure opencode.json has SESSION_SUMMARY.md and correct MCP config."""
+    """Ensure opencode.json points at .opencode/BRIEFING_INSTRUCTIONS.md
+    and has the correct callmem MCP server command."""
     import json
 
     oc_path = None
@@ -152,12 +162,18 @@ def _ensure_opencode_instructions(project: Path) -> None:
         if existed:
             click.echo("Updated MCP server command in opencode.json")
 
-    # Ensure SESSION_SUMMARY.md in instructions
+    # Ensure BRIEFING_INSTRUCTIONS.md in instructions; drop legacy
+    # SESSION_SUMMARY.md if it's still listed.
     instructions = oc_config.get("instructions", [])
-    if "SESSION_SUMMARY.md" not in instructions:
-        instructions.append("SESSION_SUMMARY.md")
-        oc_config["instructions"] = instructions
+    briefing_ref = ".opencode/BRIEFING_INSTRUCTIONS.md"
+    if "SESSION_SUMMARY.md" in instructions:
+        instructions = [i for i in instructions if i != "SESSION_SUMMARY.md"]
         changed = True
+    if briefing_ref not in instructions:
+        instructions.append(briefing_ref)
+        changed = True
+    if changed:
+        oc_config["instructions"] = instructions
 
     if changed:
         oc_path.write_text(json.dumps(oc_config, indent=2) + "\n", encoding="utf-8")
@@ -252,11 +268,12 @@ def init(project: Path) -> None:
     if agents_template.exists() and not agents_path.exists():
         agents_path.write_text(agents_template.read_text())
 
-    _ensure_agents_session_summary(agents_path)
+    _ensure_agents_startup_briefing(agents_path)
     _ensure_agents_mcp_block(agents_path)
 
     claude_path = project / "CLAUDE.md"
     if _claude_md_is_separate_file(claude_path, agents_path):
+        _ensure_agents_startup_briefing(claude_path)
         _ensure_agents_mcp_block(claude_path)
 
     _ensure_opencode_instructions(project)
@@ -607,11 +624,12 @@ def new_project(
     if agents_template.exists() and not agents_path.exists():
         agents_path.write_text(agents_template.read_text())
         click.echo(f"  Wrote {agents_path}")
-    _ensure_agents_session_summary(agents_path)
+    _ensure_agents_startup_briefing(agents_path)
     _ensure_agents_mcp_block(agents_path)
 
     claude_md = target / "CLAUDE.md"
     if _claude_md_is_separate_file(claude_md, agents_path):
+        _ensure_agents_startup_briefing(claude_md)
         _ensure_agents_mcp_block(claude_md)
 
     _ensure_opencode_instructions(target)
@@ -1409,7 +1427,7 @@ def import_cmd(
         click.echo()
         click.echo("Extraction will continue in the background via the worker.")
 
-        # Generate SESSION_SUMMARY.md so agents pick up context immediately
+        # Opt-in SESSION_SUMMARY.md write (no-op unless auto_write_session_summary is enabled).
         _write_session_summary(project, config, db, engine)
 
 

@@ -47,7 +47,11 @@ class TestCheckIntegrationDrift:
     def test_reports_stale_opencode_files(self, tmp_path: Path) -> None:
         _make_opencode_layout(tmp_path)
         drift = check_integration_drift(tmp_path, fix=False, check_claude=False)
-        assert sorted(drift["opencode"]) == ["auto-briefing.js", "briefing.md"]
+        assert sorted(drift["opencode"]) == [
+            "BRIEFING_INSTRUCTIONS.md",
+            "auto-briefing.js",
+            "briefing.md",
+        ]
 
     def test_reports_stale_claude_files(self, tmp_path: Path) -> None:
         _make_claude_layout(tmp_path)
