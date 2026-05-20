@@ -81,6 +81,8 @@ NEW_PROJECT_MESSAGE = (
 
 
 def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    if max_tokens <= 0:
+        return ""
     max_chars = max_tokens * 4
     if len(text) <= max_chars:
         return text
@@ -212,22 +214,33 @@ class BriefingGenerator:
         # agent actually reads (the final briefing, including its
         # envelope and the 2000-token budget truncation) vs. the total
         # captured work. Pass 2 re-renders with the correct percentage.
-        # The footer (stats + Web UI URL) is rendered separately and
-        # never truncated, so the URL is always the final line.
+        # The tail — Suggested next + footer — is rendered separately
+        # and never truncated, so a fresh agent always sees the
+        # curated pickup list and the Web UI URL.
         w = 58
         provisional_body = "\n".join(self._build_briefing_parts(
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, 0.0,
         ))
+        suggested_next_str = "\n".join(
+            self._build_suggested_next_parts(all_entities, w)
+        )
+        # Render the provisional footer using `budget` as a placeholder for
+        # briefing_tokens so it hits the same layout branch as the final
+        # footer (otherwise the body budget would be computed against a
+        # shorter footer and the assembled briefing would overshoot).
         provisional_footer = "\n".join(self._build_footer_parts(
-            work_investment, observations_loaded, 0, w,
+            work_investment, observations_loaded, budget, w,
         ))
-        footer_tokens = _estimate_tokens(provisional_footer)
-        body_budget = max(budget - footer_tokens, 0)
+        tail_tokens = (
+            _estimate_tokens(provisional_footer)
+            + (_estimate_tokens(suggested_next_str) if suggested_next_str else 0)
+        )
+        body_budget = max(budget - tail_tokens, 0)
         if _estimate_tokens(provisional_body) > body_budget:
             provisional_body = _truncate_to_tokens(provisional_body, body_budget)
-        briefing_tokens = _estimate_tokens(provisional_body) + footer_tokens
+        briefing_tokens = _estimate_tokens(provisional_body) + tail_tokens
 
         # savings_pct kept for backwards-compat in components dict only — it is
         # no longer rendered in the footer. The previous "captured/saved %" line
@@ -250,7 +263,22 @@ class BriefingGenerator:
         ))
         if _estimate_tokens(body) > body_budget:
             body = _truncate_to_tokens(body, body_budget)
-        assembled = body + "\n" + footer
+        if suggested_next_str:
+            assembled = body + "\n" + suggested_next_str + "\n" + footer
+        else:
+            assembled = body + "\n" + footer
+        # Final guard: the two-pass render can still overshoot by a token
+        # or two (savings_pct can change the Context Economics line
+        # width; join-newlines aren't counted in tail_tokens). Trim the
+        # body further if assembled exceeds the budget, preserving the
+        # protected tail.
+        overflow = _estimate_tokens(assembled) - budget
+        if overflow > 0:
+            body = _truncate_to_tokens(body, max(body_budget - overflow, 0))
+            if suggested_next_str:
+                assembled = body + "\n" + suggested_next_str + "\n" + footer
+            else:
+                assembled = body + "\n" + footer
 
         components = {}
         if all_entities:
@@ -411,9 +439,45 @@ class BriefingGenerator:
                     parts.append(f"    #{eid}  {emoji}  {title}")
                 parts.append("")
 
-        # Body ends here; the footer is appended by the caller after
-        # any truncation so the Web UI URL and update notice always
-        # survive at the bottom of the output.
+        # Body ends here; the caller appends Suggested next + footer
+        # after truncation so both survive the token-budget trim.
+        return parts
+
+    def _build_suggested_next_parts(
+        self,
+        entities: list[dict[str, Any]],
+        w: int,
+    ) -> list[str]:
+        failures = [
+            e for e in entities
+            if e.get("type") == "failure"
+            and e.get("status") != "resolved"
+        ]
+        todos = [
+            e for e in entities
+            if e.get("type") == "todo"
+            and e.get("status") != "resolved"
+        ]
+        high = [t for t in todos if t.get("priority") == "high"]
+        medium = [t for t in todos if t.get("priority") == "medium"]
+        candidates = (failures + high + medium)[:5]
+        if not candidates:
+            return []
+
+        parts: list[str] = []
+        header = " Suggested next "
+        parts.append(f"{_BOX_H * 3}{header}{_BOX_H * (w - 3 - len(header))}")
+        parts.append("")
+        for e in candidates:
+            eid = _short_id(e.get("id"))
+            title = e.get("title") or e.get("content", "")[:60]
+            if e.get("type") == "failure":
+                parts.append(f"  #{eid}  ❌  {title}")
+            else:
+                priority = e.get("priority", "")
+                flag = f" [{priority}]" if priority else ""
+                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}")
+        parts.append("")
         return parts
 
     def _build_footer_parts(
