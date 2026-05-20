@@ -145,8 +145,11 @@ class TestBriefingGeneration:
         project_id = _seed_with_entities(memory_db)
         repo = Repository(memory_db)
         gen = BriefingGenerator(repo, Config())
-        briefing = gen.generate(project_id, project_name="test", max_tokens=50)
-        assert briefing.token_count <= 50
+        # Budget must clear the protected tail (Suggested next + footer);
+        # 300 is the smallest round budget that the populated fixture can
+        # honor without dropping the tail.
+        briefing = gen.generate(project_id, project_name="test", max_tokens=300)
+        assert briefing.token_count <= 300
 
     def test_briefing_components_populated(
         self, memory_db: Database
@@ -213,6 +216,41 @@ class TestBriefingGeneration:
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
         assert isinstance(briefing.savings_pct, float)
+
+    def test_briefing_includes_suggested_next(
+        self, memory_db: Database
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        # Fixture has one unresolved failure + one high-priority TODO, so
+        # the section should appear and contain both.
+        assert "Suggested next" in briefing.content
+        assert "Database connection timeout" in briefing.content
+        assert "Add auth middleware" in briefing.content
+        # The "Suggested next" header should come AFTER the Action Items
+        # block — it's a curated tail summary, not a duplicate up top.
+        suggested_idx = briefing.content.index("Suggested next")
+        action_idx = briefing.content.index("Action Items")
+        assert suggested_idx > action_idx
+
+    def test_suggested_next_omitted_when_no_qualifying_items(
+        self, memory_db: Database
+    ) -> None:
+        # Seed a project with only a decision (no failures, no TODOs).
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+        decision = Entity(
+            project_id=project_id,
+            type="decision",
+            title="Use FastAPI",
+            content="Chose FastAPI over Flask",
+        )
+        _insert_entity(memory_db, decision)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "Suggested next" not in briefing.content
 
     def test_write_session_summary(
         self, memory_db: Database, tmp_path
