@@ -131,7 +131,8 @@ def _install_templates(
 def ensure_opencode_plugin(
     project: Path, echo=print, dry_run: bool = False,
 ) -> list[str]:
-    """Install OpenCode auto-briefing plugin + /briefing command."""
+    """Install OpenCode auto-briefing plugin, /briefing command, and
+    BRIEFING_INSTRUCTIONS.md (referenced from opencode.json instructions)."""
     templates_dir = _find_templates_dir("opencode")
     if templates_dir is None:
         return []
@@ -140,6 +141,8 @@ def ensure_opencode_plugin(
          project / ".opencode" / "plugins" / "auto-briefing.js"),
         (templates_dir / "commands" / "briefing.md",
          project / ".opencode" / "commands" / "briefing.md"),
+        (templates_dir / "BRIEFING_INSTRUCTIONS.md",
+         project / ".opencode" / "BRIEFING_INSTRUCTIONS.md"),
     ]
     return _install_templates(
         mapping, echo=echo, label="OpenCode files", dry_run=dry_run,
