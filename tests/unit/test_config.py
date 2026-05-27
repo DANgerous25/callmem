@@ -232,7 +232,10 @@ class TestGenerateDefaultConfig:
         assert "on_session_end" in text
 
     def test_is_valid_toml(self, tmp_path: Path) -> None:
-        import tomllib
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
 
         text = generate_default_config("test")
         (tmp_path / "config.toml").write_text(text)

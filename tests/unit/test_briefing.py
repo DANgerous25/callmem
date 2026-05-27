@@ -66,7 +66,9 @@ def _seed_with_entities(memory_db: Database) -> str:
     )
     _insert_entity(memory_db, fact)
 
-    from datetime import UTC, datetime
+    from datetime import datetime
+
+    from callmem.compat import UTC
 
     from callmem.models.events import Event
 
