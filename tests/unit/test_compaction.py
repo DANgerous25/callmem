@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
+
+from callmem.compat import UTC
 from typing import TYPE_CHECKING
 
 from callmem.core.compaction import Compactor

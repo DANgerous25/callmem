@@ -105,7 +105,9 @@ def _seed_data(memory_db: Database) -> str:
 
 class TestRecencyFactor:
     def test_recent_gets_high_score(self) -> None:
-        from datetime import UTC, datetime
+        from datetime import datetime
+
+        from callmem.compat import UTC
 
         now = datetime.now(UTC).isoformat()
         factor = _recency_factor(now, now)
