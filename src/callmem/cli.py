@@ -1558,8 +1558,22 @@ def _write_session_summary(
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--write", "write_file", is_flag=True, help="Write to SESSION_SUMMARY.md")
-def briefing(project: Path, write_file: bool) -> None:
+@click.option(
+    "--hook",
+    "hook_format",
+    type=click.Choice(["claude-code"]),
+    default=None,
+    help=(
+        "Emit the briefing wrapped in a hook-system envelope. "
+        "'claude-code' produces the SessionStart JSON shape "
+        "({hookSpecificOutput.additionalContext, systemMessage}) "
+        "for use from ~/.claude/settings.json."
+    ),
+)
+def briefing(project: Path, write_file: bool, hook_format: str | None) -> None:
     """Generate and display the startup briefing."""
+    import json as _json
+
     from callmem.core.briefing import BriefingGenerator
     from callmem.core.config import load_config
     from callmem.core.database import Database
@@ -1568,6 +1582,17 @@ def briefing(project: Path, write_file: bool) -> None:
     config = load_config(project)
     db_path = project / ".callmem" / "memory.db"
     if not db_path.exists():
+        if hook_format == "claude-code":
+            # Emit an empty envelope so the hook stays silent on non-callmem projects.
+            click.echo(_json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "",
+                },
+                "continue": True,
+                "suppressOutput": True,
+            }))
+            return
         click.echo(f"No callmem database found at {db_path}")
         return
 
@@ -1584,12 +1609,25 @@ def briefing(project: Path, write_file: bool) -> None:
         )
         click.echo(result.content)
         click.echo(f"\nWritten to {project / 'SESSION_SUMMARY.md'}")
-    else:
-        result = gen.generate(
-            project_id=engine.project_id,
-            project_name=config.project.name or "default",
-        )
-        click.echo(result.content)
+        return
+
+    result = gen.generate(
+        project_id=engine.project_id,
+        project_name=config.project.name or "default",
+    )
+
+    if hook_format == "claude-code":
+        envelope = {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": result.content,
+            },
+            "systemMessage": result.content,
+        }
+        click.echo(_json.dumps(envelope))
+        return
+
+    click.echo(result.content)
 
 
 @main.command("re-extract")
