@@ -13,9 +13,11 @@ export default async (ctx) => {
     event: async ({ event }) => {
       if (event.type === 'session.created' && !triggered) {
         triggered = true
+        const sessionId = event.properties.sessionID ?? event.properties.info?.id
+        if (!sessionId) return
         try {
           await ctx.client.session.prompt({
-            path: { id: event.properties.id },
+            path: { id: sessionId },
             body: {
               parts: [
                 {
