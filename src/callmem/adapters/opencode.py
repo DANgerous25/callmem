@@ -142,3 +142,25 @@ class OpenCodeAdapter:
                 self.engine.ingest([event_input])
             except Exception as exc:
                 logger.error("Failed to ingest event: %s", exc)
+
+            # Auto-detect ingestable content in assistant responses
+            if event_input.type == "response":
+                self._auto_detect_and_ingest(event_input.content)
+
+    def _auto_detect_and_ingest(self, content: str) -> None:
+        """Scan assistant response for decisions, discoveries, etc."""
+        from callmem.core.auto_ingest import detect_ingestable_content
+
+        detections = detect_ingestable_content(content)
+        for det in detections:
+            try:
+                self.engine.ingest([EventInput(
+                    type=det.type,
+                    content=det.content,
+                    metadata={"auto_detected": True, "pattern": det.pattern_matched},
+                )])
+                logger.debug(
+                    "Auto-ingested %s: %s...", det.type, det.content[:60],
+                )
+            except Exception as exc:
+                logger.error("Failed to auto-ingest %s: %s", det.type, exc)

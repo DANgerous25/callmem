@@ -239,6 +239,17 @@ class MemoryEngine:
 
         if stored:
             self._update_session_event_count(session, len(stored))
+
+            # Explicitly-typed semantic events (decisions, discoveries,
+            # failures, todos, facts) are already structured — create
+            # entities directly without waiting for LLM extraction.
+            semantic_events = [
+                e for e in stored
+                if e.type in ("decision", "discovery", "failure", "todo", "fact")
+            ]
+            for ev in semantic_events:
+                self._create_entity_from_event(ev)
+
             self.queue.enqueue(
                 "extract_entities",
                 {
@@ -259,6 +270,29 @@ class MemoryEngine:
         """Ingest a single event. Convenience wrapper around ingest()."""
         results = self.ingest([EventInput(type=type, content=content, metadata=metadata)])
         return results[0] if results else None
+
+    def _create_entity_from_event(self, event: Event) -> None:
+        """Directly create an entity from an explicitly-typed event.
+
+        Semantic event types (decision, discovery, failure, todo, fact,
+        note) are already structured by the agent — no LLM extraction
+        needed. This makes them immediately searchable.
+        """
+        from callmem.models.entities import Entity
+
+        title = event.content[:120].split("\n")[0].strip()
+        entity = Entity(
+            project_id=event.project_id,
+            source_event_id=event.id,
+            type=event.type,
+            title=title,
+            content=event.content,
+            status="open" if event.type == "todo" else None,
+        )
+        try:
+            self.repo.create_entity(entity)
+        except Exception as exc:
+            logger.warning("Direct entity creation failed for %s: %s", event.id[:8], exc)
 
     # ── Read ─────────────────────────────────────────────────────────
 

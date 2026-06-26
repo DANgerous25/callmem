@@ -559,6 +559,33 @@ class Repository:
         finally:
             conn.close()
 
+    def create_entity(self, entity: Entity) -> None:
+        """Insert a new entity directly (no LLM extraction)."""
+        from callmem.models.entities import Entity as _Entity
+
+        conn = self.db.connect()
+        try:
+            row = entity.to_row()
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, extracted_by, "
+                "status, priority, pinned, created_at, updated_at, "
+                "resolved_at, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"], row.get("extracted_by"),
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"],
+                    row["resolved_at"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def mark_current(self, entity_id: str) -> bool:
         """Clear the stale flag on an entity. Returns True if modified."""
         conn = self.db.connect()
