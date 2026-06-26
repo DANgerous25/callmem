@@ -742,6 +742,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "mem_set_overview",
+        "description": (
+            "Set the project overview — a manually-authored summary that "
+            "appears at the top of every briefing. Writing a new overview "
+            "replaces the previous one. This is the primary way agents "
+            "record what the project IS, its architecture, status, and "
+            "next steps."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["content"],
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Markdown overview text. Truncated to ~500 tokens "
+                        "in briefings."
+                    ),
+                },
+            },
+        },
+    },
 ]
 
 
@@ -1269,6 +1292,21 @@ def handle_rewind_diff(engine: MemoryEngine, args: dict[str, Any]) -> list[TextC
     return _make_result(result)
 
 
+# ── Project overview handler ────────────────────────────────────────
+
+
+def handle_set_overview(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    content = args.get("content", "")
+    if not content.strip():
+        return _make_error("content is required")
+    row = engine.set_overview(content)
+    return _make_result({
+        "project_id": row["project_id"],
+        "updated_at": row["updated_at"],
+        "content_length": len(content),
+    })
+
+
 _HANDLERS: dict[str, Any] = {
     "mem_session_start": handle_session_start,
     "mem_session_end": handle_session_end,
@@ -1305,4 +1343,5 @@ _HANDLERS: dict[str, Any] = {
     "mem_rewind_list": handle_rewind_list,
     "mem_rewind_restore": handle_rewind_restore,
     "mem_rewind_diff": handle_rewind_diff,
+    "mem_set_overview": handle_set_overview,
 }

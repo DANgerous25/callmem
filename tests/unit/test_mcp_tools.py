@@ -53,6 +53,7 @@ class TestToolDefinitions:
             "mem_model_geo_check", "mem_model_refresh",
             "mem_rewind_create", "mem_rewind_list",
             "mem_rewind_restore", "mem_rewind_diff",
+            "mem_set_overview",
         }
         assert names == expected
 

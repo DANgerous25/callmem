@@ -320,6 +320,18 @@ class MemoryEngine:
             for r in results
         ]
 
+    def set_overview(self, content: str) -> dict[str, Any]:
+        """Set the project overview (upsert). Returns the stored row."""
+        active = self.get_active_session()
+        session_id = active.id if active else None
+        return self.repo.set_overview(
+            self.project_id, content, updated_by=session_id,
+        )
+
+    def get_overview(self) -> dict[str, Any] | None:
+        """Return the project overview row, or None if not set."""
+        return self.repo.get_overview(self.project_id)
+
     def get_briefing(
         self,
         max_tokens: int | None = None,

@@ -1989,6 +1989,74 @@ def corpus_delete(name: str, project: Path) -> None:
     click.echo(f"Deleted corpus '{name}'.")
 
 
+@main.group()
+def overview() -> None:
+    """Manage the project overview (always-visible briefing summary)."""
+
+
+@overview.command("set")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option(
+    "--file",
+    "file_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read overview from a file instead of stdin.",
+)
+def overview_set(project: Path, file_path: Path | None) -> None:
+    """Set the project overview.
+
+    Reads from --file or stdin. Replaces any existing overview.
+    """
+    db, config = _get_db_and_config(project)
+    project_id = _resolve_project_id(db, config)
+    if project_id is None:
+        click.echo(
+            "Project not found in database. Run 'callmem init' first.", err=True,
+        )
+        raise SystemExit(1)
+
+    if file_path is not None:
+        content = file_path.read_text(encoding="utf-8")
+    else:
+        click.echo("Enter overview (Ctrl+D to finish):", err=True)
+        import sys
+
+        content = sys.stdin.read()
+
+    content = content.strip()
+    if not content:
+        click.echo("Overview is empty — nothing to set.", err=True)
+        raise SystemExit(1)
+
+    from callmem.core.repository import Repository
+
+    repo = Repository(db)
+    row = repo.set_overview(project_id, content)
+    click.echo(f"Overview set ({len(content)} chars, updated {row['updated_at'][:19]}).")
+
+
+@overview.command("show")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+def overview_show(project: Path) -> None:
+    """Print the current project overview."""
+    db, config = _get_db_and_config(project)
+    project_id = _resolve_project_id(db, config)
+    if project_id is None:
+        click.echo("No project found in database.", err=True)
+        raise SystemExit(1)
+
+    from callmem.core.repository import Repository
+
+    repo = Repository(db)
+    row = repo.get_overview(project_id)
+    if row is None:
+        click.echo("No overview set. Use 'callmem overview set' to create one.")
+        return
+    click.echo(row["content"])
+    click.echo(f"\n— updated {row['updated_at'][:19]}", err=True)
+
+
 def _get_db_and_config(project: Path) -> tuple:
     from callmem.core.database import Database
     from callmem.models.config import Config

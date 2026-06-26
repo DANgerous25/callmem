@@ -99,7 +99,7 @@ class TestSchemaV7:
     def test_new_columns_exist(self, tmp_path: Path) -> None:
         db = Database(tmp_path / "mem.db")
         db.initialize()
-        assert db.get_schema_version() == 13
+        assert db.get_schema_version() == 14
         conn = db.connect()
         try:
             cols = [r["name"] for r in conn.execute("PRAGMA table_info(entities)")]

@@ -1,0 +1,43 @@
+# callmem configuration
+# See docs/config.md for all options
+# Re-run 'make setup' or 'callmem setup' to change these safely
+
+[project]
+name = "callmem"
+
+[llm]
+backend = "openai_compat"
+
+[ollama]
+model = "gemma4:31b-cloud"
+endpoint = "http://localhost:11434"
+timeout = 120
+num_ctx = 8192
+
+[openai_compat]
+endpoint = "https://openrouter.ai/api/v1"
+model = "google/gemma-3-27b-it"
+api_key_env = "OPENROUTER_KEY"
+timeout = 120
+
+[briefing]
+max_tokens = 2000
+auto_write_session_summary = false
+
+[compaction]
+enabled = true
+schedule = "on_session_end"
+
+[summarization]
+chunk_size = 20
+cross_session_interval = 5
+
+[ui]
+port = 9097
+host = "0.0.0.0"
+
+[sensitive_data]
+enabled = true
+pattern_scan = true
+llm_scan = true
+vault_mode = "auto"

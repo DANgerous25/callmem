@@ -29,6 +29,10 @@ _UPDATE_CHECK_TTL_SECONDS = 86_400  # 24h
 _UPDATE_CHECK_TIMEOUT = 2.0  # network call must be fast or skipped
 _PYPI_JSON_URL = "https://pypi.org/pypi/callmem/json"
 
+# Project overview is always shown at the top of the briefing but excluded
+# from the token-budget calculation — it is capped independently here.
+_OVERVIEW_MAX_TOKENS = 500
+
 
 CATEGORY_EMOJI: dict[str, str] = {
     "feature": "\U0001f7e2",
@@ -192,11 +196,19 @@ class BriefingGenerator:
         work_investment = self._compute_work_investment(project_id)
         self._suppressed_stale_count = suppressed_stale
 
+        # Project overview — fetched once, rendered at the top of the
+        # briefing but excluded from the token budget (it is independently
+        # capped at _OVERVIEW_MAX_TOKENS).
+        overview_block = self._build_overview_block(project_id, w=58)
+        overview_tokens = _estimate_tokens(overview_block) if overview_block else 0
+
         if not all_entities and not last_session:
             now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
             content = NEW_PROJECT_MESSAGE.format(
                 project_name=project_name, datetime=now_str
             )
+            if overview_block:
+                content = overview_block + "\n" + content
             return Briefing(
                 project_name=project_name,
                 content=content,
@@ -221,7 +233,7 @@ class BriefingGenerator:
         provisional_body = "\n".join(self._build_briefing_parts(
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
-            work_investment, 0.0,
+            work_investment, 0.0, overview_block,
         ))
         suggested_next_str = "\n".join(
             self._build_suggested_next_parts(all_entities, w)
@@ -237,7 +249,10 @@ class BriefingGenerator:
             _estimate_tokens(provisional_footer)
             + (_estimate_tokens(suggested_next_str) if suggested_next_str else 0)
         )
-        body_budget = max(budget - tail_tokens, 0)
+        # The overview is always shown and excluded from the body budget,
+        # so add its tokens back in — the entity/history body keeps its
+        # full share of the token budget.
+        body_budget = max(budget - tail_tokens + overview_tokens, 0)
         if _estimate_tokens(provisional_body) > body_budget:
             provisional_body = _truncate_to_tokens(provisional_body, body_budget)
         briefing_tokens = _estimate_tokens(provisional_body) + tail_tokens
@@ -256,7 +271,7 @@ class BriefingGenerator:
         body = "\n".join(self._build_briefing_parts(
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
-            work_investment, savings_pct,
+            work_investment, savings_pct, overview_block,
         ))
         footer = "\n".join(self._build_footer_parts(
             work_investment, observations_loaded, briefing_tokens, w,
@@ -321,6 +336,7 @@ class BriefingGenerator:
         read_tokens: int,
         work_investment: int,
         savings_pct: float,
+        overview_block: str = "",
     ) -> list[str]:
         parts: list[str] = []
         w = 58  # box width
@@ -338,6 +354,11 @@ class BriefingGenerator:
         parts.append(f"{_BOX_V}{title}{' ' * pad}{date_str}{_BOX_V}")
         parts.append(f"{_BOX_BL}{_BOX_H * (w - 2)}{_BOX_BR}")
         parts.append("")
+
+        # ── Project overview (always-visible, excluded from budget) ──
+        if overview_block:
+            parts.append(overview_block)
+            parts.append("")
 
         # ── Context economics ──
         parts.append(f"{_BOX_H * 3} Context Economics {_BOX_H * (w - 22)}")
@@ -531,6 +552,31 @@ class BriefingGenerator:
         ui_host = self.config.ui.host
         parts.append(f"  Web UI: http://{ui_host}:{ui_port}")
         return parts
+
+    def _build_overview_block(
+        self, project_id: str, w: int,
+    ) -> str:
+        """Fetch the project overview and format it as a briefing block.
+
+        Returns an empty string if no overview is set, so the caller can
+        skip the section silently.
+        """
+        row = self.repo.get_overview(project_id)
+        if row is None:
+            return ""
+        content = (row.get("content") or "").strip()
+        if not content:
+            return ""
+        content = _truncate_to_tokens(content, _OVERVIEW_MAX_TOKENS)
+        header = " Project Overview "
+        parts = [
+            f"{_BOX_H * 3}{header}{_BOX_H * (w - 3 - len(header))}",
+            "",
+        ]
+        for line in content.splitlines():
+            parts.append(f"  {line}")
+        parts.append("")
+        return "\n".join(parts)
 
     def _fetch_all_entities(
         self, project_id: str, focus: str | None,

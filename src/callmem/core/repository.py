@@ -82,6 +82,60 @@ class Repository:
         finally:
             conn.close()
 
+    # ── Project overview ─────────────────────────────────────────────
+
+    def set_overview(
+        self,
+        project_id: str,
+        content: str,
+        updated_by: str | None = None,
+    ) -> dict[str, Any]:
+        """Upsert the project overview. One row per project.
+
+        Returns the stored row as a dict.
+        """
+        from datetime import datetime
+
+        from callmem.compat import UTC
+
+        now = datetime.now(UTC).isoformat()
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO project_overview (project_id, content, updated_at, updated_by) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(project_id) DO UPDATE SET "
+                "  content = excluded.content, "
+                "  updated_at = excluded.updated_at, "
+                "  updated_by = excluded.updated_by",
+                (project_id, content, now, updated_by),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT * FROM project_overview WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            return dict(row) if row else {
+                "project_id": project_id,
+                "content": content,
+                "updated_at": now,
+                "updated_by": updated_by,
+            }
+        finally:
+            conn.close()
+
+    def get_overview(self, project_id: str) -> dict[str, Any] | None:
+        """Return the project overview row, or None if not set."""
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM project_overview WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
     # ── Sessions ─────────────────────────────────────────────────────
 
     def insert_session(self, session: Session) -> None:
