@@ -489,9 +489,9 @@ def _render_config_toml(
         "timeout": 120,
     })
     oai = _section("openai_compat", {
-        "endpoint": "https://open.bigmodel.cn/api/paas/v4",
-        "model": "glm-4-flash",
-        "api_key_env": "CALLMEM_API_KEY",
+        "endpoint": "https://openrouter.ai/api/v1",
+        "model": "z-ai/glm-4-flash",
+        "api_key_env": "OPENROUTER_KEY",
         "timeout": 120,
     })
     briefing = _section("briefing", {"max_tokens": 2000})

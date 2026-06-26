@@ -853,9 +853,9 @@ def main() -> None:
         ollama_num_ctx = None
 
     # ── OpenAI-compatible config ──────────────────────────────────
-    oai_endpoint = existing.get("openai_compat", {}).get("endpoint", "https://open.bigmodel.cn/api/paas/v4")
-    oai_model = existing.get("openai_compat", {}).get("model", "glm-4-flash")
-    oai_key_env = existing.get("openai_compat", {}).get("api_key_env", "CALLMEM_API_KEY")
+    oai_endpoint = existing.get("openai_compat", {}).get("endpoint", "https://openrouter.ai/api/v1")
+    oai_model = existing.get("openai_compat", {}).get("model", "z-ai/glm-4-flash")
+    oai_key_env = existing.get("openai_compat", {}).get("api_key_env", "OPENROUTER_KEY")
     oai_timeout = existing.get("openai_compat", {}).get("timeout", 120)
     oai_ok = False
 
@@ -863,20 +863,85 @@ def main() -> None:
         print()
         print("── OpenAI-compatible API configuration ──")
         print()
-        oai_endpoint = ask("API endpoint", oai_endpoint)
-        oai_model = ask("Model name", oai_model)
-        oai_key_env = ask("Env var name for API key", oai_key_env)
+
+        # Smart key detection: scan for known API keys in the environment.
+        key_presets = [
+            ("OPENROUTER_KEY", "https://openrouter.ai/api/v1", "z-ai/glm-4-flash", "OpenRouter"),
+            ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "z-ai/glm-4-flash", "OpenRouter"),
+            ("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini", "OpenAI"),
+            ("ANTHROPIC_API_KEY", "https://api.anthropic.com/v1", "claude-3-5-haiku-latest", "Anthropic"),
+            ("DEEPSEEK_API_KEY", "https://api.deepseek.com/v1", "deepseek-chat", "DeepSeek"),
+            ("CALLMEM_API_KEY", "", "", "Custom"),
+            ("LLM_MEM_API_KEY", "", "", "Custom"),
+        ]
+
+        detected = None
+        for env_name, endpoint, model, provider_name in key_presets:
+            val = os.environ.get(env_name, "")
+            if val:
+                detected = (env_name, endpoint, model, provider_name)
+                break
+
+        if detected:
+            env_name, det_endpoint, det_model, provider_name = detected
+            print(f"  Detected {provider_name} API key in ${env_name}")
+            if det_endpoint:
+                print(f"  Suggesting endpoint: {det_endpoint}")
+                oai_endpoint = det_endpoint
+            if det_model:
+                print(f"  Suggesting model: {det_model} (cheap, good for extraction)")
+                oai_model = det_model
+            oai_key_env = env_name
+            print()
+            confirm = ask_choice(
+                "Use detected settings?",
+                [("yes", f"{provider_name} via {env_name}"),
+                 ("no", "Enter manually")],
+                default="yes",
+            )
+            if confirm == "no":
+                oai_endpoint = ask("API endpoint", oai_endpoint)
+                oai_model = ask("Model name", oai_model)
+                oai_key_env = ask("Env var name for API key", oai_key_env)
+        else:
+            oai_endpoint = ask("API endpoint", oai_endpoint)
+            oai_model = ask("Model name", oai_model)
+            oai_key_env = ask("Env var name for API key", oai_key_env)
+            print()
+            print("  TIP: For OpenRouter, set $OPENROUTER_KEY and re-run setup")
+            print("       for automatic detection.")
+
         oai_timeout = int(ask("Timeout (seconds)", str(oai_timeout)))
 
         api_key = os.environ.get(oai_key_env, "")
         if api_key:
             print(f"  Found {oai_key_env} in environment. Testing connection...")
             oai_ok = check_openai_compat(oai_endpoint, api_key, oai_model)
+            while not oai_ok:
+                print("  \u2717 API connection failed!")
+                print(f"    Endpoint: {oai_endpoint}")
+                print(f"    Model: {oai_model}")
+                print(f"    Key: ${oai_key_env} (length {len(api_key)})")
+                print()
+                action = ask_choice(
+                    "What now?",
+                    [("retry", "Re-enter settings and test again"),
+                     ("save", "Save config anyway (fix later)")],
+                    default="retry",
+                )
+                if action == "save":
+                    break
+                oai_endpoint = ask("API endpoint", oai_endpoint)
+                oai_model = ask("Model name", oai_model)
+                oai_key_env = ask("Env var name for API key", oai_key_env)
+                api_key = os.environ.get(oai_key_env, "")
+                if api_key:
+                    print(f"  Testing {oai_key_env}...")
+                    oai_ok = check_openai_compat(oai_endpoint, api_key, oai_model)
+                else:
+                    print(f"  {oai_key_env} not set.")
             if oai_ok:
-                print("  API connection successful.")
-            else:
-                print("  API connection failed. Check endpoint/model/key.")
-                print("  Config will be saved anyway — fix and re-run setup.")
+                print("  \u2713 API connection successful.")
         else:
             print(f"  {oai_key_env} not set in environment.")
             print(f"  Set it before running workers: export {oai_key_env}=your-key-here")

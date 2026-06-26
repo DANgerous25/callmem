@@ -132,7 +132,8 @@ def test_legacy_api_key_env_fallback(monkeypatch) -> None:
     """``LLM_MEM_API_KEY`` should still populate the OpenAI-compat client."""
     from callmem.core.openai_compat import OpenAICompatClient
 
-    monkeypatch.delenv("CALLMEM_API_KEY", raising=False)
+    for var in ("OPENROUTER_KEY", "OPENROUTER_API_KEY", "CALLMEM_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("LLM_MEM_API_KEY", "legacy-key-value")
 
     client = OpenAICompatClient()
@@ -214,8 +215,8 @@ def test_api_key_precedence(monkeypatch, legacy, new, expected) -> None:
     """``CALLMEM_API_KEY`` wins over ``LLM_MEM_API_KEY`` when both are set."""
     from callmem.core.openai_compat import OpenAICompatClient
 
-    monkeypatch.delenv("CALLMEM_API_KEY", raising=False)
-    monkeypatch.delenv("LLM_MEM_API_KEY", raising=False)
+    for var in ("OPENROUTER_KEY", "OPENROUTER_API_KEY", "CALLMEM_API_KEY", "LLM_MEM_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
     if legacy is not None:
         monkeypatch.setenv("LLM_MEM_API_KEY", legacy)
     if new is not None:

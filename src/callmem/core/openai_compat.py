@@ -28,8 +28,8 @@ class OpenAICompatClient:
 
     def __init__(
         self,
-        endpoint: str = "https://open.bigmodel.cn/api/paas/v4",
-        model: str = "glm-4-flash",
+        endpoint: str = "https://openrouter.ai/api/v1",
+        model: str = "z-ai/glm-4-flash",
         api_key: str | None = None,
         timeout: int = 120,
     ) -> None:
@@ -37,6 +37,8 @@ class OpenAICompatClient:
         self.model = model
         self.api_key = (
             api_key
+            or os.environ.get("OPENROUTER_KEY")
+            or os.environ.get("OPENROUTER_API_KEY")
             or os.environ.get("CALLMEM_API_KEY")
             or os.environ.get("LLM_MEM_API_KEY", "")
         )

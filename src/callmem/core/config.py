@@ -150,9 +150,9 @@ endpoint = "http://localhost:11434"
 # num_ctx = 8192  # Uncomment to cap context window (reduces VRAM usage)
 
 # [openai_compat]
-# endpoint = "https://open.bigmodel.cn/api/paas/v4"
-# model = "glm-4-flash"
-# api_key_env = "CALLMEM_API_KEY"  # name of env var holding the key
+# endpoint = "https://openrouter.ai/api/v1"
+# model = "z-ai/glm-4-flash"
+# api_key_env = "OPENROUTER_KEY"  # name of env var holding the key
 
 [briefing]
 max_tokens = 2000

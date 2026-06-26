@@ -30,9 +30,9 @@ class OllamaConfig(BaseModel):
 
 
 class OpenAICompatConfig(BaseModel):
-    endpoint: str = "https://open.bigmodel.cn/api/paas/v4"
-    model: str = "glm-4-flash"
-    api_key_env: str = "CALLMEM_API_KEY"
+    endpoint: str = "https://openrouter.ai/api/v1"
+    model: str = "z-ai/glm-4-flash"
+    api_key_env: str = "OPENROUTER_KEY"
     timeout: int = 120
 
 
