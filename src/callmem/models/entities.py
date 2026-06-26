@@ -47,6 +47,8 @@ class Entity(BaseModel):
     superseded_by: str | None = None
     staleness_reason: str | None = None
     extracted_by: str | None = None
+    eval_score: float | None = None
+    eval_feedback: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -70,6 +72,8 @@ class Entity(BaseModel):
             "superseded_by": self.superseded_by,
             "staleness_reason": self.staleness_reason,
             "extracted_by": self.extracted_by,
+            "eval_score": self.eval_score,
+            "eval_feedback": self.eval_feedback,
         }
 
     @classmethod

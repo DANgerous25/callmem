@@ -41,6 +41,9 @@ class Event(BaseModel):
     token_count: int | None = None
     metadata: dict[str, Any] | None = None
     archived_at: str | None = None
+    eval_score: float | None = None
+    eval_feedback: str | None = None
+    eval_model: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         """Convert to a dict suitable for SQLite insertion."""
@@ -54,6 +57,9 @@ class Event(BaseModel):
             "token_count": self.token_count,
             "metadata": json.dumps(self.metadata) if self.metadata else None,
             "archived_at": self.archived_at,
+            "eval_score": self.eval_score,
+            "eval_feedback": self.eval_feedback,
+            "eval_model": self.eval_model,
         }
 
     @classmethod

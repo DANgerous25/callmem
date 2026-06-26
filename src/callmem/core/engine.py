@@ -860,3 +860,511 @@ class MemoryEngine:
                 "max_tokens": self.config.briefing.max_tokens,
             },
         )
+
+    # ── Task graph (A1) ──────────────────────────────────────────────
+
+    def create_task(
+        self,
+        title: str,
+        parent_id: str | None = None,
+        session_id: str | None = None,
+        description: str | None = None,
+        task_type: str | None = None,
+        complexity_hint: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a new task, optionally as a subtask of an existing one."""
+        from callmem.models.tasks import Task
+
+        task = Task(
+            project_id=self.project_id,
+            parent_id=parent_id,
+            session_id=session_id,
+            title=title,
+            description=description,
+            task_type=task_type,
+            complexity_hint=complexity_hint,
+        )
+        self.repo.insert_task(task)
+        return dict(task.to_row())
+
+    def update_task(self, task_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Update fields on a task and return the updated task."""
+        from datetime import datetime
+
+        from callmem.compat import UTC
+
+        if "status" in fields:
+            new_status = fields["status"]
+            if new_status in ("completed", "failed", "cancelled"):
+                fields["completed_at"] = datetime.now(UTC).isoformat()
+
+        changed = self.repo.update_task(task_id, fields)
+        task = self.repo.get_task(task_id)
+        if task is None:
+            msg = f"Task not found: {task_id}"
+            raise ValueError(msg)
+
+        if changed and "status" in fields:
+            if fields["status"] == "completed" and task.model_assigned:
+                self.repo.upsert_model_stats(
+                    self.project_id,
+                    task.model_assigned,
+                    task_type=task.task_type,
+                    completed_delta=1,
+                    eval_score=task.eval_score,
+                    cost_delta=task.cost_usd,
+                    tokens_in_delta=task.tokens_input,
+                    tokens_out_delta=task.tokens_output,
+                )
+            elif fields["status"] == "failed" and task.model_assigned:
+                self.repo.upsert_model_stats(
+                    self.project_id,
+                    task.model_assigned,
+                    task_type=task.task_type,
+                    failed_delta=1,
+                )
+
+        return dict(task.to_row())
+
+    def list_tasks(
+        self,
+        status: str | None = None,
+        parent_id: str | None = None,
+        session_id: str | None = None,
+        task_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List tasks with optional filters."""
+        return self.repo.list_tasks(
+            self.project_id,
+            status=status,
+            parent_id=parent_id,
+            session_id=session_id,
+            task_type=task_type,
+            limit=limit,
+        )
+
+    def get_task_tree(self, root_id: str) -> list[dict[str, Any]]:
+        """Get the full task tree from a root task."""
+        return self.repo.get_task_tree(root_id)
+
+    # ── Model performance tracking (A2) ──────────────────────────────
+
+    def query_model_stats(
+        self,
+        model_name: str | None = None,
+        task_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query aggregated model performance stats."""
+        return self.repo.list_model_stats(
+            self.project_id,
+            model_name=model_name,
+            task_type=task_type,
+        )
+
+    def compare_models(
+        self,
+        model_names: list[str],
+        task_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Compare two or more models on a task type."""
+        results: list[dict[str, Any]] = []
+        for name in model_names:
+            stats = self.repo.get_model_stats(
+                self.project_id, name, task_type=task_type,
+            )
+            if stats:
+                results.append(stats)
+            else:
+                results.append({
+                    "model_name": name,
+                    "task_type": task_type,
+                    "tasks_completed": 0,
+                    "tasks_failed": 0,
+                    "avg_eval_score": None,
+                    "total_cost_usd": 0.0,
+                    "total_tokens_in": 0,
+                    "total_tokens_out": 0,
+                    "note": "No observed data for this model.",
+                })
+        return results
+
+    # ── Output quality scoring (A3) ──────────────────────────────────
+
+    def eval_event(
+        self,
+        event_id: str,
+        score: float,
+        feedback: str | None = None,
+        evaluator_model: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an evaluation for an event."""
+        if not 0.0 <= score <= 1.0:
+            msg = f"score must be between 0.0 and 1.0, got {score}"
+            raise ValueError(msg)
+
+        changed = self.repo.update_event_eval(
+            event_id, score, feedback, evaluator_model,
+        )
+        if not changed:
+            msg = f"Event not found: {event_id}"
+            raise ValueError(msg)
+        return {
+            "event_id": event_id,
+            "eval_score": score,
+            "eval_feedback": feedback,
+            "eval_model": evaluator_model,
+        }
+
+    def eval_entity(
+        self,
+        entity_id: str,
+        score: float,
+        feedback: str | None = None,
+    ) -> dict[str, Any]:
+        """Record an evaluation for an entity."""
+        if not 0.0 <= score <= 1.0:
+            msg = f"score must be between 0.0 and 1.0, got {score}"
+            raise ValueError(msg)
+
+        changed = self.repo.update_entity_eval(
+            entity_id, score, feedback,
+        )
+        if not changed:
+            msg = f"Entity not found: {entity_id}"
+            raise ValueError(msg)
+        return {
+            "entity_id": entity_id,
+            "eval_score": score,
+            "eval_feedback": feedback,
+        }
+
+    def eval_summary(
+        self,
+        entity_type: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Get evaluation statistics aggregated across events and entities."""
+        return self.repo.get_eval_summary(
+            self.project_id,
+            entity_type=entity_type,
+            model_name=model_name,
+        )
+
+    # ── Context compilation (A4) ─────────────────────────────────────
+
+    def compile_context(
+        self,
+        target_model: str,
+        token_budget: int | None = None,
+        focus: str | None = None,
+        include_tasks: bool = False,
+        include_files: list[str] | None = None,
+        detail_level: str = "standard",
+    ) -> dict[str, Any]:
+        """Compile a context payload optimized for a target model.
+
+        Assembles briefing, search results, task tree, and file context
+        into a single text payload within the given token budget.
+        """
+        parts: list[str] = []
+        sources: list[dict[str, Any]] = []
+
+        registry = self.repo.get_model_registry(target_model)
+        if registry and registry.get("context_window"):
+            model_ctx = registry["context_window"]
+        else:
+            model_ctx = 128_000
+
+        effective_budget = token_budget or (model_ctx // 4)
+
+        if focus:
+            results = self.search(focus, limit=10)
+            if results:
+                lines = [f"## Context for: {focus}\n"]
+                for r in results:
+                    detail = r.get("synopsis") or r.get("title") or r.get("content", "")[:200]
+                    if detail_level == "full":
+                        detail = r.get("content", detail)
+                    elif detail_level == "brief":
+                        detail = r.get("title", detail)
+                    lines.append(f"- [{r.get('id', '')[:8]}] {r.get('type', '')}: {detail}")
+                    sources.append({
+                        "id": r.get("id"),
+                        "detail_level": detail_level,
+                    })
+                parts.append("\n".join(lines))
+        else:
+            briefing = self.get_briefing(focus=focus)
+            if briefing.get("content"):
+                parts.append(briefing["content"])
+                sources.append({
+                    "id": "briefing",
+                    "detail_level": "standard",
+                })
+
+        if include_tasks:
+            tasks = self.list_tasks(status="pending", limit=20)
+            if tasks:
+                lines = ["\n## Open Tasks\n"]
+                for t in tasks:
+                    title = t.get("title", "")
+                    ttype = t.get("task_type") or "untyped"
+                    lines.append(f"- [{t['id'][:8]}] ({ttype}) {title}")
+                    sources.append({"id": t["id"], "detail_level": "brief"})
+                parts.append("\n".join(lines))
+
+        if include_files:
+            for fpath in include_files:
+                fc = self.get_file_context(fpath)
+                if fc.get("has_observations"):
+                    lines = [f"\n## File: {fpath}\n"]
+                    for item in fc.get("timeline", []):
+                        lines.append(
+                            f"  - {item.get('date', '')} {item.get('type', '')}: "
+                            f"{item.get('title', '')}"
+                        )
+                    if fc.get("current_state") and detail_level == "full":
+                        lines.append(f"\nCurrent state: {fc['current_state']}")
+                    parts.append("\n".join(lines))
+                    sources.append({"id": fpath, "detail_level": detail_level})
+
+        compiled = "\n\n".join(parts)
+
+        estimated_tokens = len(compiled) // 4
+        if estimated_tokens > effective_budget:
+            truncation_msg = "\n\n[... context truncated to fit token budget]"
+            max_chars = max(0, effective_budget * 4 - len(truncation_msg))
+            compiled = compiled[:max_chars] + truncation_msg
+            estimated_tokens = len(compiled) // 4
+
+        return {
+            "system_context": compiled,
+            "tokens_estimated": estimated_tokens,
+            "sources": sources,
+            "target_model": target_model,
+            "token_budget": effective_budget,
+        }
+
+    # ── Model registry (A5) ──────────────────────────────────────────
+
+    def list_models(
+        self,
+        provider: str | None = None,
+        quality_tier: str | None = None,
+        max_price: float | None = None,
+        require_tools: bool = False,
+        require_vision: bool = False,
+        geo_region: str | None = None,
+        gateway: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List known models with filters."""
+        return self.repo.list_model_registry(
+            provider=provider,
+            quality_tier=quality_tier,
+            max_price=max_price,
+            require_tools=require_tools,
+            require_vision=require_vision,
+            geo_region=geo_region,
+            gateway=gateway,
+            limit=limit,
+        )
+
+    def get_model_info(self, model_name: str) -> dict[str, Any] | None:
+        """Get full info for a specific model."""
+        return self.repo.get_model_registry(model_name)
+
+    def recommend_model(
+        self,
+        task_type: str,
+        geo_region: str | None = None,
+        max_cost: float | None = None,
+        min_context: int | None = None,
+        require_tools: bool = False,
+        require_gateway: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return ranked model recommendations combining registry + observed data."""
+        models = self.repo.list_model_registry(
+            max_price=max_cost,
+            require_tools=require_tools,
+            geo_region=geo_region,
+            gateway=require_gateway,
+            limit=200,
+        )
+
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for m in models:
+            if min_context and m.get("context_window") and m["context_window"] < min_context:
+                    continue
+
+            score = 0.0
+            use_case_scores = m.get("use_case_scores") or {}
+            if isinstance(use_case_scores, str):
+                import json
+                use_case_scores = json.loads(use_case_scores)
+            if task_type in use_case_scores:
+                score += use_case_scores[task_type] * 10
+
+            tier_scores = {
+                "frontier": 8, "strong": 6, "standard": 4, "budget": 2, "legacy": 1,
+            }
+            score += tier_scores.get(m.get("quality_tier", ""), 3)
+
+            stats = self.repo.get_model_stats(
+                self.project_id, m["model_name"], task_type=task_type,
+            )
+            if stats and stats.get("avg_eval_score"):
+                score += stats["avg_eval_score"] * 5
+
+            pricing = m.get("pricing_input") or 0
+            if pricing > 0:
+                score -= pricing * 0.01
+
+            m["recommendation_score"] = round(score, 4)
+            scored.append((score, m))
+
+        scored.sort(key=lambda x: -x[0])
+        return [m for _, m in scored[:10]]
+
+    def check_model_geo(
+        self, model_name: str, region: str,
+    ) -> dict[str, Any]:
+        """Check model availability for a user's region."""
+        info = self.repo.get_model_registry(model_name)
+        if info is None:
+            return {
+                "model_name": model_name,
+                "available": None,
+                "reason": "Model not in registry.",
+            }
+
+        blocked = info.get("geo_blocked") or []
+        if isinstance(blocked, str):
+            import json
+            blocked = json.loads(blocked)
+        available = info.get("geo_available") or []
+        if isinstance(available, str):
+            import json
+            available = json.loads(available)
+
+        if region in blocked:
+            return {
+                "model_name": model_name,
+                "available": False,
+                "reason": f"Region {region} is blocked.",
+                "gateways": info.get("gateways"),
+            }
+
+        if available and region not in available and "*" not in available:
+            return {
+                "model_name": model_name,
+                "available": False,
+                "reason": f"Region {region} not in available list.",
+                "gateways": info.get("gateways"),
+            }
+
+        return {
+            "model_name": model_name,
+            "available": True,
+            "gateways": info.get("gateways"),
+            "geo_notes": info.get("geo_notes"),
+        }
+
+    def refresh_model(self, model_name: str | None = None) -> dict[str, Any]:
+        """Trigger a re-sync for a specific model or all models.
+
+        Currently a stub — gateway sync integration is a future enhancement.
+        Updates the last_synced timestamp.
+        """
+        if model_name:
+            self.repo.update_model_registry_synced(model_name)
+            return {
+                "model_name": model_name,
+                "status": "refreshed",
+                "note": "Gateway sync is a stub — timestamp updated only.",
+            }
+        return {
+            "status": "refresh_all",
+            "note": "Gateway sync is a stub — not implemented for bulk refresh.",
+        }
+
+    def upsert_model(self, entry_data: dict[str, Any]) -> dict[str, Any]:
+        """Create or update a model registry entry."""
+        from callmem.models.model_registry import ModelRegistryEntry
+
+        entry = ModelRegistryEntry(**entry_data)
+        self.repo.upsert_model_registry(entry)
+        return dict(entry.model_dump())
+
+    # ── Undo / rewind (A6) ───────────────────────────────────────────
+
+    def create_rewind_point(self, label: str | None = None) -> dict[str, Any]:
+        """Create a rewind point snapshotting current state."""
+        from callmem.models.rewind import RewindPoint
+
+        event_count = self.repo.count_all("events", self.project_id)
+        entity_count = self.repo.count_all(
+            "entities", self.project_id,
+        ) if self._column_exists("entities", "archived_at") else 0
+
+        rp = RewindPoint(
+            project_id=self.project_id,
+            label=label,
+            event_count=event_count,
+            entity_count=entity_count,
+        )
+        self.repo.insert_rewind_point(rp)
+        return dict(rp.to_row())
+
+    def list_rewind_points(self) -> list[dict[str, Any]]:
+        """List available rewind points."""
+        return self.repo.list_rewind_points(self.project_id)
+
+    def restore_rewind_point(self, rp_id: str) -> dict[str, Any]:
+        """Restore to a rewind point. Soft-archives everything created after it."""
+        rp = self.repo.get_rewind_point(rp_id)
+        if rp is None:
+            msg = f"Rewind point not found: {rp_id}"
+            raise ValueError(msg)
+
+        events_archived = self.repo.archive_events_after(
+            self.project_id, rp.created_at,
+        )
+        entities_archived = self.repo.archive_entities_after(
+            self.project_id, rp.created_at,
+        )
+        tasks_cancelled = self.repo.archive_tasks_after(
+            self.project_id, rp.created_at,
+        )
+
+        return {
+            "rewind_point_id": rp_id,
+            "label": rp.label,
+            "restored_to": rp.created_at,
+            "events_archived": events_archived,
+            "entities_archived": entities_archived,
+            "tasks_cancelled": tasks_cancelled,
+        }
+
+    def get_rewind_diff(self, rp_id: str) -> dict[str, Any]:
+        """Show what would change if restored to a given rewind point."""
+        rp = self.repo.get_rewind_point(rp_id)
+        if rp is None:
+            msg = f"Rewind point not found: {rp_id}"
+            raise ValueError(msg)
+
+        diff = self.repo.get_rewind_diff(self.project_id, rp.created_at)
+        diff["rewind_point_id"] = rp_id
+        diff["label"] = rp.label
+        diff["created_at"] = rp.created_at
+        return diff
+
+    def _column_exists(self, table: str, column: str) -> bool:
+        """Check if a column exists in a table."""
+        conn = self.db.connect()
+        try:
+            cols = conn.execute(f"PRAGMA table_info({table})").fetchall()
+            return any(c["name"] == column for c in cols)
+        finally:
+            conn.close()

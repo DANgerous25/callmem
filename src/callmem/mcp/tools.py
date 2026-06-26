@@ -413,6 +413,335 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "mem_task_create",
+        "description": (
+            "Create a task (optionally with parent_id for subtasks). "
+            "Tasks form a structured tree that survives context resets."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["title"],
+            "properties": {
+                "title": {"type": "string", "description": "Task title"},
+                "parent_id": {"type": "string", "description": "Parent task ID for subtasks"},
+                "session_id": {"type": "string", "description": "Session to attach task to"},
+                "description": {"type": "string", "description": "Detailed task description"},
+                "task_type": {
+                    "type": "string",
+                    "description": "coding, reasoning, summarization, analysis, design, etc.",
+                },
+                "complexity_hint": {
+                    "type": "integer",
+                    "description": "0-10 user override of complexity assessment",
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_task_update",
+        "description": (
+            "Update a task's status, result, cost, tokens, model assignment, "
+            "or other fields."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["task_id"],
+            "properties": {
+                "task_id": {"type": "string", "description": "Task ID to update"},
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed", "failed", "cancelled"],
+                    "description": "New task status",
+                },
+                "model_assigned": {"type": "string", "description": "Which model was assigned"},
+                "model_reason": {"type": "string", "description": "Why that model was chosen"},
+                "eval_score": {"type": "number", "description": "0.0-1.0 quality score"},
+                "eval_feedback": {"type": "string", "description": "Judge's feedback text"},
+                "cost_usd": {"type": "number", "description": "Actual cost incurred"},
+                "tokens_input": {"type": "integer", "description": "Input tokens used"},
+                "tokens_output": {"type": "integer", "description": "Output tokens used"},
+                "result_ref": {
+                    "type": "string",
+                    "description": "Reference to result (entity/event ID)",
+                },
+                "description": {"type": "string", "description": "Updated description"},
+                "title": {"type": "string", "description": "Updated title"},
+            },
+        },
+    },
+    {
+        "name": "mem_task_list",
+        "description": "List tasks with filters (status, parent, session, type).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed", "failed", "cancelled"],
+                },
+                "parent_id": {"type": "string", "description": "Filter by parent task"},
+                "session_id": {"type": "string", "description": "Filter by session"},
+                "task_type": {"type": "string", "description": "Filter by task type"},
+                "limit": {"type": "integer", "default": 100},
+            },
+        },
+    },
+    {
+        "name": "mem_task_tree",
+        "description": "Get the full task tree from a root task (all descendants).",
+        "inputSchema": {
+            "type": "object",
+            "required": ["root_id"],
+            "properties": {
+                "root_id": {"type": "string", "description": "Root task ID"},
+            },
+        },
+    },
+    {
+        "name": "mem_model_stats",
+        "description": (
+            "Query aggregated model performance stats. Filter by model "
+            "name and/or task type."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "model_name": {"type": "string", "description": "Filter by model name"},
+                "task_type": {"type": "string", "description": "Filter by task type"},
+            },
+        },
+    },
+    {
+        "name": "mem_model_compare",
+        "description": "Compare two or more models on a task type.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["model_names"],
+            "properties": {
+                "model_names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Model names to compare",
+                },
+                "task_type": {"type": "string", "description": "Task type to compare on"},
+            },
+        },
+    },
+    {
+        "name": "mem_eval",
+        "description": (
+            "Record an evaluation for an event or entity. "
+            "Score is 0.0-1.0, with optional feedback and evaluator model."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["id", "score"],
+            "properties": {
+                "id": {"type": "string", "description": "Event or entity ID"},
+                "score": {"type": "number", "description": "Quality score 0.0-1.0"},
+                "feedback": {"type": "string", "description": "Evaluator's feedback text"},
+                "evaluator_model": {"type": "string", "description": "Which model did the eval"},
+                "target_type": {
+                    "type": "string",
+                    "enum": ["event", "entity"],
+                    "description": (
+                        "Whether the ID is an event or entity "
+                        "(auto-detected if omitted)"
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_eval_summary",
+        "description": "Get evaluation statistics (avg score by type, model).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity_type": {"type": "string", "description": "Filter by entity type"},
+                "model_name": {"type": "string", "description": "Filter by eval model"},
+            },
+        },
+    },
+    {
+        "name": "mem_compile_context",
+        "description": (
+            "Compile a context payload optimized for a target model with "
+            "a specific token budget. Returns system_context text ready "
+            "to prepend to a model's prompt."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["target_model"],
+            "properties": {
+                "target_model": {
+                    "type": "string",
+                    "description": "Model name (for context window lookup)",
+                },
+                "token_budget": {
+                    "type": "integer",
+                    "description": "Max tokens for compiled context",
+                },
+                "focus": {"type": "string", "description": "Narrow to a topic or task"},
+                "include_tasks": {
+                    "type": "boolean",
+                    "description": "Include open task tree",
+                    "default": False,
+                },
+                "include_files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Include file context for specific files",
+                },
+                "detail_level": {
+                    "type": "string",
+                    "enum": ["brief", "standard", "full"],
+                    "default": "standard",
+                    "description": (
+                        "Level of detail: brief (key_points), "
+                        "standard (synopsis), full (complete)"
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_model_list",
+        "description": (
+            "List known models with filters (provider, capability, "
+            "max_price, geo_region, quality_tier, gateway)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string"},
+                "quality_tier": {
+                    "type": "string",
+                    "enum": ["frontier", "strong", "standard", "budget", "legacy"],
+                },
+                "max_price": {"type": "number", "description": "Max USD per 1M input tokens"},
+                "require_tools": {"type": "boolean", "default": False},
+                "require_vision": {"type": "boolean", "default": False},
+                "geo_region": {"type": "string", "description": "ISO region code"},
+                "gateway": {"type": "string", "description": "Filter by gateway name"},
+                "limit": {"type": "integer", "default": 100},
+            },
+        },
+    },
+    {
+        "name": "mem_model_info",
+        "description": "Get full info for a specific model.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["model_name"],
+            "properties": {
+                "model_name": {
+                    "type": "string",
+                    "description": "Model name (e.g. 'anthropic/claude-sonnet-4')",
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_model_recommend",
+        "description": (
+            "Given a task_type and optional constraints, return ranked "
+            "model recommendations combining static benchmarks + observed "
+            "performance + geo-availability."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["task_type"],
+            "properties": {
+                "task_type": {
+                    "type": "string",
+                    "description": "coding, reasoning, summarization, etc.",
+                },
+                "geo_region": {"type": "string", "description": "User's ISO region code"},
+                "max_cost": {"type": "number", "description": "Max USD per 1M input tokens"},
+                "min_context": {"type": "integer", "description": "Minimum context window size"},
+                "require_tools": {"type": "boolean", "default": False},
+                "require_gateway": {"type": "string", "description": "Required gateway name"},
+            },
+        },
+    },
+    {
+        "name": "mem_model_geo_check",
+        "description": (
+            "Given a model and user's region, return availability "
+            "and which gateway(s) can serve it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["model_name", "region"],
+            "properties": {
+                "model_name": {"type": "string"},
+                "region": {"type": "string", "description": "ISO region code (e.g. 'US', 'EU')"},
+            },
+        },
+    },
+    {
+        "name": "mem_model_refresh",
+        "description": "Trigger a re-sync and research update for a specific model or all models.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "model_name": {
+                    "type": "string",
+                    "description": "Specific model to refresh (all if omitted)",
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_rewind_create",
+        "description": (
+            "Create a rewind point (snapshot current state). "
+            "Use before risky operations so you can undo."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "User-provided label for the rewind point",
+                },
+            },
+        },
+    },
+    {
+        "name": "mem_rewind_list",
+        "description": "List available rewind points.",
+        "inputSchema": {
+            "type": "object",
+        },
+    },
+    {
+        "name": "mem_rewind_restore",
+        "description": (
+            "Restore to a rewind point. Soft-archives everything created "
+            "after it (does not hard-delete)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["rewind_id"],
+            "properties": {
+                "rewind_id": {"type": "string", "description": "Rewind point ID to restore to"},
+            },
+        },
+    },
+    {
+        "name": "mem_rewind_diff",
+        "description": "Show what would change if restored to a given rewind point.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["rewind_id"],
+            "properties": {
+                "rewind_id": {"type": "string", "description": "Rewind point ID"},
+            },
+        },
+    },
 ]
 
 
@@ -710,6 +1039,236 @@ def handle_mark_current(
     })
 
 
+# ── Task graph handlers (A1) ────────────────────────────────────────
+
+
+def handle_task_create(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    try:
+        task = engine.create_task(
+            title=args["title"],
+            parent_id=args.get("parent_id"),
+            session_id=args.get("session_id"),
+            description=args.get("description"),
+            task_type=args.get("task_type"),
+            complexity_hint=args.get("complexity_hint"),
+        )
+    except KeyError:
+        return _make_error("title is required")
+    return _make_result(task)
+
+
+def handle_task_update(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    task_id = args.get("task_id", "")
+    if not task_id:
+        return _make_error("task_id is required")
+    fields: dict[str, Any] = {}
+    for key in (
+        "status", "model_assigned", "model_reason", "eval_score",
+        "eval_feedback", "cost_usd", "tokens_input", "tokens_output",
+        "result_ref", "description", "title",
+    ):
+        if key in args:
+            fields[key] = args[key]
+    try:
+        task = engine.update_task(task_id, fields)
+    except ValueError as exc:
+        return _make_error(str(exc))
+    return _make_result(task)
+
+
+def handle_task_list(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    tasks = engine.list_tasks(
+        status=args.get("status"),
+        parent_id=args.get("parent_id"),
+        session_id=args.get("session_id"),
+        task_type=args.get("task_type"),
+        limit=args.get("limit", 100),
+    )
+    return _make_result({"tasks": tasks, "count": len(tasks)})
+
+
+def handle_task_tree(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    root_id = args.get("root_id", "")
+    if not root_id:
+        return _make_error("root_id is required")
+    tree = engine.get_task_tree(root_id)
+    return _make_result({"tree": tree, "count": len(tree)})
+
+
+# ── Model stats handlers (A2) ───────────────────────────────────────
+
+
+def handle_model_stats(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    stats = engine.query_model_stats(
+        model_name=args.get("model_name"),
+        task_type=args.get("task_type"),
+    )
+    return _make_result({"stats": stats, "count": len(stats)})
+
+
+def handle_model_compare(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    model_names = args.get("model_names", [])
+    if not model_names:
+        return _make_error("model_names is required")
+    comparison = engine.compare_models(
+        model_names=model_names,
+        task_type=args.get("task_type"),
+    )
+    return _make_result({"comparison": comparison})
+
+
+# ── Eval handlers (A3) ──────────────────────────────────────────────
+
+
+def handle_eval(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    target_id = args.get("id", "")
+    if not target_id:
+        return _make_error("id is required")
+    score = args.get("score")
+    if score is None:
+        return _make_error("score is required")
+
+    target_type = args.get("target_type")
+    if target_type is None:
+        event = engine.get_event(target_id)
+        target_type = "event" if event else "entity"
+
+    try:
+        if target_type == "event":
+            result = engine.eval_event(
+                target_id,
+                score=float(score),
+                feedback=args.get("feedback"),
+                evaluator_model=args.get("evaluator_model"),
+            )
+        else:
+            result = engine.eval_entity(
+                target_id,
+                score=float(score),
+                feedback=args.get("feedback"),
+            )
+    except ValueError as exc:
+        return _make_error(str(exc))
+    return _make_result(result)
+
+
+def handle_eval_summary(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    summary = engine.eval_summary(
+        entity_type=args.get("entity_type"),
+        model_name=args.get("model_name"),
+    )
+    return _make_result(summary)
+
+
+# ── Context compilation handler (A4) ────────────────────────────────
+
+
+def handle_compile_context(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    target_model = args.get("target_model", "")
+    if not target_model:
+        return _make_error("target_model is required")
+    result = engine.compile_context(
+        target_model=target_model,
+        token_budget=args.get("token_budget"),
+        focus=args.get("focus"),
+        include_tasks=bool(args.get("include_tasks", False)),
+        include_files=args.get("include_files"),
+        detail_level=args.get("detail_level", "standard"),
+    )
+    return _make_result(result)
+
+
+# ── Model registry handlers (A5) ────────────────────────────────────
+
+
+def handle_model_list(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    models = engine.list_models(
+        provider=args.get("provider"),
+        quality_tier=args.get("quality_tier"),
+        max_price=args.get("max_price"),
+        require_tools=bool(args.get("require_tools", False)),
+        require_vision=bool(args.get("require_vision", False)),
+        geo_region=args.get("geo_region"),
+        gateway=args.get("gateway"),
+        limit=args.get("limit", 100),
+    )
+    return _make_result({"models": models, "count": len(models)})
+
+
+def handle_model_info(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    model_name = args.get("model_name", "")
+    if not model_name:
+        return _make_error("model_name is required")
+    info = engine.get_model_info(model_name)
+    if info is None:
+        return _make_error(f"Model not found: {model_name}")
+    return _make_result(info)
+
+
+def handle_model_recommend(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    task_type = args.get("task_type", "")
+    if not task_type:
+        return _make_error("task_type is required")
+    recommendations = engine.recommend_model(
+        task_type=task_type,
+        geo_region=args.get("geo_region"),
+        max_cost=args.get("max_cost"),
+        min_context=args.get("min_context"),
+        require_tools=bool(args.get("require_tools", False)),
+        require_gateway=args.get("require_gateway"),
+    )
+    return _make_result({"recommendations": recommendations})
+
+
+def handle_model_geo_check(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    model_name = args.get("model_name", "")
+    region = args.get("region", "")
+    if not model_name or not region:
+        return _make_error("model_name and region are required")
+    result = engine.check_model_geo(model_name, region)
+    return _make_result(result)
+
+
+def handle_model_refresh(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    result = engine.refresh_model(args.get("model_name"))
+    return _make_result(result)
+
+
+# ── Rewind handlers (A6) ────────────────────────────────────────────
+
+
+def handle_rewind_create(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    rp = engine.create_rewind_point(label=args.get("label"))
+    return _make_result(rp)
+
+
+def handle_rewind_list(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    points = engine.list_rewind_points()
+    return _make_result({"rewind_points": points, "count": len(points)})
+
+
+def handle_rewind_restore(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    rewind_id = args.get("rewind_id", "")
+    if not rewind_id:
+        return _make_error("rewind_id is required")
+    try:
+        result = engine.restore_rewind_point(rewind_id)
+    except ValueError as exc:
+        return _make_error(str(exc))
+    return _make_result(result)
+
+
+def handle_rewind_diff(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
+    rewind_id = args.get("rewind_id", "")
+    if not rewind_id:
+        return _make_error("rewind_id is required")
+    try:
+        result = engine.get_rewind_diff(rewind_id)
+    except ValueError as exc:
+        return _make_error(str(exc))
+    return _make_result(result)
+
+
 _HANDLERS: dict[str, Any] = {
     "mem_session_start": handle_session_start,
     "mem_session_end": handle_session_end,
@@ -728,4 +1287,22 @@ _HANDLERS: dict[str, Any] = {
     "mem_vault_review": handle_vault_review,
     "mem_mark_stale": handle_mark_stale,
     "mem_mark_current": handle_mark_current,
+    "mem_task_create": handle_task_create,
+    "mem_task_update": handle_task_update,
+    "mem_task_list": handle_task_list,
+    "mem_task_tree": handle_task_tree,
+    "mem_model_stats": handle_model_stats,
+    "mem_model_compare": handle_model_compare,
+    "mem_eval": handle_eval,
+    "mem_eval_summary": handle_eval_summary,
+    "mem_compile_context": handle_compile_context,
+    "mem_model_list": handle_model_list,
+    "mem_model_info": handle_model_info,
+    "mem_model_recommend": handle_model_recommend,
+    "mem_model_geo_check": handle_model_geo_check,
+    "mem_model_refresh": handle_model_refresh,
+    "mem_rewind_create": handle_rewind_create,
+    "mem_rewind_list": handle_rewind_list,
+    "mem_rewind_restore": handle_rewind_restore,
+    "mem_rewind_diff": handle_rewind_diff,
 }

@@ -9,8 +9,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from callmem.models.events import Event
+from callmem.models.model_registry import ModelRegistryEntry
 from callmem.models.projects import Project
+from callmem.models.rewind import RewindPoint
 from callmem.models.sessions import Session
+from callmem.models.tasks import Task
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
@@ -848,5 +851,626 @@ class Repository:
             return [
                 dict(Entity.from_row(dict(r)).to_row()) for r in all_rows
             ]
+        finally:
+            conn.close()
+
+    # ── Tasks (A1) ───────────────────────────────────────────────────
+
+    def insert_task(self, task: Task) -> None:
+        conn = self.db.connect()
+        try:
+            row = task.to_row()
+            conn.execute(
+                "INSERT INTO tasks "
+                "(id, project_id, parent_id, session_id, title, description, "
+                "status, model_assigned, model_reason, eval_score, "
+                "eval_feedback, cost_usd, tokens_input, tokens_output, "
+                "result_ref, task_type, complexity_hint, retry_count, "
+                "retry_of, created_at, updated_at, completed_at, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["parent_id"],
+                    row["session_id"], row["title"], row["description"],
+                    row["status"], row["model_assigned"], row["model_reason"],
+                    row["eval_score"], row["eval_feedback"],
+                    row["cost_usd"], row["tokens_input"], row["tokens_output"],
+                    row["result_ref"], row["task_type"], row["complexity_hint"],
+                    row["retry_count"], row["retry_of"],
+                    row["created_at"], row["updated_at"],
+                    row["completed_at"], row["metadata"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_task(self, task_id: str) -> Task | None:
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return Task.from_row(dict(row))
+        finally:
+            conn.close()
+
+    def update_task(self, task_id: str, fields: dict[str, Any]) -> bool:
+        """Update specific fields on a task. Returns True if a row was modified."""
+        conn = self.db.connect()
+        try:
+            allowed = {
+                "status", "model_assigned", "model_reason", "eval_score",
+                "eval_feedback", "cost_usd", "tokens_input", "tokens_output",
+                "result_ref", "task_type", "complexity_hint", "retry_count",
+                "completed_at", "description", "title",
+            }
+            updates = {k: v for k, v in fields.items() if k in allowed}
+            if not updates:
+                return False
+
+            set_clauses = ", ".join(f"{k} = ?" for k in updates)
+            values = list(updates.values())
+            values.append(task_id)
+
+            cursor = conn.execute(
+                f"UPDATE tasks SET {set_clauses}, "
+                f"updated_at = datetime('now') "
+                f"WHERE id = ?",
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def list_tasks(
+        self,
+        project_id: str,
+        status: str | None = None,
+        parent_id: str | None = None,
+        session_id: str | None = None,
+        task_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        conn = self.db.connect()
+        try:
+            clauses: list[str] = ["project_id = ?"]
+            params: list[Any] = [project_id]
+            if status is not None:
+                clauses.append("status = ?")
+                params.append(status)
+            if parent_id is not None:
+                clauses.append("parent_id IS ?")
+                params.append(parent_id)
+            if session_id is not None:
+                clauses.append("session_id = ?")
+                params.append(session_id)
+            if task_type is not None:
+                clauses.append("task_type = ?")
+                params.append(task_type)
+
+            where = " AND ".join(clauses)
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT * FROM tasks WHERE {where} "
+                f"ORDER BY created_at ASC LIMIT ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_task_tree(self, root_id: str) -> list[dict[str, Any]]:
+        """Recursively fetch a task and all its descendants."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "WITH RECURSIVE tree AS ("
+                "  SELECT * FROM tasks WHERE id = ?"
+                "  UNION ALL"
+                "  SELECT t.* FROM tasks t JOIN tree ON t.parent_id = tree.id"
+                ") SELECT * FROM tree ORDER BY created_at ASC",
+                (root_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ── Model Stats (A2) ─────────────────────────────────────────────
+
+    def upsert_model_stats(
+        self,
+        project_id: str,
+        model_name: str,
+        task_type: str | None = None,
+        *,
+        completed_delta: int = 0,
+        failed_delta: int = 0,
+        eval_score: float | None = None,
+        cost_delta: float = 0.0,
+        tokens_in_delta: int = 0,
+        tokens_out_delta: int = 0,
+    ) -> None:
+        """Incrementally upsert model performance stats."""
+        from datetime import datetime
+
+        from ulid import ULID
+
+        from callmem.compat import UTC
+
+        conn = self.db.connect()
+        try:
+            now = datetime.now(UTC).isoformat()
+            tt = task_type or "_overall"
+            existing = conn.execute(
+                "SELECT * FROM model_stats "
+                "WHERE project_id = ? AND model_name = ? AND "
+                "(task_type = ? OR (task_type IS NULL AND ? = '_overall'))",
+                (project_id, model_name, tt, tt),
+            ).fetchone()
+
+            if existing is None:
+                new_id = str(ULID())
+                conn.execute(
+                    "INSERT INTO model_stats "
+                    "(id, project_id, model_name, task_type, "
+                    "tasks_completed, tasks_failed, avg_eval_score, "
+                    "total_cost_usd, total_tokens_in, total_tokens_out, "
+                    "first_seen, last_seen, metadata) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_id, project_id, model_name,
+                        task_type if task_type else None,
+                        completed_delta, failed_delta, eval_score,
+                        cost_delta, tokens_in_delta, tokens_out_delta,
+                        now, now, None,
+                    ),
+                )
+            else:
+                new_completed = existing["tasks_completed"] + completed_delta
+                new_failed = existing["tasks_failed"] + failed_delta
+                new_cost = existing["total_cost_usd"] + cost_delta
+                new_tokens_in = existing["total_tokens_in"] + tokens_in_delta
+                new_tokens_out = existing["total_tokens_out"] + tokens_out_delta
+
+                if eval_score is not None:
+                    total = new_completed + new_failed
+                    if total > 0:
+                        old_avg = existing["avg_eval_score"] or 0.0
+                        old_count = max(0, total - 1)
+                        new_avg = (
+                            (old_avg * old_count + eval_score) / total
+                        )
+                    else:
+                        new_avg = eval_score
+                else:
+                    new_avg = existing["avg_eval_score"]
+
+                conn.execute(
+                    "UPDATE model_stats SET "
+                    "tasks_completed = ?, tasks_failed = ?, "
+                    "avg_eval_score = ?, total_cost_usd = ?, "
+                    "total_tokens_in = ?, total_tokens_out = ?, "
+                    "last_seen = ? "
+                    "WHERE id = ?",
+                    (
+                        new_completed, new_failed, new_avg,
+                        new_cost, new_tokens_in, new_tokens_out,
+                        now, existing["id"],
+                    ),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_model_stats(
+        self, project_id: str, model_name: str,
+        task_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        conn = self.db.connect()
+        try:
+            if task_type:
+                row = conn.execute(
+                    "SELECT * FROM model_stats "
+                    "WHERE project_id = ? AND model_name = ? AND task_type = ?",
+                    (project_id, model_name, task_type),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM model_stats "
+                    "WHERE project_id = ? AND model_name = ? "
+                    "AND task_type IS NULL",
+                    (project_id, model_name),
+                ).fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def list_model_stats(
+        self, project_id: str,
+        model_name: str | None = None,
+        task_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conn = self.db.connect()
+        try:
+            clauses: list[str] = ["project_id = ?"]
+            params: list[Any] = [project_id]
+            if model_name is not None:
+                clauses.append("model_name = ?")
+                params.append(model_name)
+            if task_type is not None:
+                clauses.append("task_type = ?")
+                params.append(task_type)
+            where = " AND ".join(clauses)
+            rows = conn.execute(
+                f"SELECT * FROM model_stats WHERE {where} "
+                f"ORDER BY last_seen DESC",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    # ── Eval (A3) ─────────────────────────────────────────────────────
+
+    def update_event_eval(
+        self, event_id: str, eval_score: float,
+        eval_feedback: str | None = None,
+        eval_model: str | None = None,
+    ) -> bool:
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE events SET "
+                "eval_score = ?, eval_feedback = ?, eval_model = ? "
+                "WHERE id = ?",
+                (eval_score, eval_feedback, eval_model, event_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def update_entity_eval(
+        self, entity_id: str, eval_score: float,
+        eval_feedback: str | None = None,
+    ) -> bool:
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities SET "
+                "eval_score = ?, eval_feedback = ?, "
+                "updated_at = datetime('now') "
+                "WHERE id = ?",
+                (eval_score, eval_feedback, entity_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def get_eval_summary(
+        self, project_id: str,
+        entity_type: str | None = None,
+        model_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Aggregate eval scores across events and entities."""
+        conn = self.db.connect()
+        try:
+            results: dict[str, Any] = {}
+
+            event_clauses = ["e.project_id = ?", "e.eval_score IS NOT NULL"]
+            event_params: list[Any] = [project_id]
+            if model_name is not None:
+                event_clauses.append("e.eval_model = ?")
+                event_params.append(model_name)
+
+            event_where = " AND ".join(event_clauses)
+            row = conn.execute(
+                f"SELECT COUNT(*) as count, AVG(e.eval_score) as avg_score "
+                f"FROM events e WHERE {event_where}",
+                event_params,
+            ).fetchone()
+            results["events"] = {
+                "count": row["count"] if row else 0,
+                "avg_score": round(row["avg_score"], 4) if row and row["avg_score"] else None,
+            }
+
+            entity_clauses = ["project_id = ?", "eval_score IS NOT NULL"]
+            entity_params: list[Any] = [project_id]
+            if entity_type is not None:
+                entity_clauses.append("type = ?")
+                entity_params.append(entity_type)
+
+            entity_where = " AND ".join(entity_clauses)
+            row = conn.execute(
+                f"SELECT COUNT(*) as count, AVG(eval_score) as avg_score "
+                f"FROM entities WHERE {entity_where}",
+                entity_params,
+            ).fetchone()
+            results["entities"] = {
+                "count": row["count"] if row else 0,
+                "avg_score": round(row["avg_score"], 4) if row and row["avg_score"] else None,
+            }
+
+            return results
+        finally:
+            conn.close()
+
+    # ── Model Registry (A5) ───────────────────────────────────────────
+
+    def upsert_model_registry(self, entry: ModelRegistryEntry) -> None:
+        conn = self.db.connect()
+        try:
+            row = entry.to_row()
+            conn.execute(
+                "INSERT INTO model_registry "
+                "(model_name, provider, display_name, pricing_input, "
+                "pricing_output, context_window, max_output, "
+                "supports_tools, supports_vision, supports_streaming, "
+                "strengths, weaknesses, benchmarks, latency_p50_ms, "
+                "geo_available, geo_blocked, geo_notes, quality_tier, "
+                "use_case_scores, known_issues, release_date, "
+                "deprecation_date, gateways, last_synced, "
+                "last_researched, last_updated, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(model_name) DO UPDATE SET "
+                "provider=excluded.provider, display_name=excluded.display_name, "
+                "pricing_input=excluded.pricing_input, pricing_output=excluded.pricing_output, "
+                "context_window=excluded.context_window, max_output=excluded.max_output, "
+                "supports_tools=excluded.supports_tools, supports_vision=excluded.supports_vision, "
+                "supports_streaming=excluded.supports_streaming, "
+                "strengths=excluded.strengths, weaknesses=excluded.weaknesses, "
+                "benchmarks=excluded.benchmarks, latency_p50_ms=excluded.latency_p50_ms, "
+                "geo_available=excluded.geo_available, geo_blocked=excluded.geo_blocked, "
+                "geo_notes=excluded.geo_notes, quality_tier=excluded.quality_tier, "
+                "use_case_scores=excluded.use_case_scores, known_issues=excluded.known_issues, "
+                "release_date=excluded.release_date, deprecation_date=excluded.deprecation_date, "
+                "gateways=excluded.gateways, last_synced=excluded.last_synced, "
+                "last_researched=excluded.last_researched, last_updated=excluded.last_updated, "
+                "metadata=excluded.metadata",
+                (
+                    row["model_name"], row["provider"], row["display_name"],
+                    row["pricing_input"], row["pricing_output"],
+                    row["context_window"], row["max_output"],
+                    row["supports_tools"], row["supports_vision"],
+                    row["supports_streaming"],
+                    row["strengths"], row["weaknesses"], row["benchmarks"],
+                    row["latency_p50_ms"],
+                    row["geo_available"], row["geo_blocked"], row["geo_notes"],
+                    row["quality_tier"], row["use_case_scores"],
+                    row["known_issues"], row["release_date"],
+                    row["deprecation_date"], row["gateways"],
+                    row["last_synced"], row["last_researched"],
+                    row["last_updated"], row["metadata"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_model_registry(self, model_name: str) -> dict[str, Any] | None:
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM model_registry WHERE model_name = ?",
+                (model_name,),
+            ).fetchone()
+            if row is None:
+                return None
+            return dict(ModelRegistryEntry.from_row(dict(row)).model_dump())
+        finally:
+            conn.close()
+
+    def list_model_registry(
+        self,
+        provider: str | None = None,
+        quality_tier: str | None = None,
+        max_price: float | None = None,
+        require_tools: bool = False,
+        require_vision: bool = False,
+        geo_region: str | None = None,
+        gateway: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        conn = self.db.connect()
+        try:
+            clauses: list[str] = []
+            params: list[Any] = []
+            if provider is not None:
+                clauses.append("provider = ?")
+                params.append(provider)
+            if quality_tier is not None:
+                clauses.append("quality_tier = ?")
+                params.append(quality_tier)
+            if max_price is not None:
+                clauses.append("(pricing_input IS NULL OR pricing_input <= ?)")
+                params.append(max_price)
+            if require_tools:
+                clauses.append("supports_tools = 1")
+            if require_vision:
+                clauses.append("supports_vision = 1")
+            if gateway is not None:
+                clauses.append("gateways LIKE ?")
+                params.append(f'%"{gateway}"%')
+
+            where = " AND ".join(clauses) if clauses else "1=1"
+            params.append(limit)
+            rows = conn.execute(
+                f"SELECT * FROM model_registry WHERE {where} "
+                f"ORDER BY quality_tier ASC, pricing_input ASC LIMIT ?",
+                params,
+            ).fetchall()
+
+            results = []
+            for r in rows:
+                entry = ModelRegistryEntry.from_row(dict(r))
+                d = entry.model_dump()
+                if geo_region is not None:
+                    blocked = entry.geo_blocked or []
+                    available = entry.geo_available or []
+                    if geo_region in blocked:
+                        continue
+                    if available and geo_region not in available and "*" not in available:
+                        continue
+                results.append(d)
+            return results
+        finally:
+            conn.close()
+
+    def update_model_registry_synced(self, model_name: str) -> None:
+        """Update the last_synced timestamp for a model."""
+        from datetime import datetime
+
+        from callmem.compat import UTC
+
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE model_registry SET last_synced = ?, "
+                "last_updated = ? WHERE model_name = ?",
+                (
+                    datetime.now(UTC).isoformat(),
+                    datetime.now(UTC).isoformat(),
+                    model_name,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ── Rewind (A6) ───────────────────────────────────────────────────
+
+    def insert_rewind_point(self, rp: RewindPoint) -> None:
+        conn = self.db.connect()
+        try:
+            row = rp.to_row()
+            conn.execute(
+                "INSERT INTO rewind_points "
+                "(id, project_id, label, created_at, event_count, "
+                "entity_count, metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["label"],
+                    row["created_at"], row["event_count"],
+                    row["entity_count"], row["metadata"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_rewind_point(self, rp_id: str) -> RewindPoint | None:
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM rewind_points WHERE id = ?", (rp_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            return RewindPoint.from_row(dict(row))
+        finally:
+            conn.close()
+
+    def list_rewind_points(self, project_id: str) -> list[dict[str, Any]]:
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM rewind_points "
+                "WHERE project_id = ? ORDER BY created_at DESC",
+                (project_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def archive_events_after(
+        self, project_id: str, timestamp: str,
+    ) -> int:
+        """Soft-archive events created after the given timestamp."""
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE events SET archived_at = datetime('now') "
+                "WHERE project_id = ? AND timestamp > ? "
+                "AND archived_at IS NULL",
+                (project_id, timestamp),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def archive_entities_after(
+        self, project_id: str, timestamp: str,
+    ) -> int:
+        """Soft-archive entities created after the given timestamp."""
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities SET archived_at = datetime('now') "
+                "WHERE project_id = ? AND created_at > ? "
+                "AND archived_at IS NULL",
+                (project_id, timestamp),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def archive_tasks_after(
+        self, project_id: str, timestamp: str,
+    ) -> int:
+        """Soft-archive tasks created after the given timestamp by marking them cancelled."""
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'cancelled', "
+                "updated_at = datetime('now') "
+                "WHERE project_id = ? AND created_at > ? "
+                "AND status IN ('pending', 'in_progress')",
+                (project_id, timestamp),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def get_rewind_diff(
+        self, project_id: str, timestamp: str,
+    ) -> dict[str, Any]:
+        """Show what would change if restored to the given timestamp."""
+        conn = self.db.connect()
+        try:
+            event_count = conn.execute(
+                "SELECT COUNT(*) as c FROM events "
+                "WHERE project_id = ? AND timestamp > ? "
+                "AND archived_at IS NULL",
+                (project_id, timestamp),
+            ).fetchone()["c"]
+
+            entity_count = conn.execute(
+                "SELECT COUNT(*) as c FROM entities "
+                "WHERE project_id = ? AND created_at > ? "
+                "AND archived_at IS NULL",
+                (project_id, timestamp),
+            ).fetchone()["c"]
+
+            task_count = conn.execute(
+                "SELECT COUNT(*) as c FROM tasks "
+                "WHERE project_id = ? AND created_at > ? "
+                "AND status IN ('pending', 'in_progress', 'completed')",
+                (project_id, timestamp),
+            ).fetchone()["c"]
+
+            return {
+                "events_to_archive": event_count,
+                "entities_to_archive": entity_count,
+                "tasks_to_cancel": task_count,
+            }
         finally:
             conn.close()
