@@ -204,9 +204,15 @@ class BriefingGenerator:
 
         if not all_entities and not last_session:
             now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
-            content = NEW_PROJECT_MESSAGE.format(
-                project_name=project_name, datetime=now_str
-            )
+            event_count = self._fetch_event_count(project_id)
+            if event_count > 0:
+                content = self._build_extraction_warning(
+                    project_name, now_str, event_count,
+                )
+            else:
+                content = NEW_PROJECT_MESSAGE.format(
+                    project_name=project_name, datetime=now_str
+                )
             if overview_block:
                 content = overview_block + "\n" + content
             return Briefing(
@@ -577,6 +583,28 @@ class BriefingGenerator:
             parts.append(f"  {line}")
         parts.append("")
         return "\n".join(parts)
+
+    def _fetch_event_count(self, project_id: str) -> int:
+        conn = self.repo.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM events WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            return row["c"] if row else 0
+        finally:
+            conn.close()
+
+    def _build_extraction_warning(
+        self, project_name: str, now_str: str, event_count: int,
+    ) -> str:
+        return (
+            f"[{project_name}] recent context, {now_str}\n"
+            + "\u2500" * 48 + "\n\n"
+            f"\u26a0\ufe0f {event_count} events captured but 0 entities extracted.\n"
+            f"   LLM backend may be unreachable. "
+            f"Run `callmem doctor` to diagnose."
+        )
 
     def _fetch_all_entities(
         self, project_id: str, focus: str | None,

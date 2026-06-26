@@ -315,17 +315,16 @@ def init(project: Path) -> None:
     help="Repair stale or missing files instead of just reporting.",
 )
 def doctor(project: Path, fix: bool) -> None:
-    """Check that integration files match the shipped templates.
+    """Diagnose callmem configuration and integration health.
 
-    Detects when files like ``.claude/commands/briefing.md`` or
-    ``.opencode/plugins/auto-briefing.js`` have drifted from the version
-    callmem currently ships (e.g. after a callmem upgrade). With ``--fix``,
-    overwrites stale files. Without it, exits non-zero on drift — suitable
-    for CI or periodic checks.
+    Checks integration files, LLM backend reachability, and extraction
+    health. Exits non-zero if problems are found.
     """
-    from callmem.core.integrations import check_integration_drift
-
     project = project.resolve()
+
+    db_path = project / ".callmem" / "memory.db"
+    has_db = db_path.exists()
+    problems_found = False
 
     has_opencode = (
         (project / ".opencode").is_dir()
@@ -337,38 +336,133 @@ def doctor(project: Path, fix: bool) -> None:
         or (project / ".mcp.json").exists()
     )
 
-    if not has_opencode and not has_claude:
+    # ── Integration files ──
+    if has_opencode or has_claude:
+        from callmem.core.integrations import check_integration_drift
+
+        click.echo(f"Checking integration files in {project}...")
+        result = check_integration_drift(
+            project,
+            fix=fix,
+            echo=click.echo,
+            check_opencode=has_opencode,
+            check_claude=has_claude,
+        )
+
+        drifted_total = sum(len(v) for v in result.values())
+        if drifted_total == 0:
+            click.echo("All integration files match shipped templates.")
+        elif fix:
+            click.echo(f"Repaired {drifted_total} file(s).")
+        else:
+            click.echo()
+            click.echo(
+                f"{drifted_total} file(s) are stale or missing. "
+                "Re-run with --fix to repair."
+            )
+            problems_found = True
+        click.echo()
+    else:
         click.echo(
             "No coding-tool integration detected "
             f"in {project} (no .opencode/, opencode.json, .claude/, or .mcp.json)."
         )
         click.echo("Run 'callmem setup' to install integration files.")
-        return
+        click.echo()
 
-    click.echo(f"Checking integration files in {project}...")
-    result = check_integration_drift(
-        project,
-        fix=fix,
-        echo=click.echo,
-        check_opencode=has_opencode,
-        check_claude=has_claude,
-    )
-
-    drifted_total = sum(len(v) for v in result.values())
-    if drifted_total == 0:
-        click.echo("All integration files match shipped templates.")
-        return
-
-    if fix:
-        click.echo(f"Repaired {drifted_total} file(s).")
-        return
-
+    # ── LLM backend ──
+    _check_llm_backend(project)
     click.echo()
-    click.echo(
-        f"{drifted_total} file(s) are stale or missing. "
-        "Re-run with --fix to repair."
-    )
-    raise click.exceptions.Exit(1)
+
+    # ── Extraction health ──
+    if has_db:
+        from callmem.core.database import Database as _DB
+
+        db = _DB(db_path)
+        conn = db.connect()
+        try:
+            events = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
+            entities = conn.execute(
+                "SELECT COUNT(*) as c FROM entities WHERE archived_at IS NULL"
+            ).fetchone()["c"]
+        finally:
+            conn.close()
+
+        click.echo("  Extraction health:")
+        click.echo(f"    Events:   {events}")
+        click.echo(f"    Entities: {entities}")
+        if events > 0 and entities == 0:
+            click.echo(
+                f"    \u26a0\ufe0f  {events} events captured but 0 entities extracted.\n"
+                "       The LLM backend may be unreachable or misconfigured."
+            )
+            problems_found = True
+        elif events > entities * 2 and events > 10:
+            click.echo(
+                f"    \u26a0\ufe0f  Low extraction ratio: "
+                f"{entities}/{events} events extracted."
+            )
+            problems_found = True
+        else:
+            click.echo("    \u2713 healthy")
+
+    if problems_found:
+        raise click.exceptions.Exit(1)
+
+
+def _check_llm_backend(project: Path) -> None:
+    """Test the LLM backend configuration and print diagnostics."""
+    from callmem.core.config import load_config
+
+    config = load_config(project)
+    backend = config.llm.backend
+
+    click.echo("  LLM backend:")
+    click.echo(f"    Backend: {backend}")
+
+    if backend == "none":
+        click.echo("    No LLM backend configured — extraction disabled.")
+        return
+
+    if backend == "openai_compat":
+        endpoint = config.openai_compat.endpoint
+        model = config.openai_compat.model
+        env_var = config.openai_compat.api_key_env or "API_KEY"
+    elif backend == "ollama":
+        endpoint = config.ollama.endpoint
+        model = config.ollama.model
+        env_var = "(local — no key needed)"
+    else:
+        click.echo(f"    Unknown backend: {backend}")
+        return
+
+    click.echo(f"    Endpoint: {endpoint}")
+    click.echo(f"    Model: {model}")
+
+    import os
+
+    if env_var == "(local — no key needed)":
+        click.echo("    API key: (local — no key needed)")
+    else:
+        key_set = bool(os.environ.get(env_var))
+        status = "\u2713 set" if key_set else "\u2717 missing"
+        click.echo(f"    API key: {status} ({env_var})")
+
+    from callmem.core.engine import _create_llm_client
+
+    llm = _create_llm_client(config)
+    if llm is None:
+        click.echo("    Reachable: skipped (no client created)")
+        return
+
+    if llm.is_available():
+        click.echo("    Reachable: \u2713 (test request succeeded)")
+    else:
+        click.echo(f"    Reachable: \u2717 (cannot reach {endpoint})")
+        click.echo(
+            "    Run 'callmem setup' to reconfigure, or check the "
+            "backend service is running."
+        )
 
 
 def _render_config_toml(
@@ -797,9 +891,15 @@ def _render_status(project: Path) -> bool:
         version = db.get_schema_version()
         events = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
         sessions = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()["c"]
-        entities = conn.execute("SELECT COUNT(*) as c FROM entities").fetchone()["c"]
+        entities = conn.execute(
+            "SELECT COUNT(*) as c FROM entities WHERE archived_at IS NULL"
+        ).fetchone()["c"]
         last_session = conn.execute(
             "SELECT started_at FROM sessions ORDER BY started_at DESC LIMIT 1"
+        ).fetchone()
+        last_extraction_row = conn.execute(
+            "SELECT created_at FROM entities "
+            "ORDER BY created_at DESC LIMIT 1"
         ).fetchone()
 
         db_size_mb = db_path.stat().st_size / (1024 * 1024)
@@ -809,7 +909,26 @@ def _render_status(project: Path) -> bool:
         click.echo(f"  Schema:       v{version}")
         click.echo(f"  Events:       {events}")
         click.echo(f"  Sessions:     {sessions}")
-        click.echo(f"  Entities:     {entities}")
+
+        entity_warning = ""
+        if events > 0 and entities == 0:
+            entity_warning = (
+                f"  \u26a0\ufe0f  (0 entities from {events} events "
+                f"— check LLM backend)"
+            )
+        elif events > entities * 2 and events > 10:
+            entity_warning = (
+                f"  \u26a0\ufe0f  (low extraction ratio: "
+                f"{entities}/{events} events)"
+            )
+        click.echo(f"  Entities:     {entities}{entity_warning}")
+
+        if last_extraction_row:
+            last_ext = last_extraction_row["created_at"][:19].replace("T", " ")
+        else:
+            last_ext = "never"
+        click.echo(f"  Last extraction: {last_ext}")
+
         last = last_session["started_at"] if last_session else "none"
         click.echo(f"  Last session: {last}")
     finally:

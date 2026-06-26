@@ -115,6 +115,8 @@ class WorkerRunner:
             logger.error("Job %s failed: %s", job.id[:8], exc)
             self.queue.fail(job.id, str(exc))
             self._publish_queue_status()
+            if job.type == "extract_entities":
+                self._log_extraction_failure(job, exc)
 
         return True
 
@@ -174,6 +176,21 @@ class WorkerRunner:
             )
         except Exception as exc:
             logger.warning("Failed to enqueue staleness_check: %s", exc)
+
+    def _log_extraction_failure(self, job: Any, exc: Exception) -> None:
+        """Append extraction failures to .callmem/extraction.log."""
+        from datetime import datetime
+
+        from callmem.compat import UTC
+
+        log_path = self.db.db_path.parent / "extraction.log"
+        ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        line = f"[{ts}] Extraction job {job.id[:8]} failed: {exc}\n"
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except OSError:
+            pass
 
     def _resolve_project_id(self, job: Any) -> str | None:
         project_id = job.payload.get("project_id")

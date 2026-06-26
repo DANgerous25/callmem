@@ -141,6 +141,30 @@ class TestBriefingGeneration:
         assert briefing.token_count > 0
         assert "new project" in briefing.content.lower() or "no prior" in briefing.content.lower()
 
+    def test_briefing_extraction_warning_when_events_but_no_entities(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_project(memory_db)
+        repo = Repository(memory_db)
+
+        session = Session(project_id=project_id)
+        repo.insert_session(session)
+
+        from callmem.models.events import Event
+        for i in range(5):
+            event = Event(
+                session_id=session.id,
+                project_id=project_id,
+                type="note",
+                content=f"test event {i}",
+            )
+            repo.insert_event(event)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "0 entities extracted" in briefing.content
+        assert "callmem doctor" in briefing.content
+
     def test_briefing_respects_token_budget(
         self, memory_db: Database
     ) -> None:
