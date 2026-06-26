@@ -2,6 +2,21 @@
 
 This project uses callmem for persistent memory across coding sessions.
 
+## Memory Decision Rules
+
+These are concrete rules for WHEN and WHY to use callmem. Follow them at each decision point:
+
+- **Session start**: Call `mem_get_briefing` once. This is your context — it contains recent decisions, open TODOs, unresolved failures, and session history. Trust it over re-reading code for past decisions.
+- **Before reading a file you've worked on**: Call `mem_file_context(path)` first. If the timeline covers your task, skip the raw read (saves ~95% tokens).
+- **Before asking the user a clarifying question**: Call `mem_search(query)` — the answer may already be stored from a previous session.
+- **When you make a design decision**: Call `mem_ingest` with type `decision` immediately. Don't wait for the session to end. Include the "why" (alternatives considered, tradeoffs).
+- **When you identify a TODO**: Call `mem_ingest` with type `todo` and set priority (high/medium/low). Do this the moment you notice the work, not later.
+- **When something surprising happens**: Call `mem_ingest` with type `discovery` or `failure`. Include what you expected vs what happened, and the root cause if known.
+- **If briefing shows 0 entities but N events**: Run `callmem re-extract` — extraction may have failed. Check `callmem doctor` to diagnose the LLM backend.
+- **Before re-reading a file**: Always check `mem_file_context` first. Only read from disk if the memory is stale or missing.
+- **Long sessions (50+ messages)**: Call `mem_check_context` every ~30 messages. Compress if recommended — summarize decisions, TODOs, and failures verbatim in `mem_compress_context`.
+- **When citing memory in your work**: Use the 8-character short ID (e.g. `#F5AVDQ25`) from the briefing. This lets readers pull up the full context.
+
 ## Session workflow
 
 **Start of session:**
@@ -27,5 +42,5 @@ This project uses callmem for persistent memory across coding sessions.
 - Be specific in memory content (include file paths, function names, error messages)
 - Set priority on TODOs: high, medium, or low
 - Mark failures as resolved when you fix them
-- You don't need to memorize everything — the system captures raw events automatically
+- You don't need to memorize everything — the system captures raw events automatically and auto-detects decisions/discoveries/failures in your responses
 - Focus on recording decisions (the "why") and TODOs (what's next)
