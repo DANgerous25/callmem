@@ -136,6 +136,55 @@ class Repository:
         finally:
             conn.close()
 
+    # ── Usage stats ──────────────────────────────────────────────────
+
+    def record_usage(
+        self,
+        project_id: str,
+        tool_name: str,
+        tokens_saved: int = 0,
+    ) -> None:
+        """Record a call to a token-saving tool (compile_context, file_context)."""
+        from datetime import datetime
+
+        from callmem.compat import UTC
+
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO usage_stats (project_id, tool_name, tokens_saved, called_at) "
+                "VALUES (?, ?, ?, ?)",
+                (project_id, tool_name, tokens_saved, datetime.now(UTC).isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_usage_stats(self, project_id: str) -> dict[str, Any]:
+        """Return aggregated usage stats for a project."""
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT "
+                "  COUNT(*) as call_count, "
+                "  COALESCE(SUM(tokens_saved), 0) as total_saved "
+                "FROM usage_stats WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+            by_tool = conn.execute(
+                "SELECT tool_name, COUNT(*) as cnt, COALESCE(SUM(tokens_saved), 0) as saved "
+                "FROM usage_stats WHERE project_id = ? "
+                "GROUP BY tool_name",
+                (project_id,),
+            ).fetchall()
+            return {
+                "total_calls": row["call_count"] if row else 0,
+                "total_tokens_saved": row["total_saved"] if row else 0,
+                "by_tool": [dict(r) for r in by_tool],
+            }
+        finally:
+            conn.close()
+
     # ── Sessions ─────────────────────────────────────────────────────
 
     def insert_session(self, session: Session) -> None:

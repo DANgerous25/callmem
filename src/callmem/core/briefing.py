@@ -557,6 +557,14 @@ class BriefingGenerator:
         ui_port = self.config.ui.port
         ui_host = self.config.ui.host
         parts.append(f"  Web UI: http://{ui_host}:{ui_port}")
+
+        if entity_count > 10:
+            parts.append(
+                f"  \U0001f4a1 Tip: Use mem_compile_context("
+                f"target_model=\"your-model\") to get\n"
+                f"     compressed project context (~500 tokens) "
+                f"instead of re-reading files."
+            )
         return parts
 
     def _build_overview_block(

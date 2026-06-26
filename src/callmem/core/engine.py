@@ -679,6 +679,12 @@ class MemoryEngine:
 
         self._file_context_stats["hits"] += 1
 
+        # Estimate tokens saved: a raw file read averages ~2000 tokens;
+        # the timeline is ~200 tokens, so saving ~1800 tokens per hit.
+        self.repo.record_usage(
+            self.project_id, "file_context", tokens_saved=1800,
+        )
+
         timeline_cap = 20
         timeline = [
             {
@@ -1184,12 +1190,20 @@ class MemoryEngine:
             compiled = compiled[:max_chars] + truncation_msg
             estimated_tokens = len(compiled) // 4
 
+        # Estimate tokens saved: rough heuristic — reading all source
+        # files for the same context would cost ~5x the compiled size.
+        tokens_saved = max(estimated_tokens * 4, 0)
+        self.repo.record_usage(
+            self.project_id, "compile_context", tokens_saved,
+        )
+
         return {
             "system_context": compiled,
             "tokens_estimated": estimated_tokens,
             "sources": sources,
             "target_model": target_model,
             "token_budget": effective_budget,
+            "tokens_saved": tokens_saved,
         }
 
     # ── Model registry (A5) ──────────────────────────────────────────
