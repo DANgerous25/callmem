@@ -133,11 +133,51 @@ def _parse_version(s: str) -> tuple[int, ...] | None:
         return None
 
 
+def _check_git_update_hint() -> str | None:
+    """Check if the local callmem git repo is behind origin.
+
+    Returns a footer hint string if behind, or None. Best-effort —
+    any failure returns None silently.
+    """
+    import subprocess
+
+    try:
+        import callmem as _cm
+
+        src_path = Path(_cm.__file__).resolve()
+        source_root = None
+        for parent in [src_path.parent.parent, src_path.parent.parent.parent]:
+            if (parent / ".git").is_dir():
+                source_root = parent
+                break
+        if source_root is None:
+            return None
+
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=source_root, capture_output=True, timeout=10,
+        )
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            cwd=source_root, capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            count = int(result.stdout.strip())
+            if count > 0:
+                return (
+                    f"  📦 {count} update(s) available — "
+                    f"run 'callmem update'"
+                )
+    except Exception:
+        pass
+    return None
+
+
 def _check_latest_callmem_version(cache_dir: Path) -> str | None:
     """Return the latest released callmem version on PyPI, or None.
 
     Cached under ``<cache_dir>/.update_check.json`` for ``_UPDATE_CHECK_TTL_SECONDS``.
-    Any failure (offline, timeout, parse error) returns None silently \u2014 the
+    Any failure (offline, timeout, parse error) returns None silently — the
     briefing is the wrong place to surface networking noise.
     """
     cache_path = cache_dir / ".update_check.json"
@@ -553,6 +593,10 @@ class BriefingGenerator:
                 f"  📦 Update available: callmem {_CALLMEM_VERSION} → {latest} "
                 f"(pip install -U callmem)"
             )
+        else:
+            git_hint = _check_git_update_hint()
+            if git_hint:
+                parts.append(git_hint)
 
         ui_port = self.config.ui.port
         ui_host = self.config.ui.host
@@ -560,10 +604,10 @@ class BriefingGenerator:
 
         if entity_count > 10:
             parts.append(
-                f"  \U0001f4a1 Tip: Use mem_compile_context("
-                f"target_model=\"your-model\") to get\n"
-                f"     compressed project context (~500 tokens) "
-                f"instead of re-reading files."
+                "  \U0001f4a1 Tip: Use mem_compile_context("
+                "target_model=\"your-model\") to get\n"
+                "     compressed project context (~500 tokens) "
+                "instead of re-reading files."
             )
         return parts
 

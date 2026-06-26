@@ -951,7 +951,7 @@ def _render_status(project: Path) -> bool:
         click.echo()
         click.echo("  Context savings:")
         click.echo(f"    {usage['calls']} calls saved ~{usage['saved']:,} tokens")
-        click.echo(f"    (via compile_context + file_context)")
+        click.echo("    (via compile_context + file_context)")
 
     # UI + service info (best-effort; never errors out if config/systemd unavailable).
     try:
@@ -2744,6 +2744,196 @@ def usage(
                     f"{'Y' if u.briefing_fetched else '-':>3} "
                     f"{u.citations:>4}"
                 )
+
+
+def _find_callmem_source_dir() -> Path | None:
+    """Find the callmem source directory from the installed package location."""
+    import callmem
+
+    src_path = Path(callmem.__file__).resolve()
+    # src/callmem/__init__.py → source root is two levels up
+    # (could also be callmem/__init__.py → one level up)
+    for parent in [src_path.parent.parent, src_path.parent.parent.parent]:
+        if (parent / ".git").is_dir() and (parent / "pyproject.toml").exists():
+            return parent
+    return None
+
+
+def _get_git_remote_head(source_dir: Path) -> str | None:
+    """Fetch and return the remote HEAD commit short hash, or None."""
+    import subprocess
+
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            cwd=source_dir, capture_output=True, timeout=30,
+        )
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "origin/main"],
+            cwd=source_dir, capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+def _get_local_head(source_dir: Path) -> str | None:
+    """Return the local HEAD commit short hash, or None."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=source_dir, capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return None
+
+
+@main.command("check-update")
+def check_update() -> None:
+    """Check if a callmem update is available on GitHub."""
+    source_dir = _find_callmem_source_dir()
+    if source_dir is None:
+        click.echo("callmem is not installed from a git source directory.")
+        click.echo("Cannot check for updates.")
+        return
+
+    click.echo(f"Source: {source_dir}")
+    click.echo(f"Version: {__version__}")
+
+    local = _get_local_head(source_dir)
+    click.echo(f"Local commit: {local or 'unknown'}")
+
+    click.echo("Fetching remote...")
+    remote = _get_git_remote_head(source_dir)
+    if remote is None:
+        click.echo("Could not fetch remote — check network connection.")
+        return
+
+    click.echo(f"Remote commit: {remote}")
+
+    if local == remote:
+        click.echo("Up to date.")
+    else:
+        click.echo(f"\nUpdate available! {local} → {remote}")
+        click.echo("Run: callmem update")
+
+
+@main.command("update")
+@click.option("--no-restart", is_flag=True, help="Skip restarting daemons after update.")
+def update_cmd(no_restart: bool) -> None:
+    """Pull the latest callmem from GitHub, reinstall, and restart daemons.
+
+    Runs: git pull → pip install -e . → uv tool install --editable . --force
+    → systemctl --user restart callmem-*
+
+    MCP servers (child processes of agent sessions) pick up the new code
+    on next session start — no restart needed for those.
+    """
+    import subprocess
+
+    source_dir = _find_callmem_source_dir()
+    if source_dir is None:
+        click.echo("callmem is not installed from a git source directory.")
+        click.echo("Cannot auto-update. Install with: pip install -e . from the source repo.")
+        raise click.exceptions.Exit(1)
+
+    click.echo(f"Source: {source_dir}")
+    click.echo(f"Current version: {__version__}")
+    click.echo()
+
+    # ── git pull ──
+    click.echo("Pulling latest from origin...")
+    result = subprocess.run(
+        ["git", "pull", "origin", "main"],
+        cwd=source_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        click.echo(f"git pull failed: {result.stderr.strip()}")
+        raise click.exceptions.Exit(1)
+    click.echo(result.stdout.strip().split("\n")[0])
+    click.echo()
+
+    # ── Check if anything changed ──
+    local = _get_local_head(source_dir)
+    remote = _get_git_remote_head(source_dir)
+    if local == remote and not result.stdout.strip():
+        click.echo("Already up to date.")
+        return
+
+    # ── pip install (global python) ──
+    click.echo("Reinstalling (pip)...")
+    result = subprocess.run(
+        ["pip3", "install", "-e", str(source_dir), "--quiet"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        click.echo(f"pip install failed: {result.stderr.strip()}")
+    else:
+        click.echo("  pip: OK")
+
+    # ── uv tool reinstall (if uv is available) ──
+    import shutil
+
+    if shutil.which("uv"):
+        click.echo("Reinstalling (uv tool)...")
+        result = subprocess.run(
+            ["uv", "tool", "install", "--editable", str(source_dir), "--force"],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            click.echo(f"  uv tool install warning: {result.stderr.strip()}")
+        else:
+            click.echo("  uv: OK")
+
+    # ── Verify new version ──
+    import importlib
+
+    import callmem as _cm_mod
+
+    importlib.reload(_cm_mod)
+    try:
+        new_version = _cm_mod.__version__
+    except Exception:
+        new_version = __version__
+    click.echo()
+    click.echo(f"Updated: {__version__} → {new_version}")
+
+    # ── Restart daemons ──
+    if no_restart:
+        click.echo("Skipping daemon restart (--no-restart)")
+        return
+
+    click.echo()
+    click.echo("Restarting callmem daemons...")
+    systemd_dir = Path.home() / ".config" / "systemd" / "user"
+    restarted = 0
+    if systemd_dir.is_dir():
+        for unit in sorted(systemd_dir.glob("callmem-*.service")):
+            svc_name = unit.stem
+            subprocess.run(
+                ["systemctl", "--user", "restart", svc_name],
+                capture_output=True, timeout=10,
+            )
+            # Check it came up
+            r = subprocess.run(
+                ["systemctl", "--user", "is-active", svc_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            state = r.stdout.strip()
+            click.echo(f"  {svc_name}: {state}")
+            if state == "active":
+                restarted += 1
+
+    click.echo()
+    click.echo(f"Done. {restarted} daemon(s) restarted.")
+    click.echo("MCP servers will pick up the new code on next session start.")
 
 
 if __name__ == "__main__":
