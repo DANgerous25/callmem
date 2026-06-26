@@ -124,8 +124,8 @@ def _ensure_opencode_plugin(project: Path) -> None:
 
 
 def _ensure_opencode_instructions(project: Path) -> None:
-    """Ensure opencode.json points at .opencode/BRIEFING_INSTRUCTIONS.md
-    and has the correct callmem MCP server command."""
+    """Ensure opencode.json exists with the callmem MCP server and
+    briefing instructions. Creates the file if missing, patches if present."""
     import json
 
     oc_path = None
@@ -136,6 +136,23 @@ def _ensure_opencode_instructions(project: Path) -> None:
             break
 
     if oc_path is None:
+        oc_path = project / "opencode.json"
+        detected_cmd = _detect_mcp_command(project)
+        oc_config = {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+                "callmem": {
+                    "type": "local",
+                    "command": detected_cmd,
+                    "enabled": True,
+                },
+            },
+            "instructions": [".opencode/BRIEFING_INSTRUCTIONS.md"],
+        }
+        oc_path.write_text(
+            json.dumps(oc_config, indent=2) + "\n", encoding="utf-8",
+        )
+        click.echo(f"  Created {oc_path.name} with callmem MCP server")
         return
 
     try:
@@ -1674,9 +1691,19 @@ def re_extract(
         click.echo("LLM backend is 'none' — nothing to re-extract with.")
         return
 
+    backend = config.llm.backend
+    if backend == "openai_compat":
+        active_model = config.openai_compat.model
+        active_endpoint = config.openai_compat.endpoint
+        active_ctx = "auto"
+    else:
+        active_model = config.ollama.model
+        active_endpoint = config.ollama.endpoint
+        active_ctx = config.ollama.num_ctx or "auto"
+
     if not engine.llm_client.is_available():
-        click.echo(f"Ollama not reachable at {config.ollama.endpoint}")
-        click.echo("Start Ollama first and try again.")
+        click.echo(f"LLM backend '{backend}' not reachable at {active_endpoint}")
+        click.echo("Check the backend is configured and reachable, then try again.")
         return
 
     re_extractor = ReExtractor(db, engine.llm_client, config)
@@ -1689,9 +1716,8 @@ def re_extract(
         click.echo("No events found matching the given filters.")
         return
 
-    ctx_val = config.ollama.num_ctx or "auto"
     click.echo(
-        f"Re-extracting with {config.ollama.model} (num_ctx: {ctx_val})"
+        f"Re-extracting with {active_model} (num_ctx: {active_ctx})"
     )
     click.echo()
 
