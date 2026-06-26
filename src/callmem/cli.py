@@ -931,8 +931,27 @@ def _render_status(project: Path) -> bool:
 
         last = last_session["started_at"] if last_session else "none"
         click.echo(f"  Last session: {last}")
+
+        has_usage_table = conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='usage_stats'"
+        ).fetchone()
+        usage = None
+        if has_usage_table:
+            usage = conn.execute(
+                "SELECT "
+                "  COUNT(*) as calls, "
+                "  COALESCE(SUM(tokens_saved), 0) as saved "
+                "FROM usage_stats"
+            ).fetchone()
     finally:
         conn.close()
+
+    if usage and usage["calls"] > 0:
+        click.echo()
+        click.echo("  Context savings:")
+        click.echo(f"    {usage['calls']} calls saved ~{usage['saved']:,} tokens")
+        click.echo(f"    (via compile_context + file_context)")
 
     # UI + service info (best-effort; never errors out if config/systemd unavailable).
     try:
