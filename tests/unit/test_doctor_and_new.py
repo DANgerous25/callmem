@@ -40,7 +40,9 @@ def _make_opencode_layout(project: Path, content: str = "stale") -> None:
 
 def _make_claude_layout(project: Path, content: str = "stale") -> None:
     (project / ".claude" / "commands").mkdir(parents=True)
+    (project / ".claude" / "hooks").mkdir(parents=True)
     (project / ".claude" / "commands" / "briefing.md").write_text(content)
+    (project / ".claude" / "hooks" / "callmem-hook.py").write_text(content)
 
 
 class TestCheckIntegrationDrift:
@@ -51,12 +53,13 @@ class TestCheckIntegrationDrift:
             "BRIEFING_INSTRUCTIONS.md",
             "auto-briefing.js",
             "briefing.md",
+            "callmem.js",
         ]
 
     def test_reports_stale_claude_files(self, tmp_path: Path) -> None:
         _make_claude_layout(tmp_path)
         drift = check_integration_drift(tmp_path, fix=False, check_opencode=False)
-        assert drift["claude_code"] == ["briefing.md"]
+        assert sorted(drift["claude_code"]) == ["briefing.md", "callmem-hook.py"]
 
     def test_dry_run_does_not_modify_files(self, tmp_path: Path) -> None:
         _make_opencode_layout(tmp_path, content="stale-content")

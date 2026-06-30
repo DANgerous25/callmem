@@ -2945,5 +2945,73 @@ def update_cmd(no_restart: bool) -> None:
     click.echo("MCP servers will pick up the new code on next session start.")
 
 
+@main.command("upgrade-projects")
+@click.option(
+    "--project", "-p", type=click.Path(path_type=Path), default=None,
+    help="Upgrade a single project (default: all with .callmem dirs).",
+)
+@click.option("--dry-run", is_flag=True, help="Show what would change without writing.")
+def upgrade_projects_cmd(project: Path | None, dry_run: bool) -> None:
+    """Install/upgrade callmem capture plugins and hooks in all projects.
+
+    Installs:
+    - OpenCode: callmem.js plugin (push-based event capture)
+    - Claude Code: callmem-hook.py + hooks registration in settings.json
+    - Both: /briefing command and BRIEFING_INSTRUCTIONS.md
+
+    Run this after `callmem update` to deploy new capture code to projects.
+    """
+    from callmem.core.integrations import (
+        ensure_claude_code_commands,
+        ensure_claude_code_mcp,
+        ensure_opencode_plugin,
+    )
+
+    if project is not None:
+        projects = [project.resolve()]
+    else:
+        home = Path.home()
+        projects = [
+            p.parent for p in sorted(home.glob("*/.callmem/memory.db"))
+            if p.parent.parent != home / "llm-mem" or True
+        ]
+
+    if not projects:
+        click.echo("No projects found with .callmem/ directories.")
+        click.echo("Use 'callmem setup <project>' to initialize a new project.")
+        return
+
+    click.echo(f"Upgrading {len(projects)} project(s)...")
+    if dry_run:
+        click.echo("(dry-run mode — no files will be written)")
+    click.echo()
+
+    total_installed = 0
+    for proj in projects:
+        name = proj.name
+        click.echo(f"── {name} ──")
+        installed: list[str] = []
+
+        installed += ensure_opencode_plugin(proj, echo=click.echo, dry_run=dry_run)
+        installed += ensure_claude_code_commands(proj, echo=click.echo, dry_run=dry_run)
+
+        if not dry_run:
+            ensure_claude_code_mcp(proj, echo=click.echo)
+
+        if not installed:
+            click.echo("  (already up to date)")
+        else:
+            total_installed += len(installed)
+        click.echo()
+
+    click.echo(
+        f"Done. {total_installed} file(s) installed/updated"
+        f" across {len(projects)} project(s)."
+    )
+    if not dry_run:
+        click.echo()
+        click.echo("Restart agent sessions to pick up the new plugins/hooks.")
+
+
 if __name__ == "__main__":
     main()

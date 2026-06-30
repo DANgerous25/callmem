@@ -80,6 +80,7 @@ def create_app(engine: MemoryEngine) -> FastAPI:
     from callmem.ui.routes.entities import router as entities_router
     from callmem.ui.routes.feed import router as feed_router
     from callmem.ui.routes.files import router as files_router
+    from callmem.ui.routes.ingest import router as ingest_router
     from callmem.ui.routes.search import router as search_router
     from callmem.ui.routes.sessions import router as sessions_router
     from callmem.ui.routes.settings import router as settings_router
@@ -94,6 +95,7 @@ def create_app(engine: MemoryEngine) -> FastAPI:
     app.include_router(files_router)
     app.include_router(settings_router)
     app.include_router(sse_router)
+    app.include_router(ingest_router)
 
     return app
 

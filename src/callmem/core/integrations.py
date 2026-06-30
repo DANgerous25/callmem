@@ -131,14 +131,16 @@ def _install_templates(
 def ensure_opencode_plugin(
     project: Path, echo=print, dry_run: bool = False,
 ) -> list[str]:
-    """Install OpenCode auto-briefing plugin, /briefing command, and
-    BRIEFING_INSTRUCTIONS.md (referenced from opencode.json instructions)."""
+    """Install OpenCode auto-briefing plugin, callmem capture plugin,
+    /briefing command, and BRIEFING_INSTRUCTIONS.md."""
     templates_dir = _find_templates_dir("opencode")
     if templates_dir is None:
         return []
     mapping = [
         (templates_dir / "plugins" / "auto-briefing.js",
          project / ".opencode" / "plugins" / "auto-briefing.js"),
+        (templates_dir / "plugins" / "callmem.js",
+         project / ".opencode" / "plugins" / "callmem.js"),
         (templates_dir / "commands" / "briefing.md",
          project / ".opencode" / "commands" / "briefing.md"),
         (templates_dir / "BRIEFING_INSTRUCTIONS.md",
@@ -152,17 +154,92 @@ def ensure_opencode_plugin(
 def ensure_claude_code_commands(
     project: Path, echo=print, dry_run: bool = False,
 ) -> list[str]:
-    """Install Claude Code /briefing slash command."""
+    """Install Claude Code /briefing slash command and callmem capture hook."""
     templates_dir = _find_templates_dir("claude")
     if templates_dir is None:
         return []
     mapping = [
         (templates_dir / "commands" / "briefing.md",
          project / ".claude" / "commands" / "briefing.md"),
+        (templates_dir / "hooks" / "callmem-hook.py",
+         project / ".claude" / "hooks" / "callmem-hook.py"),
     ]
-    return _install_templates(
-        mapping, echo=echo, label="Claude Code commands", dry_run=dry_run,
+    installed = _install_templates(
+        mapping, echo=echo, label="Claude Code files", dry_run=dry_run,
     )
+    if not dry_run:
+        hook = project / ".claude" / "hooks" / "callmem-hook.py"
+        if hook.exists():
+            hook.chmod(0o755)
+    if not dry_run:
+        _ensure_claude_code_hooks(project, echo=echo)
+    return installed
+
+
+CLAUDE_HOOK_EVENTS = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+]
+
+
+def _ensure_claude_code_hooks(project: Path, echo=print) -> None:
+    """Register callmem hooks in Claude Code settings.json.
+
+    Claude Code reads hooks from ~/.claude/settings.json. We add callmem
+    hook entries for the lifecycle events we care about, using the
+    project-local hook script. Idempotent — won't duplicate entries.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return
+
+    try:
+        config = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        echo("  Warning: could not parse Claude Code settings.json")
+        return
+
+    hooks = config.setdefault("hooks", {})
+    hook_script = str(project / ".claude" / "hooks" / "callmem-hook.py")
+    python = sys.executable
+    cmd = f"{python} {hook_script}"
+
+    changed = False
+    for event in CLAUDE_HOOK_EVENTS:
+        entries = hooks.setdefault(event, [])
+
+        already = any(
+            any(
+                "callmem-hook" in (h.get("command") or "")
+                for h in entry.get("hooks", [])
+            )
+            for entry in entries
+        )
+        if already:
+            continue
+
+        entry = {
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": cmd,
+                    "async": event != "SessionStart",
+                }
+            ],
+        }
+        if event == "PostToolUse":
+            entry["matcher"] = "*"
+        entries.append(entry)
+        changed = True
+
+    if changed:
+        settings_path.write_text(
+            json.dumps(config, indent=2) + "\n", encoding="utf-8"
+        )
+        echo("  Registered callmem hooks in Claude Code settings.json")
 
 
 def _silent(*_args: object, **_kwargs: object) -> None:
