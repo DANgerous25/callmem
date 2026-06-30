@@ -1,12 +1,12 @@
 {
   "mcpServers": {
     "callmem": {
-      "command": "/home/dan/llm-mem/.venv/bin/python",
+      "command": "/home/dan/.local/share/uv/tools/callmem/bin/python3",
       "args": [
         "-m",
         "callmem.mcp.server",
         "--project",
-        "/home/dan/llm-mem"
+        "/home/dan/llm-mem/.callmem"
       ]
     }
   }

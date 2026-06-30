@@ -2972,8 +2972,7 @@ def upgrade_projects_cmd(project: Path | None, dry_run: bool) -> None:
     else:
         home = Path.home()
         projects = [
-            p.parent for p in sorted(home.glob("*/.callmem/memory.db"))
-            if p.parent.parent != home / "llm-mem" or True
+            p.parent.parent for p in sorted(home.glob("*/.callmem/memory.db"))
         ]
 
     if not projects:

@@ -175,7 +175,6 @@ def ensure_claude_code_commands(
         _ensure_claude_code_hooks(project, echo=echo)
     return installed
 
-
 CLAUDE_HOOK_EVENTS = [
     "SessionStart",
     "UserPromptSubmit",
@@ -188,10 +187,25 @@ CLAUDE_HOOK_EVENTS = [
 def _ensure_claude_code_hooks(project: Path, echo=print) -> None:
     """Register callmem hooks in Claude Code settings.json.
 
-    Claude Code reads hooks from ~/.claude/settings.json. We add callmem
-    hook entries for the lifecycle events we care about, using the
-    project-local hook script. Idempotent — won't duplicate entries.
+    Claude Code uses a single global ~/.claude/settings.json. We register
+    a global hook script (installed once to ~/.claude/hooks/) that uses
+    $CLAUDE_PROJECT_DIR to find the project's port. Idempotent.
     """
+    if not project.is_absolute() or not project.exists():
+        return
+
+    global_hook = Path.home() / ".claude" / "hooks" / "callmem-hook.py"
+    if not global_hook.exists():
+        templates_dir = _find_templates_dir("claude")
+        if templates_dir is not None:
+            src = templates_dir / "hooks" / "callmem-hook.py"
+            if src.exists():
+                global_hook.parent.mkdir(parents=True, exist_ok=True)
+                global_hook.write_text(
+                    src.read_text(encoding="utf-8"), encoding="utf-8"
+                )
+                global_hook.chmod(0o755)
+
     settings_path = Path.home() / ".claude" / "settings.json"
     if not settings_path.exists():
         return
@@ -203,9 +217,8 @@ def _ensure_claude_code_hooks(project: Path, echo=print) -> None:
         return
 
     hooks = config.setdefault("hooks", {})
-    hook_script = str(project / ".claude" / "hooks" / "callmem-hook.py")
     python = sys.executable
-    cmd = f"{python} {hook_script}"
+    cmd = f"{python} {global_hook}"
 
     changed = False
     for event in CLAUDE_HOOK_EVENTS:
@@ -219,6 +232,12 @@ def _ensure_claude_code_hooks(project: Path, echo=print) -> None:
             for entry in entries
         )
         if already:
+            # Update the command path in case python moved
+            for entry in entries:
+                for h in entry.get("hooks", []):
+                    if "callmem-hook" in (h.get("command") or "") and h.get("command") != cmd:
+                            h["command"] = cmd
+                            changed = True
             continue
 
         entry = {

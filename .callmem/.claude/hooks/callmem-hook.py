@@ -29,17 +29,6 @@ def _get_port() -> int:
                     return int(line.split("=", 1)[1].strip())
                 except ValueError:
                     pass
-    # Try config.toml format
-    for name in ("callmem.toml", "config.toml"):
-        cfg = project / ".callmem" / name
-        if cfg.exists():
-            for line in cfg.read_text().splitlines():
-                line = line.strip()
-                if line.startswith("port") and "=" in line:
-                    try:
-                        return int(line.split("=", 1)[1].strip())
-                    except ValueError:
-                        pass
     return 9097
 
 
