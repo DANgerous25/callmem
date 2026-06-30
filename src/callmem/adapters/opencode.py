@@ -27,6 +27,7 @@ EVENT_TYPE_MAP: dict[str, str] = {
 }
 
 RECONNECT_DELAY = 5
+MAX_RECONNECT_DELAY = 300  # 5 minutes max between retries
 
 
 class OpenCodeAdapter:
@@ -40,6 +41,7 @@ class OpenCodeAdapter:
         self.engine = engine
         self.opencode_url = opencode_url.rstrip("/")
         self._running = False
+        self._consecutive_failures = 0
 
     def process_event(self, event: dict[str, Any]) -> EventInput | None:
         """Translate an OpenCode SSE event into an callmem EventInput.
@@ -91,7 +93,8 @@ class OpenCodeAdapter:
     def run(self) -> None:
         """Connect to OpenCode SSE stream and process events.
 
-        Reconnects automatically on disconnect. Blocks until stopped.
+        Reconnects automatically on disconnect with exponential backoff.
+        Blocks until stopped.
         """
         import httpx
 
@@ -107,6 +110,7 @@ class OpenCodeAdapter:
                 ) as response:
                     response.raise_for_status()
                     logger.info("Connected to OpenCode SSE stream")
+                    self._consecutive_failures = 0
 
                     for line in response.iter_lines():
                         if not self._running:
@@ -122,13 +126,29 @@ class OpenCodeAdapter:
                             self._handle_event(event)
 
             except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                logger.warning("OpenCode connection lost: %s", exc)
+                self._consecutive_failures += 1
+                delay = min(
+                    RECONNECT_DELAY * (2 ** (self._consecutive_failures - 1)),
+                    MAX_RECONNECT_DELAY,
+                )
+                if self._consecutive_failures <= 3:
+                    logger.warning("OpenCode connection lost: %s", exc)
+                else:
+                    logger.debug(
+                        "OpenCode connection lost (%d attempts): %s",
+                        self._consecutive_failures, exc,
+                    )
             except httpx.HTTPStatusError as exc:
                 logger.error("OpenCode HTTP error: %s", exc)
 
             if self._running:
-                logger.info("Reconnecting in %ds...", RECONNECT_DELAY)
-                time.sleep(RECONNECT_DELAY)
+                delay = min(
+                    RECONNECT_DELAY * (2 ** max(0, self._consecutive_failures - 1)),
+                    MAX_RECONNECT_DELAY,
+                )
+                if self._consecutive_failures <= 3:
+                    logger.info("Reconnecting in %ds...", delay)
+                time.sleep(delay)
 
     def stop(self) -> None:
         """Signal the adapter to stop."""

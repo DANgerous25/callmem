@@ -189,10 +189,9 @@ class OpenCodeDBAdapter:
 
         cursor = self._offsets.get(session_id)
         if cursor is None:
-            self._offsets[session_id] = latest_ts
-            return
+            cursor = 0
+
         if latest_ts <= cursor:
-            # Already caught up; just refresh the idle timer
             if session_id in self._active:
                 sid, _, title = self._active[session_id]
                 self._active[session_id] = (sid, time.monotonic(), title)
@@ -214,20 +213,33 @@ class OpenCodeDBAdapter:
 
         sid, title = self._ensure_session(session_id, session_data.get("title"))
         ingested = 0
+        last_processed_ts = cursor
         for msg in new_messages:
+            msg_ts = self._ts_to_ms(msg.get("timestamp"))
             inputs = _map_message(msg)
+
+            if not inputs and msg.get("role") == "assistant":
+                break
+
             if not inputs:
                 continue
+
             try:
                 stored = self.engine.ingest(inputs, session_id=sid)
                 ingested += len(stored)
+                last_processed_ts = msg_ts
             except Exception as exc:
                 logger.warning(
                     "OpenCode DB ingest failed for session %s: %s",
                     session_id, exc,
                 )
+                break
 
-        self._offsets[session_id] = latest_ts
+        if last_processed_ts > 0:
+            self._offsets[session_id] = last_processed_ts
+        else:
+            self._offsets[session_id] = latest_ts
+
         self._active[session_id] = (sid, time.monotonic(), title)
 
     def _ts_to_ms(self, ts: str | None) -> int:

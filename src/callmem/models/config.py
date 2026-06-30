@@ -106,7 +106,7 @@ class EndlessModeConfig(BaseModel):
 class AdaptersConfig(BaseModel):
     """Which live session adapters to run inside the daemon."""
 
-    opencode: bool = True
+    opencode: bool = False  # SSE adapter — disabled by default (OpenCode has no SSE endpoint)
     opencode_db: bool = True
     opencode_db_poll_interval: float = 3.0
     opencode_db_idle_timeout: float = 300.0

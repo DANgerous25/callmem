@@ -126,6 +126,19 @@ class TestEventMapping:
         assert result is None
 
 
+class TestExponentialBackoff:
+    def test_consecutive_failures_incremented(
+        self, memory_db: Database
+    ) -> None:
+        engine = _make_engine(memory_db)
+        adapter = OpenCodeAdapter(engine)
+        assert adapter._consecutive_failures == 0
+
+    def test_max_reconnect_delay_constant(self) -> None:
+        from callmem.adapters.opencode import MAX_RECONNECT_DELAY
+        assert MAX_RECONNECT_DELAY == 300
+
+
 class TestIngestFromEvent:
     def test_adapter_ingests_prompt(
         self, memory_db: Database

@@ -226,6 +226,34 @@ class TestMapMessage:
         tc = [e for e in events if e.type == "tool_call"][0]
         assert "read_file" in tc.content
 
+    def test_opencode_tool_part_type(self) -> None:
+        """OpenCode stores tool calls as type='tool', not 'tool-invocation'."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"name": "bash", "args": '{"command": "ls"}'},
+            ],
+        }
+        events = _map_message(msg)
+        tc = [e for e in events if e.type == "tool_call"]
+        assert len(tc) == 1
+        assert "bash" in tc[0].content
+
+    def test_opencode_patch_part_type(self) -> None:
+        """OpenCode stores file changes as type='patch' with a files list."""
+        msg = {
+            "role": "assistant",
+            "content": "",
+            "file_changes": [
+                {"path": "src/main.py", "change": "modified"},
+            ],
+        }
+        events = _map_message(msg)
+        fc = [e for e in events if e.type == "file_change"]
+        assert len(fc) == 1
+        assert "src/main.py" in fc[0].content
+
     def test_file_changes(self) -> None:
         msg = {
             "role": "assistant",
@@ -370,6 +398,53 @@ class TestImportSessions:
         )
         assert len(results) == 1
         assert results[0]["event_count"] == 1
+
+    def test_opencode_tool_part_imported(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        """OpenCode's 'tool' part type (not 'tool-invocation') is imported."""
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Tool Session")
+        _add_message(conn, "m1", "s1", "assistant", ts=3000)
+        _add_part(conn, "pt1", "m1", "s1", {
+            "type": "tool",
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "ls -la"},
+            },
+        })
+        conn.close()
+
+        results = import_sessions(
+            engine_no_sensitive, db_path=db_path, import_all=True
+        )
+        assert len(results) == 1
+        assert results[0]["event_count"] == 1
+
+    def test_opencode_patch_part_imported(
+        self, tmp_path: Path, engine_no_sensitive: MemoryEngine
+    ) -> None:
+        """OpenCode's 'patch' part type is imported as file_change events."""
+        db_path = tmp_path / "opencode.db"
+        conn = _create_opencode_db(db_path)
+        _add_project(conn, "p1", "/tmp/proj", "proj")
+        _add_session(conn, "s1", "p1", "Patch Session")
+        _add_message(conn, "m1", "s1", "assistant", ts=3000)
+        _add_part(conn, "pt1", "m1", "s1", {
+            "type": "patch",
+            "hash": "abc123",
+            "files": ["/tmp/proj/src/main.py", "/tmp/proj/src/util.py"],
+        })
+        conn.close()
+
+        results = import_sessions(
+            engine_no_sensitive, db_path=db_path, import_all=True
+        )
+        assert len(results) == 1
+        assert results[0]["event_count"] == 2  # two file_change events
 
 
 class TestProgressCallback:

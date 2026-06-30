@@ -227,18 +227,32 @@ def _load_session_messages(
                 text = part_data.get("text", part_data.get("content", ""))
                 if text:
                     text_parts.append(text)
-            elif part_type == "tool-invocation" or part_type == "tool_call":
-                name = part_data.get("toolName", part_data.get("name", "unknown"))
-                args = part_data.get("args", part_data.get("input", ""))
+            elif part_type in ("tool-invocation", "tool_call", "tool"):
+                if part_type == "tool":
+                    name = part_data.get("tool", part_data.get("toolName", "unknown"))
+                    state = part_data.get("state", {})
+                    args = state.get("input", part_data.get("args", part_data.get("input", "")))
+                else:
+                    name = part_data.get("toolName", part_data.get("name", "unknown"))
+                    args = part_data.get("args", part_data.get("input", ""))
                 if isinstance(args, dict):
                     args = json.dumps(args)[:200]
                 elif isinstance(args, str) and len(args) > 200:
                     args = args[:200]
                 tool_calls.append({"name": name, "args": args})
-            elif part_type == "file_change":
-                path = part_data.get("path", "unknown")
-                change = part_data.get("change", "modified")
-                file_changes.append({"type": "file_change", "path": path, "change": change})
+            elif part_type in ("file_change", "patch"):
+                if part_type == "patch":
+                    files = part_data.get("files", [])
+                    for fpath in files:
+                        file_changes.append({
+                            "type": "file_change",
+                            "path": fpath,
+                            "change": "modified",
+                        })
+                else:
+                    path = part_data.get("path", "unknown")
+                    change = part_data.get("change", "modified")
+                    file_changes.append({"type": "file_change", "path": path, "change": change})
 
         ts_ms = msg_row["time_created"]
         ts_iso = datetime.fromtimestamp(ts_ms / 1000, tz=UTC).isoformat() if ts_ms else None
