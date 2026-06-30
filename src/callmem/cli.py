@@ -1300,9 +1300,12 @@ def daemon(
             adapter_instances.append(oc)
 
             def _run_oc(adapter: OpenCodeAdapter = oc) -> None:
-                import contextlib
-                with contextlib.suppress(Exception):
+                import logging
+                _log = logging.getLogger("callmem.daemon")
+                try:
                     adapter.run()
+                except Exception:
+                    _log.exception("OpenCode SSE adapter crashed")
 
             t = threading.Thread(
                 target=_run_oc, daemon=True, name="callmem-opencode-adapter",
@@ -1325,9 +1328,12 @@ def daemon(
             adapter_instances.append(ocdb)
 
             def _run_ocdb(adapter: OpenCodeDBAdapter = ocdb) -> None:
-                import contextlib
-                with contextlib.suppress(Exception):
+                import logging
+                _log = logging.getLogger("callmem.daemon")
+                try:
                     adapter.run()
+                except Exception:
+                    _log.exception("OpenCode DB adapter crashed")
 
             t = threading.Thread(
                 target=_run_ocdb, daemon=True, name="callmem-opencode-db-adapter",
@@ -1350,9 +1356,12 @@ def daemon(
             adapter_instances.append(cc)
 
             def _run_cc(adapter: ClaudeCodeAdapter = cc) -> None:
-                import contextlib
-                with contextlib.suppress(Exception):
+                import logging
+                _log = logging.getLogger("callmem.daemon")
+                try:
                     adapter.run()
+                except Exception:
+                    _log.exception("Claude Code adapter crashed")
 
             t = threading.Thread(
                 target=_run_cc, daemon=True,
