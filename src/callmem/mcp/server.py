@@ -17,10 +17,17 @@ from callmem.mcp.tools import register_tools
 
 
 def create_server(
-    project_path: Path, no_workers: bool = False
+    project_path: Path, no_workers: bool = False, read_only: bool = False
 ) -> object:
-    """Create and configure the MCP server for a project."""
+    """Create and configure the MCP server for a project.
+
+    When ``read_only``, mutation tools are hidden/refused and no background
+    extraction workers run — a safe, query-only view of another project's
+    memory (e.g. mounting one project's context inside another)."""
     from mcp.server import Server
+
+    # read-only implies no background workers: we never mutate this DB.
+    no_workers = no_workers or read_only
 
     config = load_config(project_path)
     db_path = project_path / ".callmem" / "memory.db"
@@ -57,17 +64,19 @@ def create_server(
         worker.start()
 
     server = Server("callmem")
-    register_tools(server, engine)
+    register_tools(server, engine, read_only=read_only)
     return server
 
 
 async def run_stdio(
-    project_path: Path, no_workers: bool = False
+    project_path: Path, no_workers: bool = False, read_only: bool = False
 ) -> None:
     """Run the MCP server on stdio transport."""
     from mcp.server.stdio import stdio_server
 
-    server = create_server(project_path, no_workers=no_workers)
+    server = create_server(
+        project_path, no_workers=no_workers, read_only=read_only
+    )
     async with stdio_server() as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
 
@@ -76,11 +85,28 @@ def main() -> None:
     """CLI entry point for the MCP server."""
     parser = argparse.ArgumentParser(description="callmem MCP server")
     parser.add_argument("--project", "-p", type=Path, default=Path("."), help="Project root")
+    parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Query-only: hide/refuse write tools and run no extraction "
+        "workers (for mounting another project's memory as a context source)",
+    )
+    parser.add_argument(
+        "--no-workers",
+        action="store_true",
+        help="Don't start background extraction workers",
+    )
     args = parser.parse_args()
 
     import asyncio
 
-    asyncio.run(run_stdio(args.project.resolve()))
+    asyncio.run(
+        run_stdio(
+            args.project.resolve(),
+            no_workers=args.no_workers,
+            read_only=args.read_only,
+        )
+    )
 
 
 if __name__ == "__main__":

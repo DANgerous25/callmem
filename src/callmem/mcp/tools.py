@@ -778,8 +778,23 @@ def _make_error(message: str) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps({"error": message}))]
 
 
-def register_tools(server: Server, engine: MemoryEngine) -> None:
-    """Register all callmem tools with the MCP server."""
+# Tools that mutate the memory DB. In read-only mode (e.g. mounting another
+# project's memory as a queryable context source) these are neither listed nor
+# callable, so the server is a safe, query-only view.
+_WRITE_TOOLS: frozenset[str] = frozenset({
+    "mem_session_start", "mem_session_end", "mem_ingest", "mem_pin",
+    "mem_mark_stale", "mem_mark_current", "mem_task_create", "mem_task_update",
+    "mem_compress_context", "mem_set_overview", "mem_rewind_create",
+    "mem_rewind_restore", "mem_vault_review", "mem_model_refresh",
+})
+
+
+def register_tools(
+    server: Server, engine: MemoryEngine, read_only: bool = False
+) -> None:
+    """Register callmem tools with the MCP server. When ``read_only``, the
+    mutation tools (``_WRITE_TOOLS``) are hidden from the tool list and refused
+    if called — a safe, query-only view of the project's memory."""
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:
@@ -790,11 +805,16 @@ def register_tools(server: Server, engine: MemoryEngine) -> None:
                 inputSchema=t["inputSchema"],
             )
             for t in TOOL_DEFINITIONS
+            if not (read_only and t["name"] in _WRITE_TOOLS)
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         try:
+            if read_only and name in _WRITE_TOOLS:
+                return _make_error(
+                    f"{name} is disabled: this callmem server is read-only."
+                )
             handler = _HANDLERS.get(name)
             if handler is None:
                 return _make_error(f"Unknown tool: {name}")
