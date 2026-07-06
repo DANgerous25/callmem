@@ -470,11 +470,18 @@ def _render_config_toml(
     project_name: str,
     ui_port: int,
     donor: dict | None = None,
+    backend: str | None = None,
+    model: str | None = None,
 ) -> str:
     """Render a config.toml string, optionally inheriting sections from a donor.
 
     Always overrides ``[project].name`` and ``[ui].port`` so the new project
     has its own identity and a non-conflicting port.
+
+    When ``backend`` is set, it overrides the donor/default ``[llm].backend``.
+    When ``model`` is set, it overrides the model in the active backend's
+    section (``[ollama].model`` or ``[openai_compat].model``). Both take
+    precedence over donor values.
     """
     import json as _json
 
@@ -484,6 +491,9 @@ def _render_config_toml(
         return {**defaults, **(donor.get(name) or {})}
 
     llm = _section("llm", {"backend": "ollama"})
+    if backend is not None:
+        llm["backend"] = backend
+
     ollama = _section("ollama", {
         "model": "qwen3:8b",
         "endpoint": "http://localhost:11434",
@@ -495,6 +505,12 @@ def _render_config_toml(
         "api_key_env": "OPENROUTER_KEY",
         "timeout": 120,
     })
+
+    if model is not None:
+        if llm["backend"] == "openai_compat":
+            oai["model"] = model
+        else:
+            ollama["model"] = model
     briefing = _section("briefing", {"max_tokens": 2000})
     compaction = _section("compaction", {"enabled": True, "schedule": "on_session_end"})
     summarization = _section("summarization", {"chunk_size": 20, "cross_session_interval": 5})
@@ -751,6 +767,8 @@ def _create_project(
     github: bool = False,
     visibility: str = "private",
     coding_norms: bool = False,
+    backend: str | None = None,
+    model: str | None = None,
 ) -> None:
     """Core implementation shared by ``callmem new`` and ``callmem new-project``.
 
@@ -760,15 +778,17 @@ def _create_project(
     systemd user service so the daemon starts on login.
 
     With ``--from``, inherits LLM backend, model, and machine-wide
-    preferences from an existing project. The new project gets a fresh
-    database, vault key, project name, and UI port — donor memory data
-    is never copied.
+    preferences from an existing project (mirrors settings from another
+    project dir). The new project gets a fresh database, vault key,
+    project name, and UI port — donor memory data is never copied.
 
     When ``git`` is True, initializes a git repo and writes a .gitignore.
     When ``github`` is True (implies ``git``), creates a GitHub repo via
     ``gh`` and pushes. ``visibility`` controls repo visibility
     (``private`` or ``public``). When ``coding_norms`` is True, writes
     AGENTS.md and CLAUDE.md with merged callmem + coding-norms content.
+    When ``backend`` or ``model`` is set, overrides the donor/default
+    LLM settings.
     """
     from callmem.core.database import Database
     from callmem.core.integrations import (
@@ -809,7 +829,9 @@ def _create_project(
 
     callmem_dir.mkdir(exist_ok=True)
     config_path = callmem_dir / "config.toml"
-    config_path.write_text(_render_config_toml(project_name, ui_port, donor))
+    config_path.write_text(
+        _render_config_toml(project_name, ui_port, donor, backend, model),
+    )
     click.echo(f"  Wrote {config_path}")
 
     db_path = callmem_dir / "memory.db"
@@ -907,6 +929,16 @@ def _create_project(
     "--coding-norms/--no-coding-norms", default=False,
     help="Write AGENTS.md and CLAUDE.md with merged callmem + coding norms.",
 )
+@click.option(
+    "--backend",
+    type=click.Choice(["ollama", "openai_compat", "none"]),
+    default=None,
+    help="LLM backend (overrides --from donor).",
+)
+@click.option(
+    "--model", default=None,
+    help="LLM model name for the active backend (overrides --from donor).",
+)
 def new_project(
     path: Path,
     source: Path | None,
@@ -917,6 +949,8 @@ def new_project(
     github: bool,
     visibility: str,
     coding_norms: bool,
+    backend: str | None,
+    model: str | None,
 ) -> None:
     """Create a new callmem-ready project at PATH.
 
@@ -926,18 +960,20 @@ def new_project(
     systemd user service so the daemon starts on login.
 
     With ``--from``, inherits LLM backend, model, and machine-wide
-    preferences from an existing project. The new project gets a fresh
-    database, vault key, project name, and UI port — donor memory data
-    is never copied.
+    preferences from an existing project (mirrors settings from another
+    project dir). The new project gets a fresh database, vault key,
+    project name, and UI port — donor memory data is never copied.
 
-    Use ``--git`` to initialize a git repo, ``--github`` to also create
-    a GitHub repo (implies ``--git``), and ``--coding-norms`` to write
-    AGENTS.md and CLAUDE.md with merged callmem rules + coding norms.
+    Use ``--backend`` and ``--model`` to override the donor/default LLM
+    settings. Use ``--git`` to initialize a git repo, ``--github`` to
+    also create a GitHub repo (implies ``--git``), and ``--coding-norms``
+    to write AGENTS.md and CLAUDE.md with merged callmem rules + coding
+    norms.
     """
     _create_project(
         path, source, name, port, service,
         git=git, github=github, visibility=visibility,
-        coding_norms=coding_norms,
+        coding_norms=coding_norms, backend=backend, model=model,
     )
 
 
@@ -979,6 +1015,16 @@ def new_project(
     "--coding-norms/--no-coding-norms", default=True,
     help="Write AGENTS.md and CLAUDE.md with merged callmem + coding norms (default: on).",
 )
+@click.option(
+    "--backend",
+    type=click.Choice(["ollama", "openai_compat", "none"]),
+    default=None,
+    help="LLM backend (overrides --from donor).",
+)
+@click.option(
+    "--model", default=None,
+    help="LLM model name for the active backend (overrides --from donor).",
+)
 def new_project_full(
     path: Path,
     source: Path | None,
@@ -989,6 +1035,8 @@ def new_project_full(
     github: bool,
     visibility: str,
     coding_norms: bool,
+    backend: str | None,
+    model: str | None,
 ) -> None:
     """Create a new project with callmem, git, GitHub, and coding norms.
 
@@ -998,17 +1046,19 @@ def new_project_full(
     GitHub repo (private by default), and pushes the initial commit.
 
     With ``--from``, inherits LLM backend, model, and machine-wide
-    preferences from an existing project. The new project gets a fresh
-    database, vault key, project name, and UI port — donor memory data
-    is never copied.
+    preferences from an existing project (mirrors settings from another
+    project dir). The new project gets a fresh database, vault key,
+    project name, and UI port — donor memory data is never copied.
 
-    Use ``--visibility public`` for a public repo. Use ``--no-github``
-    for git only (no remote). Use ``--no-git`` for callmem only.
+    Use ``--backend`` and ``--model`` to override the donor/default LLM
+    settings. Use ``--visibility public`` for a public repo. Use
+    ``--no-github`` for git only (no remote). Use ``--no-git`` for
+    callmem only.
     """
     _create_project(
         path, source, name, port, service,
         git=git, github=github, visibility=visibility,
-        coding_norms=coding_norms,
+        coding_norms=coding_norms, backend=backend, model=model,
     )
 
 

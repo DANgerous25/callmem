@@ -296,3 +296,112 @@ class TestGitignoreTemplate:
         assert "*.log" in gi
         assert "vault.key" in gi
         assert "vault.salt" in gi
+
+
+class TestBackendModelOverrides:
+    def test_backend_override_without_donor(self, tmp_path: Path) -> None:
+        target = tmp_path / "backend"
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "new", str(target), "--no-service", "--port", "9830",
+            "--backend", "openai_compat",
+        ])
+        assert result.exit_code == 0, result.output
+        config = (target / ".callmem" / "config.toml").read_text()
+        assert 'backend = "openai_compat"' in config
+
+    def test_model_override_ollama(self, tmp_path: Path) -> None:
+        target = tmp_path / "model"
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "new", str(target), "--no-service", "--port", "9831",
+            "--model", "llama3:70b",
+        ])
+        assert result.exit_code == 0, result.output
+        config = (target / ".callmem" / "config.toml").read_text()
+        assert 'model = "llama3:70b"' in config
+
+    def test_model_override_openai_compat(self, tmp_path: Path) -> None:
+        target = tmp_path / "oaimodel"
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "new", str(target), "--no-service", "--port", "9832",
+            "--backend", "openai_compat", "--model", "z-ai/glm-4-flash",
+        ])
+        assert result.exit_code == 0, result.output
+        config = (target / ".callmem" / "config.toml").read_text()
+        assert 'backend = "openai_compat"' in config
+        assert 'model = "z-ai/glm-4-flash"' in config
+
+    def test_override_takes_precedence_over_donor(self, tmp_path: Path) -> None:
+        donor = tmp_path / "donor"
+        runner = CliRunner()
+        runner.invoke(main, [
+            "new", str(donor), "--no-service", "--port", "9833",
+        ])
+        donor_cfg = donor / ".callmem" / "config.toml"
+        text = donor_cfg.read_text().replace(
+            'model = "qwen3:8b"', 'model = "llama3:70b"',
+        ).replace(
+            'backend = "ollama"', 'backend = "openai_compat"',
+        )
+        donor_cfg.write_text(text)
+
+        target = tmp_path / "child"
+        result = runner.invoke(main, [
+            "new", str(target), "--from", str(donor), "--no-service",
+            "--port", "9834", "--backend", "ollama", "--model", "qwen3:8b",
+        ])
+        assert result.exit_code == 0, result.output
+        child_config = (target / ".callmem" / "config.toml").read_text()
+        assert 'backend = "ollama"' in child_config
+        assert 'model = "qwen3:8b"' in child_config
+
+    def test_donor_mirrored_when_no_override(self, tmp_path: Path) -> None:
+        donor = tmp_path / "donor"
+        runner = CliRunner()
+        runner.invoke(main, [
+            "new", str(donor), "--no-service", "--port", "9835",
+        ])
+        donor_cfg = donor / ".callmem" / "config.toml"
+        text = donor_cfg.read_text().replace(
+            'backend = "ollama"', 'backend = "openai_compat"',
+        ).replace(
+            'model = "z-ai/glm-4-flash"', 'model = "anthropic/claude-sonnet-4"',
+        )
+        donor_cfg.write_text(text)
+
+        target = tmp_path / "child"
+        result = runner.invoke(main, [
+            "new", str(target), "--from", str(donor), "--no-service",
+            "--port", "9836",
+        ])
+        assert result.exit_code == 0, result.output
+        child_config = (target / ".callmem" / "config.toml").read_text()
+        assert 'backend = "openai_compat"' in child_config
+        assert 'model = "anthropic/claude-sonnet-4"' in child_config
+
+    def test_backend_none_disables_llm(self, tmp_path: Path) -> None:
+        target = tmp_path / "nollm"
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "new", str(target), "--no-service", "--port", "9837",
+            "--backend", "none",
+        ])
+        assert result.exit_code == 0, result.output
+        config = (target / ".callmem" / "config.toml").read_text()
+        assert 'backend = "none"' in config
+
+    def test_new_project_backend_override(self, tmp_path: Path) -> None:
+        target = tmp_path / "npbackend"
+        runner = CliRunner()
+        with patch("callmem.cli._create_github_repo", return_value=True):
+            result = runner.invoke(main, [
+                "new-project", str(target), "--no-service", "--port", "9838",
+                "--no-github", "--backend", "openai_compat",
+                "--model", "z-ai/glm-4-flash",
+            ])
+        assert result.exit_code == 0, result.output
+        config = (target / ".callmem" / "config.toml").read_text()
+        assert 'backend = "openai_compat"' in config
+        assert 'model = "z-ai/glm-4-flash"' in config
