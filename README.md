@@ -245,6 +245,97 @@ make logs                  # Tail journalctl for the service
 
 ---
 
+## Creating New Projects
+
+callmem provides two commands for spinning up new projects with memory,
+git, GitHub, and coding norms — all wired for both OpenCode and Claude Code
+from the start.
+
+### `callmem new PATH` — callmem only (opt-in extras)
+
+Creates a project with callmem installed (database, integration files,
+systemd service). Git, GitHub, and coding-norms flags are off by default:
+
+```bash
+callmem new ~/my-project --no-service --port 9100
+callmem new ~/my-project --git                          # + git repo + .gitignore
+callmem new ~/my-project --github                       # + GitHub repo (implies --git)
+callmem new ~/my-project --coding-norms                 # + AGENTS.md + CLAUDE.md with norms
+callmem new ~/my-project --github --coding-norms         # everything
+```
+
+### `callmem new-project PATH` — full spin-up (all defaults on)
+
+Creates a project with callmem + git + GitHub repo + coding norms, all
+wired for both OpenCode and Claude Code. One command, everything ready:
+
+```bash
+callmem new-project ~/my-project                        # private repo, all defaults
+callmem new-project ~/my-project --visibility public    # public repo
+callmem new-project ~/my-project --no-github            # git only, no remote
+callmem new-project ~/my-project --no-service            # skip systemd service
+```
+
+### LLM Configuration
+
+Set the extraction LLM explicitly, or mirror settings from an existing
+project directory:
+
+```bash
+# Set backend and model explicitly
+callmem new-project ~/my-project \
+  --backend openai_compat --model google/gemma-3-27b-it
+
+# Mirror LLM settings from another project dir (--from)
+callmem new-project ~/my-project --from ~/llm-mem
+
+# Mirror but override the model
+callmem new-project ~/my-project --from ~/llm-mem --model llama3:70b
+
+# No LLM (pattern-only extraction)
+callmem new-project ~/my-project --backend none
+```
+
+Precedence: `--backend`/`--model` flags > `--from` donor > built-in defaults.
+
+### What gets created
+
+| File | Purpose |
+|---|---|
+| `.callmem/config.toml` | callmem configuration (LLM, UI port, etc.) |
+| `.callmem/memory.db` | SQLite memory database (gitignored) |
+| `AGENTS.md` | Coding norms + callmem memory rules (read by OpenCode) |
+| `CLAUDE.md` | Mirrors AGENTS.md for Claude Code |
+| `.opencode/` | OpenCode plugin, `/briefing` command, briefing instructions |
+| `opencode.json` | OpenCode config with callmem MCP server |
+| `.mcp.json` | Claude Code MCP server config |
+| `.claude/` | Claude Code `/briefing` command + capture hook |
+| `.gitignore` | Vault secrets, DB, Python, testing artifacts |
+
+### GitHub Credential Security
+
+GitHub repo creation uses the `gh` CLI as a subprocess with only the repo
+name and visibility flag. callmem **never** reads, stores, or passes GitHub
+tokens, passwords, or API keys. Authentication is managed entirely by `gh`
+via the system keyring. Anyone forking callmem uses their own `gh` auth —
+no credentials are baked in.
+
+### Coding Norms
+
+When `--coding-norms` is enabled (default for `new-project`), `AGENTS.md`
+and `CLAUDE.md` are written from a merged template that includes:
+
+- **How to work** — think before coding, simplicity first, surgical changes, goal-driven
+- **Git discipline** — conventional commits, push after every task
+- **Code style** — type hints, modern syntax, short functions, no wildcard imports
+- **Error handling** — specific exceptions, contextual logging
+- **Testing** — tests alongside implementation, happy path + edge + error cases
+- **SQL** — parameterized queries, context managers
+- **Sensitive data** — never log secrets, vault key files gitignored
+- **callmem memory workflow** — briefing at session start, `mem_ingest` for decisions/TODOs, `mem_file_context` before re-reading files, citation with short IDs
+
+---
+
 ## Entity Categories
 
 callmem extracts these observation types, each with a colour-coded badge in the UI:
@@ -318,7 +409,7 @@ callmem/
 │   ├── mcp/            # MCP server and tool definitions
 │   ├── models/         # Data models, config, entity types
 │   └── ui/             # Web UI (FastAPI + Jinja2 + htmx + SSE)
-├── tests/              # 630+ tests (unit + integration)
+├── tests/              # 770+ tests (unit + integration)
 ├── docs/               # Architecture, schema, config, roadmap docs
 └── pyproject.toml
 ```
