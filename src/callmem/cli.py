@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any
@@ -647,34 +648,111 @@ def _pick_free_ui_port(target: Path, donor_port: int | None) -> int:
     return candidate
 
 
-@main.command("new")
-@click.argument("path", type=click.Path(path_type=Path))
-@click.option(
-    "--from", "source",
-    type=click.Path(exists=True, file_okay=False, path_type=Path),
-    default=None,
-    help="Existing callmem project to inherit LLM/vault settings from.",
-)
-@click.option(
-    "--name", default=None,
-    help="Project name (default: target directory name).",
-)
-@click.option(
-    "--port", type=int, default=None,
-    help="UI port (default: next free port after the donor's, or 9090).",
-)
-@click.option(
-    "--service/--no-service", default=True,
-    help="Install and start a systemd user service (Linux only).",
-)
-def new_project(
+def _create_gitignore(target: Path) -> None:
+    """Write .gitignore from template if missing; append vault entries if stale."""
+    template = Path(__file__).parent / "templates" / "gitignore.template"
+    gitignore_path = target / ".gitignore"
+
+    if not gitignore_path.exists():
+        if template.exists():
+            gitignore_path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+            click.echo(f"  Wrote {gitignore_path.name}")
+        return
+
+    content = gitignore_path.read_text()
+    vault_entries = ["vault.key", "vault.salt"]
+    missing = [e for e in vault_entries if e not in content]
+    if missing:
+        with open(gitignore_path, "a") as f:
+            f.write("\n# callmem vault secrets\n")
+            for entry in missing:
+                f.write(f"{entry}\n")
+        click.echo(f"  Added {', '.join(missing)} to .gitignore")
+
+
+def _init_git_repo(target: Path) -> bool:
+    """Initialize a git repo in target. Returns True on success."""
+    try:
+        subprocess.run(
+            ["git", "init"], cwd=target, capture_output=True, timeout=10, check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        click.echo("  Skipped git init (git not available or failed)")
+        return False
+    click.echo(f"  Initialized git repo")
+    return True
+
+
+def _create_github_repo(target: Path, name: str, visibility: str) -> bool:
+    """Create a GitHub repo via gh CLI. Returns True on success.
+
+    Credentials are managed entirely by gh itself (keyring). This function
+    never reads, stores, or passes any token — it only invokes gh with the
+    repo name and visibility flag and checks the exit code.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "repo", "create", name, f"--{visibility}", "--source=.", "--push"],
+            cwd=target, capture_output=True, timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        click.echo("  Skipped GitHub repo creation (gh not available or timed out)")
+        return False
+    if result.returncode != 0:
+        click.echo(f"  GitHub repo creation failed (gh exit {result.returncode})")
+        return False
+    click.echo(f"  Created GitHub repo ({visibility}): {name}")
+    return True
+
+
+def _git_initial_commit(target: Path) -> None:
+    """Stage all files and create the initial commit."""
+    for args in (["git", "add", "-A"], ["git", "commit", "-m", "chore: initial commit"]):
+        try:
+            subprocess.run(args, cwd=target, capture_output=True, timeout=15, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            click.echo(f"  Warning: git command failed: {' '.join(args)}")
+            return
+    click.echo("  Created initial commit")
+
+
+def _write_coding_norms(target: Path, project_name: str) -> None:
+    """Write AGENTS.md and CLAUDE.md from the full templates (merged
+    callmem rules + coding norms). Replaces the basic AGENTS.md.template
+    content if the file was just created."""
+    templates_dir = Path(__file__).parent / "templates"
+
+    agents_full = templates_dir / "AGENTS_full.md.template"
+    agents_path = target / "AGENTS.md"
+    if agents_full.exists():
+        content = agents_full.read_text(encoding="utf-8").replace(
+            "{project_name}", project_name,
+        )
+        agents_path.write_text(content, encoding="utf-8")
+        click.echo(f"  Wrote {agents_path.name} (with coding norms)")
+
+    claude_template = templates_dir / "CLAUDE.md.template"
+    claude_path = target / "CLAUDE.md"
+    if claude_template.exists():
+        content = claude_template.read_text(encoding="utf-8").replace(
+            "{project_name}", project_name,
+        )
+        claude_path.write_text(content, encoding="utf-8")
+        click.echo(f"  Wrote {claude_path.name}")
+
+
+def _create_project(
     path: Path,
     source: Path | None,
     name: str | None,
     port: int | None,
     service: bool,
+    git: bool = False,
+    github: bool = False,
+    visibility: str = "private",
+    coding_norms: bool = False,
 ) -> None:
-    """Create a new callmem-ready project at PATH.
+    """Core implementation shared by ``callmem new`` and ``callmem new-project``.
 
     Initializes a fresh database in ``PATH/.callmem/``, installs the
     OpenCode and Claude Code integration files (auto-briefing plugin,
@@ -685,6 +763,12 @@ def new_project(
     preferences from an existing project. The new project gets a fresh
     database, vault key, project name, and UI port — donor memory data
     is never copied.
+
+    When ``git`` is True, initializes a git repo and writes a .gitignore.
+    When ``github`` is True (implies ``git``), creates a GitHub repo via
+    ``gh`` and pushes. ``visibility`` controls repo visibility
+    (``private`` or ``public``). When ``coding_norms`` is True, writes
+    AGENTS.md and CLAUDE.md with merged callmem + coding-norms content.
     """
     from callmem.core.database import Database
     from callmem.core.integrations import (
@@ -692,6 +776,9 @@ def new_project(
         ensure_claude_code_mcp,
         ensure_opencode_plugin,
     )
+
+    if github:
+        git = True
 
     target = path.expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
@@ -730,11 +817,16 @@ def new_project(
     db.initialize()
     click.echo(f"  Initialized database: {db_path} (schema v{db.get_schema_version()})")
 
-    agents_template = Path(__file__).parent / "templates" / "AGENTS.md.template"
+    if coding_norms:
+        _write_coding_norms(target, project_name)
+    else:
+        agents_template = Path(__file__).parent / "templates" / "AGENTS.md.template"
+        agents_path = target / "AGENTS.md"
+        if agents_template.exists() and not agents_path.exists():
+            agents_path.write_text(agents_template.read_text())
+            click.echo(f"  Wrote {agents_path}")
+
     agents_path = target / "AGENTS.md"
-    if agents_template.exists() and not agents_path.exists():
-        agents_path.write_text(agents_template.read_text())
-        click.echo(f"  Wrote {agents_path}")
     _ensure_agents_startup_briefing(agents_path)
     _ensure_agents_mcp_block(agents_path)
 
@@ -748,17 +840,11 @@ def new_project(
     ensure_claude_code_mcp(target, echo=click.echo)
     ensure_claude_code_commands(target, echo=click.echo)
 
-    gitignore_path = target / ".gitignore"
-    vault_entries = ["vault.key", "vault.salt"]
-    if gitignore_path.exists():
-        content = gitignore_path.read_text()
-        missing = [e for e in vault_entries if e not in content]
-        if missing:
-            with open(gitignore_path, "a") as f:
-                f.write("\n# callmem vault secrets\n")
-                for entry in missing:
-                    f.write(f"{entry}\n")
-            click.echo(f"  Added {', '.join(missing)} to .gitignore")
+    _create_gitignore(target)
+
+    git_ok = False
+    if git:
+        git_ok = _init_git_repo(target)
 
     svc_info = None
     if service:
@@ -768,6 +854,12 @@ def new_project(
         else:
             click.echo("  Skipped systemd service (not Linux or no systemd user dir).")
 
+    if git_ok:
+        _git_initial_commit(target)
+
+    if github and git_ok:
+        _create_github_repo(target, project_name, visibility)
+
     click.echo()
     click.echo(f"Project '{project_name}' ready at {target}")
     click.echo(f"  Web UI:  http://0.0.0.0:{ui_port}")
@@ -775,6 +867,149 @@ def new_project(
         click.echo(f"  Daemon:  {svc_info[0]}")
     else:
         click.echo(f"  Daemon:  start with 'callmem daemon --project {target}'")
+
+
+@main.command("new")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option(
+    "--from", "source",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Existing callmem project to inherit LLM/vault settings from.",
+)
+@click.option(
+    "--name", default=None,
+    help="Project name (default: target directory name).",
+)
+@click.option(
+    "--port", type=int, default=None,
+    help="UI port (default: next free port after the donor's, or 9090).",
+)
+@click.option(
+    "--service/--no-service", default=True,
+    help="Install and start a systemd user service (Linux only).",
+)
+@click.option(
+    "--git/--no-git", default=False,
+    help="Initialize a git repo and write .gitignore.",
+)
+@click.option(
+    "--github/--no-github", default=False,
+    help="Create a GitHub repo via gh and push (implies --git).",
+)
+@click.option(
+    "--visibility",
+    type=click.Choice(["private", "public"]),
+    default="private",
+    help="GitHub repo visibility (default: private).",
+)
+@click.option(
+    "--coding-norms/--no-coding-norms", default=False,
+    help="Write AGENTS.md and CLAUDE.md with merged callmem + coding norms.",
+)
+def new_project(
+    path: Path,
+    source: Path | None,
+    name: str | None,
+    port: int | None,
+    service: bool,
+    git: bool,
+    github: bool,
+    visibility: str,
+    coding_norms: bool,
+) -> None:
+    """Create a new callmem-ready project at PATH.
+
+    Initializes a fresh database in ``PATH/.callmem/``, installs the
+    OpenCode and Claude Code integration files (auto-briefing plugin,
+    /briefing commands, MCP entries), and — on Linux — installs a
+    systemd user service so the daemon starts on login.
+
+    With ``--from``, inherits LLM backend, model, and machine-wide
+    preferences from an existing project. The new project gets a fresh
+    database, vault key, project name, and UI port — donor memory data
+    is never copied.
+
+    Use ``--git`` to initialize a git repo, ``--github`` to also create
+    a GitHub repo (implies ``--git``), and ``--coding-norms`` to write
+    AGENTS.md and CLAUDE.md with merged callmem rules + coding norms.
+    """
+    _create_project(
+        path, source, name, port, service,
+        git=git, github=github, visibility=visibility,
+        coding_norms=coding_norms,
+    )
+
+
+@main.command("new-project")
+@click.argument("path", type=click.Path(path_type=Path))
+@click.option(
+    "--from", "source",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Existing callmem project to inherit LLM/vault settings from.",
+)
+@click.option(
+    "--name", default=None,
+    help="Project name (default: target directory name).",
+)
+@click.option(
+    "--port", type=int, default=None,
+    help="UI port (default: next free port after the donor's, or 9090).",
+)
+@click.option(
+    "--service/--no-service", default=True,
+    help="Install and start a systemd user service (Linux only).",
+)
+@click.option(
+    "--git/--no-git", default=True,
+    help="Initialize a git repo and write .gitignore (default: on).",
+)
+@click.option(
+    "--github/--no-github", default=True,
+    help="Create a GitHub repo via gh and push (default: on, implies --git).",
+)
+@click.option(
+    "--visibility",
+    type=click.Choice(["private", "public"]),
+    default="private",
+    help="GitHub repo visibility (default: private).",
+)
+@click.option(
+    "--coding-norms/--no-coding-norms", default=True,
+    help="Write AGENTS.md and CLAUDE.md with merged callmem + coding norms (default: on).",
+)
+def new_project_full(
+    path: Path,
+    source: Path | None,
+    name: str | None,
+    port: int | None,
+    service: bool,
+    git: bool,
+    github: bool,
+    visibility: str,
+    coding_norms: bool,
+) -> None:
+    """Create a new project with callmem, git, GitHub, and coding norms.
+
+    Full spin-up: initializes a fresh callmem database, installs OpenCode
+    and Claude Code integration files, writes AGENTS.md and CLAUDE.md with
+    merged callmem rules + coding norms, initializes a git repo, creates a
+    GitHub repo (private by default), and pushes the initial commit.
+
+    With ``--from``, inherits LLM backend, model, and machine-wide
+    preferences from an existing project. The new project gets a fresh
+    database, vault key, project name, and UI port — donor memory data
+    is never copied.
+
+    Use ``--visibility public`` for a public repo. Use ``--no-github``
+    for git only (no remote). Use ``--no-git`` for callmem only.
+    """
+    _create_project(
+        path, source, name, port, service,
+        git=git, github=github, visibility=visibility,
+        coding_norms=coding_norms,
+    )
 
 
 @main.command()

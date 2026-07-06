@@ -1,0 +1,132 @@
+# AGENTS.md — {project_name}
+
+This file is the source of truth for agent behaviour in this project. It is
+read by both OpenCode (via the project AGENTS.md) and Claude Code (via
+CLAUDE.md, which mirrors this content). The global
+`~/.config/opencode/AGENTS.md` provides additional cross-cutting norms; where
+they conflict, this file wins.
+
+## How to work
+
+- **Think before coding.** Surface ambiguities and state assumptions before
+  acting; ask rather than guess at intent. Read the existing code first and
+  match adjacent patterns.
+- **Simplicity first.** Write the minimal code that solves the actual problem
+  — no speculative abstractions, no over-engineering. If it's 200 lines and
+  could be 50, rewrite it.
+- **Surgical changes.** Touch only what the task needs; don't refactor working
+  code you weren't asked to; keep diffs minimal; every change should trace
+  back to the request.
+- **Goal-driven.** Turn the task into a verifiable outcome (e.g. a test that
+  reproduces the bug, then passes); confirm it before claiming done. Finish
+  the current task before starting the next.
+- **No AI attribution** in code, commits, or docs.
+
+## Git discipline
+
+- Commit after completing a logical unit of work (a function, a test passing,
+  a bug fix).
+- Use conventional commit format: `feat:`, `fix:`, `refactor:`, `test:`,
+  `docs:`, `chore:`.
+- Be specific: `feat: implement FTS5 search` not `feat: add search`.
+- Never exceed 72 characters in the subject line.
+- Push after every commit, or at minimum after every completed task.
+- Never leave a session with unpushed commits.
+
+## Code style
+
+- Read existing code before writing new code; match the style and structure of
+  adjacent modules.
+- All function signatures must have type hints (parameters and return).
+- Use `from __future__ import annotations` at the top of every Python module.
+- Use modern syntax: `str | None` not `Optional[str]`, `list[str]` not
+  `List[str]`.
+- Keep functions short — if a function exceeds 30 lines, consider splitting.
+- Prefer composition over inheritance.
+- No wildcard imports: never `from module import *`.
+- Sort imports with `ruff` (isort-compatible).
+- Write docstrings for all public functions and classes.
+- Comments explain **why**, not **what**.
+- Never include AI attribution in code, commits, or docs.
+
+## Error handling
+
+- Catch specific exceptions, never bare `except:`.
+- Log errors with enough context to debug (include the input that caused it).
+- Fail loudly in development, degrade gracefully in production.
+
+## Testing
+
+- Write tests alongside implementation, not as an afterthought.
+- Run `pytest tests/ -v` before committing — all tests must pass.
+- Run `ruff check src/ tests/` — no lint errors.
+- Test the happy path, at least one edge case, and at least one error case per
+  function.
+
+## SQL
+
+- All queries use parameterized placeholders (`?`), never string formatting.
+- SQL lives in `repository.py`, not in engine or handler code.
+- Use the `Database.connect()` context manager for all database access.
+
+## Sensitive data
+
+- Never log, print, or include raw sensitive values in error messages.
+- Vault key files (`vault.key`, `vault.salt`) are gitignored — never commit.
+- All ingest paths go through `redaction.py`.
+
+## Project stack
+
+<!-- Describe the stack, frameworks, and conventions specific to this
+     project. Replace this placeholder before committing. -->
+
+## Memory (callmem)
+
+This project uses callmem for persistent memory via MCP tools. The same
+`.callmem/memory.db` is shared by both OpenCode and Claude Code sessions.
+
+**Start of session:**
+1. Run `callmem briefing` (or call `mem_get_briefing` via MCP) for a live
+   briefing with recent context, key entities, and open tasks.
+2. Call `mem_session_start` to register this session.
+3. Present a brief summary: greet the user, mention recent activity,
+   highlight open TODOs, and ask what they'd like to work on.
+
+**During the session:**
+- When you make a design decision, call `mem_ingest` with type `"decision"`.
+- When you identify a TODO, call `mem_ingest` with type `"todo"`.
+- When you discover something notable, call `mem_ingest` with type
+  `"discovery"`.
+- When something fails unexpectedly, call `mem_ingest` with type `"failure"`.
+- To recall past context, call `mem_search` with keywords.
+- To see open tasks, call `mem_get_tasks`.
+- **Before re-reading a file you've worked on before**, call
+  `mem_file_context path=<file>`. If the returned timeline covers what you
+  need, skip the raw read (saves ~95% of tokens).
+
+**Long sessions (50+ messages):**
+- Every ~30 messages, call `mem_check_context message_count=<n>`.
+- If it returns `compress_recommended`, summarize the oldest ~30 messages
+  (preserve decisions, TODOs, and failures verbatim) and call
+  `mem_compress_context summary=<text>`.
+- Replace the compressed span with the returned marker; recall specifics later
+  via `mem_search`.
+
+**End of session:**
+- Call `mem_session_end` to trigger summary generation.
+
+**Citing memory:**
+- When a memory entity informs your work, cite its 8-character short ID
+  (e.g. `#F5AVDQ25`) from the briefing. This lets readers pull up the full
+  context and is the only countable proof that memory was used.
+
+## Startup briefing
+
+At the **start of every session**, run `callmem briefing` (or call
+`mem_get_briefing` via MCP). It returns a live briefing with recent context,
+key entities, and open tasks — generated fresh from `.callmem/memory.db` on
+each invocation.
+
+After reading it, present a brief summary to the user: greet them, state the
+project name, mention the most recent session activity, highlight any open
+TODOs or unresolved failures, and ask what they'd like to work on.

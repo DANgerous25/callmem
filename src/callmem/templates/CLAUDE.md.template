@@ -1,0 +1,17 @@
+# CLAUDE.md — {project_name}
+
+This file mirrors `AGENTS.md` for Claude Code. OpenCode reads `AGENTS.md`
+directly; Claude Code reads this file. Both share the same
+`.callmem/memory.db` and callmem MCP server. Where this file and the global
+`~/.config/opencode/AGENTS.md` conflict, this file wins.
+
+See `AGENTS.md` for the full coding norms, git discipline, code style, error
+handling, testing, SQL, and sensitive-data rules. The callmem memory workflow
+and startup briefing instructions are also documented there.
+
+In short:
+- Read `AGENTS.md` first — it is the source of truth.
+- Both you (Claude Code) and OpenCode sessions write to the same memory DB.
+- Run `callmem briefing` at the start of every session.
+- Call `mem_session_start` to register the session.
+- Cite memory entity IDs (e.g. `#F5AVDQ25`) when they inform your work.
