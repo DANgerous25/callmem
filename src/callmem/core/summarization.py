@@ -43,7 +43,7 @@ class Summarizer:
                 break
 
             try:
-                summary = self._process_job(job)
+                summary = self.process_job(job)
                 if summary is not None:
                     all_summaries.append(summary)
                 self.queue.complete(job.id)
@@ -53,7 +53,13 @@ class Summarizer:
 
         return all_summaries
 
-    def _process_job(self, job: Any) -> Summary | None:
+    def process_job(self, job: Any) -> Summary | None:
+        """Process a single already-claimed summarization job.
+
+        Raises on failure. Does not touch the job's queue status — the
+        caller (``process_pending`` above, or ``WorkerRunner.process_one``
+        for a job it dequeued itself) owns that job's complete/fail.
+        """
         payload = job.payload
         level = payload.get("level", "chunk")
 

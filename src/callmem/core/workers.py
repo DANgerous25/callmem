@@ -121,8 +121,14 @@ class WorkerRunner:
         return True
 
     def _dispatch(self, handler: Any, job: Any) -> None:
-        """Dispatch a job to the appropriate handler method."""
+        """Dispatch a job to the appropriate handler method.
+
+        For EntityExtractor/Summarizer, the claimed job's own payload is
+        processed directly first — process_one owns that job's complete/fail
+        — then process_pending() drains any other jobs still pending.
+        """
         if isinstance(handler, (EntityExtractor, Summarizer)):
+            handler.process_job(job)
             handler.process_pending()
         elif isinstance(handler, (Compactor, StalenessChecker)):
             project_id = job.payload.get("project_id", "")

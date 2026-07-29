@@ -94,7 +94,7 @@ class EntityExtractor:
                 break
 
             try:
-                entities = self._process_job(job)
+                entities = self.process_job(job)
                 all_entities.extend(entities)
                 self.queue.complete(job.id)
             except Exception as exc:
@@ -105,8 +105,13 @@ class EntityExtractor:
 
         return all_entities
 
-    def _process_job(self, job: Any) -> list[Entity]:
-        """Process a single extraction job."""
+    def process_job(self, job: Any) -> list[Entity]:
+        """Process a single already-claimed extraction job.
+
+        Raises on failure. Does not touch the job's queue status — the
+        caller (``process_pending`` above, or ``WorkerRunner.process_one``
+        for a job it dequeued itself) owns that job's complete/fail.
+        """
         event_ids = job.payload.get("event_ids", [])
         if not event_ids:
             return []
