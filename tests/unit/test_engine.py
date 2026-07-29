@@ -69,6 +69,59 @@ class TestSessionLifecycle:
         assert len(engine.list_sessions(limit=3)) == 3
 
 
+class TestSessionEndCitationPersistence:
+    """Session end must persist citations from that session's own
+    transcript automatically — cited_count can't depend on someone
+    remembering to run `callmem usage`."""
+
+    def test_end_session_persists_citations_from_transcript(
+        self, engine: MemoryEngine,
+    ) -> None:
+        from callmem.models.entities import Entity
+
+        session = engine.start_session(agent_name="test")
+        decision = Entity(
+            project_id=engine.project_id, type="decision",
+            title="Use SQLite", content="Chose SQLite for storage",
+        )
+        engine.repo.create_entity(decision)
+        engine.ingest_one(
+            "response", f"Per #{decision.id[-8:]}, we're using SQLite.",
+        )
+
+        engine.end_session(session.id)
+
+        stored = engine.repo.get_entity(decision.id)
+        assert stored is not None
+        assert stored["cited_count"] == 1
+        assert stored["last_cited_at"]
+
+    def test_end_session_survives_citation_persistence_failure(
+        self, engine: MemoryEngine, monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        import logging
+
+        import callmem.core.usage as usage_module
+
+        def _boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(usage_module, "compute_session_citations", _boom)
+
+        session = engine.start_session(agent_name="test")
+        engine.ingest_one("response", "no citations in here")
+
+        with caplog.at_level(logging.ERROR):
+            ended = engine.end_session(session.id)
+
+        assert ended.status == "ended"
+        assert any(
+            "Citation persistence failed" in rec.message
+            for rec in caplog.records
+        )
+
+
 class TestIngest:
     def test_ingest_creates_events(self, engine: MemoryEngine) -> None:
         engine.start_session()

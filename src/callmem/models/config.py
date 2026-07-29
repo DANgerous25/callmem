@@ -45,12 +45,16 @@ class BriefingScoringConfig(BaseModel):
           + citation_weight * log1p(cited_count)
                 * 0.5 ** (citation_age_days / citation_half_life_days)
 
-    Entities from the most recent session are always included in the
-    briefing regardless of score (see
-    BriefingGenerator._most_recent_session_entity_ids) — this is a floor,
-    not part of the score itself. ``max_entities`` caps how many
-    score-ranked entities are kept beyond that floor; when the cap bites,
-    the lowest-scored entities are dropped whole rather than truncated.
+    Two always-include floors sit outside the score, applied after
+    ranking: entities from the most recent session (see
+    BriefingGenerator._most_recent_session_entity_ids), and open
+    todo/failure entities up to ``open_items_floor_cap`` (see
+    BriefingGenerator._open_items_floor_ids) — an old, unpinned, uncited
+    open TODO must not silently vanish under the score cap just because
+    nothing else about it is remarkable. ``max_entities`` caps how many
+    score-ranked entities are kept beyond those floors; when the cap
+    bites, the lowest-scored entities are dropped whole rather than
+    truncated.
     """
     pinned_boost: float = 8.0
     type_weights: dict[str, float] = Field(default_factory=lambda: {
@@ -64,6 +68,7 @@ class BriefingScoringConfig(BaseModel):
     citation_weight: float = 4.0
     citation_half_life_days: float = 30.0
     max_entities: int = 100
+    open_items_floor_cap: int = 20
 
 
 class BriefingConfig(BaseModel):

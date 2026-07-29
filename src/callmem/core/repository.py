@@ -1025,6 +1025,41 @@ class Repository:
         finally:
             conn.close()
 
+    def increment_citation_counts(
+        self, citations: dict[str, tuple[int, str]],
+    ) -> int:
+        """Add session-scoped citation counts onto existing per-entity totals.
+
+        Unlike ``set_citation_counts`` (which overwrites with an absolute
+        value from a full-history rescan), this increments — used by the
+        session-end hook, which only sees that one session's citations and
+        must not clobber counts accumulated from earlier sessions.
+        ``last_cited_at`` only ever advances forward (kept as-is if it's
+        already newer than this session's timestamp). Returns the number
+        of entity rows updated.
+        """
+        if not citations:
+            return 0
+        conn = self.db.connect()
+        try:
+            cursor = conn.executemany(
+                "UPDATE entities SET "
+                "cited_count = cited_count + ?, "
+                "last_cited_at = CASE "
+                "  WHEN last_cited_at IS NULL OR ? > last_cited_at THEN ? "
+                "  ELSE last_cited_at "
+                "END "
+                "WHERE id = ?",
+                [
+                    (count, last_cited_at, last_cited_at, entity_id)
+                    for entity_id, (count, last_cited_at) in citations.items()
+                ],
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
     def set_pinned(self, entity_id: str, pinned: bool) -> dict[str, Any]:
         from callmem.models.entities import Entity
 

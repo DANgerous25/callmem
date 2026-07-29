@@ -17,9 +17,12 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from callmem.compat import UTC
+
+if TYPE_CHECKING:
+    from callmem.core.database import Database
 
 # Tools that read from memory (consumption signals)
 _READ_TOOLS = (
@@ -208,37 +211,69 @@ def collect_session_usage(
         db.close()
 
 
-def compute_entity_citations(db_path: Path) -> dict[str, tuple[int, str]]:
-    """Scan every response event and tally citations per entity.
+def _tally_citations(
+    conn: sqlite3.Connection, where_extra: str = "", params: tuple[Any, ...] = (),
+) -> dict[str, tuple[int, str]]:
+    """Scan response events (optionally narrowed by ``where_extra``) and
+    tally citations per entity.
 
-    Reuses the same detection logic as ``collect_session_usage`` (entity-ID
-    short forms verified against the real entity set) so persisted counts
-    match what the usage report already claims. Returns
-    ``{entity_id: (cited_count, last_cited_at)}`` — entities never cited
-    are simply absent; callers should treat a missing entry as ``(0,
-    None)``, i.e. no worse than before this feature existed.
+    Shared by the full-history scan (``compute_entity_citations``) and the
+    session-scoped scan (``compute_session_citations``) so both use the
+    exact same detection logic. Returns ``{entity_id: (cited_count,
+    last_cited_at)}`` — entities not cited within the scanned rows are
+    simply absent; callers should treat a missing entry as ``(0, None)``.
+    """
+    entity_id_map = _load_entity_id_map(conn)
+    rows = conn.execute(
+        f"SELECT content, timestamp FROM events WHERE type = 'response'{where_extra}",
+        params,
+    ).fetchall()
+    counts: dict[str, int] = {}
+    last_seen: dict[str, str] = {}
+    for row in rows:
+        ts = row["timestamp"] or ""
+        for entity_id in _extract_cited_entity_ids(row["content"], entity_id_map):
+            counts[entity_id] = counts.get(entity_id, 0) + 1
+            if ts and (entity_id not in last_seen or ts > last_seen[entity_id]):
+                last_seen[entity_id] = ts
+    return {
+        entity_id: (count, last_seen.get(entity_id, ""))
+        for entity_id, count in counts.items()
+    }
+
+
+def compute_entity_citations(db_path: Path) -> dict[str, tuple[int, str]]:
+    """Scan every response event in the database and tally citations per
+    entity — the full-history backfill scan, driven by a bare db path
+    (matches how ``collect_session_usage`` is already invoked from the
+    CLI). See ``compute_session_citations`` for the cheap, session-scoped
+    counterpart used on every session end.
     """
     db = sqlite3.connect(db_path)
     db.row_factory = sqlite3.Row
     try:
-        entity_id_map = _load_entity_id_map(db)
-        rows = db.execute(
-            "SELECT content, timestamp FROM events WHERE type = 'response'"
-        ).fetchall()
-        counts: dict[str, int] = {}
-        last_seen: dict[str, str] = {}
-        for row in rows:
-            ts = row["timestamp"] or ""
-            for entity_id in _extract_cited_entity_ids(row["content"], entity_id_map):
-                counts[entity_id] = counts.get(entity_id, 0) + 1
-                if ts and (entity_id not in last_seen or ts > last_seen[entity_id]):
-                    last_seen[entity_id] = ts
-        return {
-            entity_id: (count, last_seen.get(entity_id, ""))
-            for entity_id, count in counts.items()
-        }
+        return _tally_citations(db)
     finally:
         db.close()
+
+
+def compute_session_citations(
+    db: Database, session_id: str,
+) -> dict[str, tuple[int, str]]:
+    """Scan a single session's response events and tally citations per
+    entity.
+
+    Session-scoped counterpart to ``compute_entity_citations`` — cheap
+    enough to run on every session end without a full-history rescan.
+    Takes a ``Database`` (not a bare path) so it works correctly against
+    both file-backed and shared-cache in-memory databases, matching how
+    the rest of the engine/repository access the DB.
+    """
+    conn = db.connect()
+    try:
+        return _tally_citations(conn, " AND session_id = ?", (session_id,))
+    finally:
+        conn.close()
 
 
 def backfill_citation_counts(db_path: Path) -> int:
@@ -248,7 +283,12 @@ def backfill_citation_counts(db_path: Path) -> int:
     Idempotent: recomputes absolute counts from a fresh scan each call
     rather than incrementing, so re-running (e.g. every ``callmem usage``
     invocation, the "existing usage-scan path") never double-counts.
-    Returns the number of entity rows updated.
+    Returns the number of entity rows updated. This is the manual/bulk
+    path — session end persists citations incrementally on its own (see
+    ``compute_session_citations`` + ``Repository.increment_citation_counts``
+    in ``engine.end_session``), so this remains for backfilling projects
+    that predate that hook, or for anyone who wants an authoritative
+    recount.
     """
     from callmem.core.database import Database
     from callmem.core.repository import Repository

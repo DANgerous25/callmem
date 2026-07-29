@@ -56,6 +56,13 @@ LEGEND_ORDER = [
     "todo", "failure", "research", "change", "fact",
 ]
 
+# Priority rank used only to decide which open items survive the
+# open-items floor cap (_open_items_floor_ids) — higher drops last.
+_OPEN_ITEM_PRIORITY_RANK: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
+
+# Statuses that mean an item is no longer "open" for floor purposes.
+_CLOSED_STATUSES = ("done", "cancelled", "resolved")
+
 # Box-drawing characters for visual structure
 _BOX_H = "\u2500"  # ─
 _BOX_TL = "\u256d"  # ╭
@@ -836,6 +843,33 @@ class BriefingGenerator:
         session_entities = self._fetch_entities_for_session(row["id"])
         return {e["id"] for e in session_entities if e.get("id")}
 
+    def _open_items_floor_ids(self, entities: list[dict[str, Any]]) -> set[str]:
+        """IDs of open todo/failure entities, up to scoring.open_items_floor_cap.
+
+        A second always-include floor alongside
+        _most_recent_session_entity_ids: an old, unpinned, uncited open
+        TODO or failure must not silently vanish from the briefing just
+        because it loses on score to a flood of fresher/noisier entities.
+        "Open" means status not in done/cancelled/resolved — matches the
+        Action Items / Suggested next sections' own filter minus the
+        'resolved'-only check those use, deliberately a bit stricter here
+        so the floor doesn't protect items already fading out. Beyond the
+        cap, lowest-priority open items are dropped first.
+        """
+        cap = self.config.briefing.scoring.open_items_floor_cap
+        if cap <= 0:
+            return set()
+        open_items = [
+            e for e in entities
+            if e.get("type") in ("todo", "failure")
+            and e.get("status") not in _CLOSED_STATUSES
+        ]
+        open_items.sort(
+            key=lambda e: _OPEN_ITEM_PRIORITY_RANK.get(e.get("priority") or "", 0),
+            reverse=True,
+        )
+        return {e["id"] for e in open_items[:cap]}
+
     def _fetch_all_entities(
         self, project_id: str, focus: str | None,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -844,11 +878,13 @@ class BriefingGenerator:
         Entities are ranked by importance score (see _score_entity), not
         pure recency, and capped at scoring.max_entities — the lowest
         scored entities are dropped whole when the cap bites, never
-        blind-truncated mid-render. Entities from the most recent session
-        are always included regardless of score (see
-        _most_recent_session_entity_ids). Stale entities are excluded from
-        the briefing by default; the caller surfaces the suppressed count
-        as a footer so the agent knows memory was curated, not missing.
+        blind-truncated mid-render. Two floors sit outside the score and
+        are always included regardless of it: entities from the most
+        recent session (_most_recent_session_entity_ids) and open
+        todo/failure items up to a cap (_open_items_floor_ids). Stale
+        entities are excluded from the briefing by default; the caller
+        surfaces the suppressed count as a footer so the agent knows
+        memory was curated, not missing.
         """
         conn = self.repo.db.connect()
         try:
@@ -874,11 +910,15 @@ class BriefingGenerator:
         ranked = sorted(
             results, key=lambda e: self._score_entity(e, now), reverse=True,
         )
+        ranked_ids = {e["id"] for e in ranked}
 
         max_entities = self.config.briefing.scoring.max_entities
         top_ids = {e["id"] for e in ranked[:max_entities]}
-        floor_ids = self._most_recent_session_entity_ids(project_id)
-        selected_ids = top_ids | (floor_ids & {e["id"] for e in ranked})
+        session_floor_ids = self._most_recent_session_entity_ids(project_id)
+        open_floor_ids = self._open_items_floor_ids(ranked)
+        selected_ids = top_ids | (
+            (session_floor_ids | open_floor_ids) & ranked_ids
+        )
         selected = [e for e in ranked if e["id"] in selected_ids]
 
         return selected, stale_count

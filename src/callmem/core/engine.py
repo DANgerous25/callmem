@@ -168,6 +168,8 @@ class MemoryEngine:
             session.summary = note
         self.repo.update_session(session)
 
+        self._persist_session_citations(session.id)
+
         self._publish("session_ended", {
             "id": session.id,
             "ended_at": session.ended_at,
@@ -191,6 +193,30 @@ class MemoryEngine:
             )
 
         return session
+
+    def _persist_session_citations(self, session_id: str) -> None:
+        """Scan the just-ended session's own transcript for entity
+        citations and persist them incrementally.
+
+        This is the automatic side of citation feedback — the CLI's
+        ``callmem usage`` still does a full-history backfill, but without
+        this hook cited_count stays 0 forever on any project where nobody
+        runs that command, permanently deadening the briefing's
+        citation-boost term. Scoped to one session's response events (not
+        a full rescan) so it stays cheap on every session end. A fault
+        here must never fail session end itself — memory usage feedback
+        is best-effort, ending the session is not.
+        """
+        from callmem.core.usage import compute_session_citations
+
+        try:
+            citations = compute_session_citations(self.db, session_id)
+            if citations:
+                self.repo.increment_citation_counts(citations)
+        except Exception:  # noqa: BLE001 — must never fail session end
+            logger.exception(
+                "Citation persistence failed for session %s", session_id[:8],
+            )
 
     def get_active_session(self) -> Session | None:
         """Return the current active session, if any."""

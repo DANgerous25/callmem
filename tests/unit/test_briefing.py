@@ -453,6 +453,14 @@ class TestParseDbTimestamp:
         assert parsed == datetime(2026, 7, 29, 11, 53, 39, tzinfo=UTC)
 
 
+def _days_ago(days: int) -> str:
+    from datetime import datetime, timedelta
+
+    from callmem.compat import UTC
+
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+
 class TestImportanceRankedSelection:
     """`_fetch_all_entities` ranks by an importance score, not pure
     recency: pinned boost + type weight + recency decay + citation boost
@@ -460,11 +468,7 @@ class TestImportanceRankedSelection:
     """
 
     def _days_ago(self, days: int) -> str:
-        from datetime import datetime, timedelta
-
-        from callmem.compat import UTC
-
-        return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        return _days_ago(days)
 
     def test_old_cited_decision_beats_fresh_churn_change(
         self, memory_db: Database,
@@ -621,3 +625,121 @@ class TestImportanceRankedSelection:
         for fid in filler_ids:
             assert fid in ids
         assert len(entities) == 4
+
+
+class TestOpenItemsFloor:
+    """Open todo/failure entities are a second always-include floor: an
+    old, unpinned, uncited open TODO must not silently vanish from the
+    briefing just because it loses on score to a flood of fresher/noisier
+    entities. See BriefingGenerator._open_items_floor_ids."""
+
+    def test_old_open_todo_survives_against_fresher_competition(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Old open todo nobody prioritized",
+            content="Still needs doing",
+            created_at=_days_ago(100),
+        )
+        _insert_entity(memory_db, old_todo)
+
+        # 200 fresh, pinned, high-scoring decisions crowd out everything
+        # that competes purely on score — max_entities defaults to 100,
+        # so without the open-items floor the old todo would be dropped.
+        for i in range(200):
+            filler = Entity(
+                project_id=project_id, type="decision",
+                title=f"Fresh pinned decision {i}",
+                content="High-value pinned decision",
+                pinned=True,
+            )
+            _insert_entity(memory_db, filler)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert old_todo.id in ids
+
+    def test_open_items_floor_cap_drops_lowest_priority_beyond_cap(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        # 25 old, unpinned, uncited open todos — more than the default
+        # floor cap (20): 5 high-priority, 20 unprioritized.
+        high_ids = set()
+        unprioritized_ids = set()
+        for i in range(25):
+            priority = "high" if i < 5 else None
+            todo = Entity(
+                project_id=project_id, type="todo", status="open",
+                title=f"Old open todo {i}",
+                content="Needs doing",
+                created_at=_days_ago(100),
+                priority=priority,
+            )
+            _insert_entity(memory_db, todo)
+            if priority == "high":
+                high_ids.add(todo.id)
+            else:
+                unprioritized_ids.add(todo.id)
+
+        config = Config()
+        # Force every entity through the floor only, so the returned set
+        # is exactly what the open-items floor (cap=20 default) allows.
+        config.briefing.scoring.max_entities = 0
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert len(ids) == 20
+        assert high_ids <= ids
+        assert len(unprioritized_ids & ids) == 15
+
+    def test_open_items_floor_cap_is_configurable(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        for i in range(10):
+            todo = Entity(
+                project_id=project_id, type="todo", status="open",
+                title=f"Old open todo {i}", content="Needs doing",
+                created_at=_days_ago(100),
+            )
+            _insert_entity(memory_db, todo)
+
+        config = Config()
+        config.briefing.scoring.max_entities = 0
+        config.briefing.scoring.open_items_floor_cap = 3
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+
+        assert len(entities) == 3
+
+    def test_resolved_todo_does_not_occupy_floor_slot(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        resolved = Entity(
+            project_id=project_id, type="todo", status="resolved",
+            title="Already resolved", content="Done",
+            created_at=_days_ago(100),
+        )
+        _insert_entity(memory_db, resolved)
+
+        config = Config()
+        config.briefing.scoring.max_entities = 0
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+
+        assert resolved.id not in {e["id"] for e in entities}
