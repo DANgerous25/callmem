@@ -219,11 +219,19 @@ class WorkerRunner:
             )
 
     def _enqueue_staleness_check(self, job: Any) -> None:
-        """Queue a staleness check after extraction if we can infer the project."""
-        project_id = self._resolve_project_id(job)
-        if not project_id:
-            return
+        """Queue a staleness check after extraction if we can infer the project.
+
+        ``job`` has already completed successfully, so — mirroring
+        ``_auto_resurrect_failed`` — the whole thing including resolving the
+        project is inside one try/except: any fault here (including a fault
+        in ``_resolve_project_id`` itself) must only be logged, never
+        propagate up to ``process_one``'s outer try/except and reclassify
+        the already-completed job as failed.
+        """
         try:
+            project_id = self._resolve_project_id(job)
+            if not project_id:
+                return
             self.queue.enqueue(
                 "staleness_check", {"project_id": project_id},
             )

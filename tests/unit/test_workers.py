@@ -506,6 +506,64 @@ class TestAutoResurrection:
             "successfully"
         )
 
+    def test_staleness_check_fault_does_not_reclassify_completed_job(
+        self, memory_db: Database
+    ) -> None:
+        """Same gap as above, but for the staleness-check hook that fires
+        after extract_entities jobs specifically: a fault while resolving
+        the project (e.g. a locked/busy database) inside
+        ``_enqueue_staleness_check`` must be swallowed by its own
+        try/except, not propagate up into process_one's outer handler and
+        mark the already-completed extract_entities job as failed.
+
+        _auto_resurrect_failed also runs for extract_entities completions
+        and calls _resolve_project_id too, but it already swallows faults
+        in its own try/except — patching _resolve_project_id to always
+        raise exercises both hooks and isolates the staleness-check gap.
+        """
+        engine, ollama = _make_engine(memory_db)
+        engine.start_session()
+
+        engine.ingest_one("response", "Use cursor-based pagination")
+        llm_response = (
+            '{"decisions": [{"title": "Use pagination", "content": "Cursor-based"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT id FROM jobs WHERE type = 'extract_entities' "
+                "AND status = 'pending'"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        extraction_job_id = row["id"]
+
+        runner = WorkerRunner(memory_db, ollama, engine.config)
+        with patch.object(ollama, "_generate", return_value=llm_response):
+            with patch.object(
+                runner, "_resolve_project_id",
+                side_effect=RuntimeError("database is locked"),
+            ):
+                processed = runner.process_one()
+
+        assert processed is True
+
+        conn = memory_db.connect()
+        try:
+            job_row = conn.execute(
+                "SELECT status FROM jobs WHERE id = ?", (extraction_job_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert job_row["status"] == "completed", (
+            "a fault while resolving the project for the staleness check "
+            "must not reclassify the job that already completed "
+            "successfully"
+        )
+
 
 class TestWorkerThread:
     def test_start_and_stop(self, memory_db: Database) -> None:
