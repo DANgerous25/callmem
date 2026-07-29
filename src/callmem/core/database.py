@@ -42,11 +42,18 @@ class Database:
 
         The db always lives at ``<project_root>/.callmem/memory.db`` (see
         the class docstring and every project-init code path in cli.py),
-        so the root is two directories up. Returns None for the
-        in-memory database (used in tests), where no real project
-        directory exists to derive.
+        so the root is two directories up — but only when that invariant
+        actually holds: the immediate parent must be named ``.callmem``.
+        Without this check, a nonstandard db_path (e.g. a bare tmp file
+        two shallow directories from filesystem root) would silently
+        derive a wildly shallow "root", which would then trivially pass
+        anchor-containment checks and let validation stat anywhere.
+        Returns None for the in-memory database (used in tests) and for
+        any db_path that doesn't sit under a ``.callmem`` directory.
         """
         if self._is_memory:
+            return None
+        if self.db_path.parent.name != ".callmem":
             return None
         return self.db_path.parent.parent
 

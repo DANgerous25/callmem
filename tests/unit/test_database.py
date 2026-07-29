@@ -220,3 +220,18 @@ def test_in_memory_database() -> None:
     tables = db.list_tables()
     assert "events" in tables
     assert db.get_schema_version() == 22
+
+
+def test_infer_project_root_for_standard_callmem_layout(tmp_path: Path) -> None:
+    db = Database(tmp_path / ".callmem" / "memory.db")
+    db.initialize()
+    assert db.infer_project_root() == tmp_path
+
+
+def test_infer_project_root_none_for_nonstandard_db_path(tmp_path: Path) -> None:
+    """A db_path whose parent isn't named .callmem must never yield a
+    derived root — otherwise a shallow/wrong root could trivially pass
+    anchor-containment checks and let validation stat anywhere."""
+    db = Database(tmp_path / "test.db")
+    db.initialize()
+    assert db.infer_project_root() is None

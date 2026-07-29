@@ -39,6 +39,26 @@ class TestProjectQueries:
         repo = Repository(memory_db)
         assert repo.get_project("nonexistent") is None
 
+    def test_resolve_project_root_no_self_heal_for_nonstandard_db_path(
+        self, tmp_path,
+    ) -> None:
+        """A db_path that doesn't sit under a .callmem directory must
+        never yield a derived root — a shallow/wrong root would
+        trivially pass anchor-containment checks. No self-heal write
+        may happen either."""
+        from callmem.core.database import Database
+
+        db = Database(tmp_path / "test.db")
+        db.initialize()
+        repo = Repository(db)
+        project = Project(name="test-project")  # root_path NULL
+        repo.create_project(project)
+
+        assert repo.resolve_project_root(project.id) is None
+        stored = repo.get_project(project.id)
+        assert stored is not None
+        assert stored.root_path is None
+
     def test_get_project_by_name(self, memory_db: Database) -> None:
         repo = Repository(memory_db)
         project = Project(name="unique-name")
