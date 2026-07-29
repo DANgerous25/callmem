@@ -4,13 +4,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from callmem.core.repository import Repository
+from callmem.models.entities import Entity
 from callmem.models.events import Event
 from callmem.models.projects import Project
 from callmem.models.sessions import Session
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
+
+
+HOSTILE_QUERIES = [
+    "cookie-backed",
+    '"quoted phrase"',
+    "AND)(",
+    "a NOT b OR",
+    "()()",
+]
 
 
 class TestProjectQueries:
@@ -307,3 +319,112 @@ class TestEventQueries:
         )
         found = repo.find_recent_event(project.id, "different content", "prompt", 60)
         assert found is None
+
+
+class TestEventFtsSanitization:
+    """search_events_fts must never pass raw user input to MATCH."""
+
+    def test_hyphenated_query_does_not_raise(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        repo.insert_event(Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="cookie-backed sessions are in use",
+        ))
+
+        # A raw MATCH would raise `fts5: syntax error near "-"` here.
+        # Sanitized, it must return a (possibly empty) list instead.
+        results = repo.search_events_fts(project.id, "cookie-backed")
+        assert isinstance(results, list)
+
+    @pytest.mark.parametrize("query", HOSTILE_QUERIES)
+    def test_hostile_queries_never_raise(
+        self, memory_db: Database, query: str
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        repo.insert_event(Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="some note content",
+        ))
+
+        results = repo.search_events_fts(project.id, query)
+        assert isinstance(results, list)
+
+
+class TestEntityFtsSearch:
+    """entities_fts must actually be used for entity search."""
+
+    def test_and_then_or_fallback(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        repo.create_entity(Entity(
+            project_id=project.id, type="fact",
+            title="alpha only entity", content="content",
+        ))
+
+        # "alpha" matches, "zzznomatch" matches nothing — an AND join
+        # yields zero rows, so the OR fallback must still find it.
+        results = repo.search_entities_fts(project.id, "alpha zzznomatch")
+        assert any(r["title"] == "alpha only entity" for r in results)
+
+    @pytest.mark.parametrize("query", HOSTILE_QUERIES)
+    def test_hostile_queries_never_raise(
+        self, memory_db: Database, query: str
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        repo.create_entity(Entity(
+            project_id=project.id, type="fact",
+            title="cookie-backed session handling", content="detail",
+        ))
+
+        results = repo.search_entities_fts(project.id, query)
+        assert isinstance(results, list)
+
+    def test_excludes_archived_entities(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="fact",
+            title="archived widget details", content="content",
+        )
+        repo.create_entity(entity)
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE entities SET archived_at = datetime('now') WHERE id = ?",
+                (entity.id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        results = repo.search_entities_fts(project.id, "widget")
+        assert results == []
+
+    def test_excludes_stale_entities_by_default(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="fact",
+            title="staleflagword entity", content="content",
+        )
+        repo.create_entity(entity)
+        repo.mark_stale(entity.id, reason="superseded")
+
+        assert repo.search_entities_fts(project.id, "staleflagword") == []
+        included = repo.search_entities_fts(
+            project.id, "staleflagword", include_stale=True,
+        )
+        assert any(r["id"] == entity.id for r in included)

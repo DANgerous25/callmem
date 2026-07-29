@@ -177,38 +177,40 @@ class RetrievalEngine:
         results: dict[str, SearchResult],
         include_stale: bool = False,
     ) -> None:
-        conn = self.repo.db.connect()
-        try:
-            clauses: list[str] = ["project_id = ?"]
-            params: list[Any] = [project_id]
+        if query:
+            # Relevance search: entities_fts MATCH over ALL non-archived
+            # entities, ranked by bm25 — no recency pre-limit, so an
+            # older-but-relevant entity is never unreachable.
+            rows = self.repo.search_entities_fts(
+                project_id, query, types=types,
+                include_stale=include_stale, limit=limit,
+            )
+        else:
+            conn = self.repo.db.connect()
+            try:
+                clauses: list[str] = ["project_id = ?"]
+                params: list[Any] = [project_id]
 
-            if types:
-                placeholders = ",".join("?" for _ in types)
-                clauses.append(f"type IN ({placeholders})")
-                params.extend(types)
+                if types:
+                    placeholders = ",".join("?" for _ in types)
+                    clauses.append(f"type IN ({placeholders})")
+                    params.extend(types)
 
-            if not include_stale:
-                clauses.append("stale = 0")
+                if not include_stale:
+                    clauses.append("stale = 0")
 
-            where = " AND ".join(clauses)
-            rows = conn.execute(
-                f"SELECT * FROM entities WHERE {where} "
-                f"ORDER BY pinned DESC, updated_at DESC LIMIT ?",
-                (*params, limit),
-            ).fetchall()
-        finally:
-            conn.close()
+                where = " AND ".join(clauses)
+                rows = conn.execute(
+                    f"SELECT * FROM entities WHERE {where} "
+                    f"ORDER BY pinned DESC, updated_at DESC LIMIT ?",
+                    (*params, limit),
+                ).fetchall()
+            finally:
+                conn.close()
 
         now = datetime.now(UTC).isoformat()
-        query_lower = query.lower() if query else ""
 
         for r in rows:
-            if query_lower:
-                title = (r["title"] or "").lower()
-                content = (r["content"] or "").lower()
-                if query_lower not in title and query_lower not in content:
-                    continue
-
             recency = _recency_factor(r["updated_at"], now)
             pin_boost = 1.5 if r["pinned"] else 1.0
             stale_penalty = 0.3 if r["stale"] else 1.0

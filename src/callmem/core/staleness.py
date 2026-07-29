@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from callmem.core.json_utils import parse_json
+from callmem.core.repository import build_fts_match_query
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
@@ -233,19 +234,11 @@ def _fts_query_from(title: str, content: str) -> str:
     title/content. Each token is quoted so hyphens, punctuation, or
     reserved words never reach the FTS5 parser as operators — that
     way a content line like ``cookie-backed sessions`` doesn't turn
-    into ``cookie MINUS backed`` and blow up on ``no such column``."""
-    words: list[str] = []
-    for source in (title or "", content or ""):
-        for token in source.split():
-            cleaned = "".join(
-                c for c in token.lower() if c.isalnum() or c == "_"
-            )
-            if len(cleaned) >= 4 and cleaned not in words:
-                words.append(cleaned)
-            if len(words) >= 6:
-                break
-        if len(words) >= 6:
-            break
-    if not words:
-        return ""
-    return " OR ".join(f'"{w}"' for w in words)
+    into ``cookie MINUS backed`` and blow up on ``no such column``.
+
+    Delegates to the shared sanitizer in repository.py — see that
+    module for the tokenizing logic itself.
+    """
+    return build_fts_match_query(
+        title or "", content or "", min_len=4, max_tokens=6, joiner="OR",
+    )

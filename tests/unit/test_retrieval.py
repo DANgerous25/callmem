@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from callmem.core.retrieval import RetrievalEngine, _recency_factor
 
 if TYPE_CHECKING:
@@ -205,6 +207,99 @@ class TestRecencyRanking:
         results = engine.search(project_id, "")
         if len(results) >= 2:
             assert results[0].score >= results[-1].score
+
+
+class TestEntitySearchNoRecencyWindow:
+    """Entity search must find relevant entities regardless of age —
+    the old fetch-20-most-recent-then-substring-filter defect made
+    anything older than the freshest ~20 entities unreachable."""
+
+    def test_old_entity_found_among_many_fresher_entities(
+        self, memory_db: Database
+    ) -> None:
+        from datetime import datetime, timedelta
+
+        from callmem.compat import UTC
+        from callmem.core.repository import Repository
+        from callmem.models.config import Config
+        from callmem.models.entities import Entity
+        from callmem.models.projects import Project
+
+        repo = Repository(memory_db)
+        project = Project(name="test-project")
+        repo.create_project(project)
+
+        old_ts = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        repo.create_entity(Entity(
+            project_id=project.id, type="fact",
+            title="uses zorbatron protocol for auth",
+            content="legacy detail",
+            created_at=old_ts, updated_at=old_ts,
+        ))
+
+        for i in range(50):
+            repo.create_entity(Entity(
+                project_id=project.id, type="fact",
+                title=f"unrelated fresh entity {i}",
+                content="filler content",
+            ))
+
+        engine = RetrievalEngine(repo, Config())
+        results = engine.search(
+            project.id, "zorbatron", strategies=["entities"],
+        )
+        titles = [r.title or "" for r in results]
+        assert any("zorbatron" in t.lower() for t in titles)
+
+    def test_multiword_query_matches_regardless_of_word_order(
+        self, memory_db: Database
+    ) -> None:
+        from callmem.core.repository import Repository
+        from callmem.models.config import Config
+        from callmem.models.entities import Entity
+        from callmem.models.projects import Project
+
+        repo = Repository(memory_db)
+        project = Project(name="test-project")
+        repo.create_project(project)
+
+        entity = Entity(
+            project_id=project.id, type="fact",
+            title="cursor based pagination system",
+            content="detail",
+        )
+        repo.create_entity(entity)
+
+        engine = RetrievalEngine(repo, Config())
+        results = engine.search(
+            project.id, "pagination cursor", strategies=["entities"],
+        )
+        assert any(r.id == entity.id for r in results)
+
+
+class TestHostileSearchQueries:
+    """No query string may ever raise, whether run through the
+    entity or event FTS strategies."""
+
+    @pytest.mark.parametrize("query", [
+        "cookie-backed",
+        '"quoted phrase"',
+        "AND)(",
+        "a NOT b OR",
+        "()()",
+    ])
+    def test_hostile_query_never_raises(
+        self, memory_db: Database, query: str
+    ) -> None:
+        from callmem.models.config import Config
+
+        project_id = _seed_data(memory_db)
+        repo = __import__(
+            "callmem.core.repository", fromlist=["Repository"]
+        ).Repository(memory_db)
+        engine = RetrievalEngine(repo, Config())
+        results = engine.search(project_id, query)
+        assert isinstance(results, list)
 
 
 class TestGetRecent:

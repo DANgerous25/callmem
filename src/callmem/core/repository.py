@@ -19,6 +19,54 @@ if TYPE_CHECKING:
     from callmem.core.database import Database
 
 
+def sanitize_fts_tokens(
+    *sources: str, min_len: int = 1, max_tokens: int | None = None,
+) -> list[str]:
+    """Split one or more text sources into safe, deduped FTS5 tokens.
+
+    Each whitespace-separated word is lowercased and stripped down to
+    alphanumeric/underscore characters, so hyphens, quotes, parens, and
+    FTS5 keywords (AND, OR, NOT) never survive into a token — they can
+    then be individually double-quoted and handed to MATCH without any
+    risk of being parsed as an operator. Tokens are deduplicated in
+    order of first appearance, and collection stops once `max_tokens`
+    is reached (across all sources combined).
+    """
+    tokens: list[str] = []
+    for source in sources:
+        if not source:
+            continue
+        for word in source.split():
+            cleaned = "".join(
+                c for c in word.lower() if c.isalnum() or c == "_"
+            )
+            if len(cleaned) >= min_len and cleaned not in tokens:
+                tokens.append(cleaned)
+            if max_tokens is not None and len(tokens) >= max_tokens:
+                return tokens
+    return tokens
+
+
+def build_fts_match_query(
+    *sources: str,
+    min_len: int = 1,
+    max_tokens: int | None = None,
+    joiner: str = "OR",
+) -> str:
+    """Build a safe, quoted FTS5 MATCH expression from text sources.
+
+    Returns "" when no usable tokens are found — callers must treat
+    that as "no match" rather than passing it to MATCH.
+    """
+    tokens = sanitize_fts_tokens(
+        *sources, min_len=min_len, max_tokens=max_tokens,
+    )
+    if not tokens:
+        return ""
+    sep = f" {joiner} "
+    return sep.join(f'"{t}"' for t in tokens)
+
+
 class Repository:
     """Data access layer for callmem.
 
@@ -504,21 +552,104 @@ class Repository:
     def search_events_fts(
         self, project_id: str, query: str, limit: int = 20
     ) -> list[dict[str, Any]]:
-        """Search events using FTS5, filtered by project."""
+        """Search events using FTS5, filtered by project.
+
+        The raw query is sanitized into safe, individually-quoted
+        tokens before it ever reaches MATCH — arbitrary user input
+        (hyphens, quotes, reserved FTS5 keywords) must never raise a
+        syntax error. Tokens are AND-joined first; if that yields
+        nothing, retry OR-joined so a multi-word query still surfaces
+        partial matches.
+        """
+        and_query = build_fts_match_query(query, joiner="AND")
+        if not and_query:
+            return []
+
         conn = self.db.connect()
         try:
-            rows = conn.execute(
-                "SELECT e.id, e.type, e.content, e.timestamp, e.session_id, "
-                "e.archived_at "
-                "FROM events_fts f "
-                "JOIN events e ON e.rowid = f.rowid "
-                "WHERE events_fts MATCH ? AND e.project_id = ? "
-                "ORDER BY rank LIMIT ?",
-                (query, project_id, limit),
-            ).fetchall()
+            rows = self._run_events_fts(conn, and_query, project_id, limit)
+            if not rows:
+                or_query = build_fts_match_query(query, joiner="OR")
+                if or_query != and_query:
+                    rows = self._run_events_fts(
+                        conn, or_query, project_id, limit,
+                    )
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def _run_events_fts(
+        self, conn: Any, match_query: str, project_id: str, limit: int,
+    ) -> list[Any]:
+        return conn.execute(
+            "SELECT e.id, e.type, e.content, e.timestamp, e.session_id, "
+            "e.archived_at "
+            "FROM events_fts f "
+            "JOIN events e ON e.rowid = f.rowid "
+            "WHERE events_fts MATCH ? AND e.project_id = ? "
+            "ORDER BY rank LIMIT ?",
+            (match_query, project_id, limit),
+        ).fetchall()
+
+    def search_entities_fts(
+        self,
+        project_id: str,
+        query: str,
+        types: list[str] | None = None,
+        include_stale: bool = False,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search entities using FTS5, ranked by bm25 with recency as
+        tiebreak, over ALL non-archived matching entities — there is
+        no pre-limit on the candidate set, only on the returned count.
+
+        Tokens are AND-joined first; if that yields nothing, retry
+        OR-joined so a reordered or partial query still matches.
+        """
+        and_query = build_fts_match_query(query, joiner="AND")
+        if not and_query:
+            return []
+
+        clauses = ["e.project_id = ?"]
+        params: list[Any] = [project_id]
+        if types:
+            placeholders = ",".join("?" for _ in types)
+            clauses.append(f"e.type IN ({placeholders})")
+            params.extend(types)
+        if not include_stale:
+            clauses.append("e.stale = 0")
+        clauses.append("e.archived_at IS NULL")
+        where = " AND ".join(clauses)
+
+        conn = self.db.connect()
+        try:
+            rows = self._run_entities_fts(conn, and_query, where, params, limit)
+            if not rows:
+                or_query = build_fts_match_query(query, joiner="OR")
+                if or_query != and_query:
+                    rows = self._run_entities_fts(
+                        conn, or_query, where, params, limit,
+                    )
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def _run_entities_fts(
+        self,
+        conn: Any,
+        match_query: str,
+        where: str,
+        params: list[Any],
+        limit: int,
+    ) -> list[Any]:
+        return conn.execute(
+            f"SELECT e.* FROM entities_fts f "
+            f"JOIN entities e ON e.rowid = f.rowid "
+            f"WHERE entities_fts MATCH ? AND {where} "
+            f"ORDER BY bm25(entities_fts) ASC, e.updated_at DESC "
+            f"LIMIT ?",
+            (match_query, *params, limit),
+        ).fetchall()
 
     def search_entities_fts_by_type(
         self, project_id: str, query: str, entity_type: str,
