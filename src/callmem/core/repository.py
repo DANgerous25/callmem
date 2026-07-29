@@ -777,13 +777,27 @@ class Repository:
         entity_id: str,
         reason: str,
         superseded_by: str | None = None,
+        invalidated: bool = False,
     ) -> bool:
-        """Flag an entity as stale. Returns True if a row was modified."""
+        """Flag an entity as stale. Returns True if a row was modified.
+
+        ``invalidated=True`` additionally stamps ``invalidated_at`` --
+        used by consolidation's CONTRADICTS verdict so `callmem stale`
+        can list contradiction-invalidated entries distinctly from
+        other staleness reasons. The ``WHERE stale = 0`` guard makes
+        this a checked no-op on an already-stale target: callers must
+        use the return value to know whether the invalidation actually
+        happened, not just count every attempt.
+        """
         conn = self.db.connect()
         try:
+            invalidated_clause = (
+                "invalidated_at = datetime('now'), " if invalidated else ""
+            )
             cursor = conn.execute(
                 "UPDATE entities "
                 "SET stale = 1, staleness_reason = ?, superseded_by = ?, "
+                f"    {invalidated_clause}"
                 "    updated_at = datetime('now') "
                 "WHERE id = ? AND stale = 0",
                 (reason, superseded_by, entity_id),
@@ -939,7 +953,7 @@ class Repository:
             cursor = conn.execute(
                 "UPDATE entities "
                 "SET stale = 0, staleness_reason = NULL, superseded_by = NULL, "
-                "    updated_at = datetime('now') "
+                "    invalidated_at = NULL, updated_at = datetime('now') "
                 "WHERE id = ? AND stale = 1",
                 (entity_id,),
             )
@@ -991,6 +1005,7 @@ class Repository:
         added: int,
         updated: int,
         noop: int,
+        contradicted: int = 0,
         judge_failed: bool = False,
         metadata: dict[str, Any] | None = None,
     ) -> None:
@@ -1002,11 +1017,11 @@ class Repository:
             conn.execute(
                 "INSERT INTO consolidation_log "
                 "(id, project_id, run_at, added, updated, noop, "
-                "judge_failed, metadata) VALUES (?, ?, datetime('now'), "
-                "?, ?, ?, ?, ?)",
+                "contradicted, judge_failed, metadata) "
+                "VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)",
                 (
                     str(ULID()), project_id, added, updated, noop,
-                    1 if judge_failed else 0,
+                    contradicted, 1 if judge_failed else 0,
                     json.dumps(metadata) if metadata else None,
                 ),
             )

@@ -19,16 +19,27 @@ not just the entity being judged, and ``_parse`` rejects any
 
 Verdicts are applied through the existing non-destructive staleness verbs
 -- nothing is ever deleted:
-  - ADD:    the default. No action.
-  - UPDATE: the new entity refines an existing one. The existing entity is
-            marked stale + superseded_by=new (reason "consolidated"); the
-            new entity is kept as-is.
-  - NOOP:   the new entity duplicates an existing one with nothing new.
-            The new entity is archived immediately; the existing entity's
-            updated_at is bumped so it surfaces as current. If that
-            existing entity was itself superseded earlier in the same
-            batch, the touch (and the "duplicate of") redirects to its
-            still-active successor instead -- the survivor must be live.
+  - ADD:         the default. No action.
+  - UPDATE:      the new entity refines an existing one. The existing entity
+                 is marked stale + superseded_by=new (reason "consolidated");
+                 the new entity is kept as-is.
+  - NOOP:        the new entity duplicates an existing one with nothing new.
+                 The new entity is archived immediately; the existing
+                 entity's updated_at is bumped so it surfaces as current. If
+                 that existing entity was itself superseded earlier in the
+                 same batch, the touch (and the "duplicate of") redirects to
+                 its still-active successor instead -- the survivor must be
+                 live.
+  - CONTRADICTS: the new entity conflicts with an existing one rather than
+                 refining it. BOTH entities are kept, but the existing
+                 entity is marked stale + superseded_by=new (reason
+                 "contradicted") and additionally stamped with
+                 invalidated_at, so `callmem stale` can list it distinctly
+                 from ordinary superseded/manual staleness. Uses the same
+                 checked-no-op guard as every other staleness verb: if the
+                 existing entity is already stale (e.g. another entity in
+                 this same batch already contradicted or updated it), the
+                 mark is skipped and NOT double-counted.
 
 Fail-open is the hard requirement here: any judge response that isn't
 exactly the expected JSON shape -- covering every candidate entity with a
@@ -68,7 +79,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_VALID_VERDICTS = {"ADD", "UPDATE", "NOOP"}
+_VALID_VERDICTS = {"ADD", "UPDATE", "NOOP", "CONTRADICTS"}
 _MAX_CONTENT_CHARS = 300
 
 # What the judge is asked to return per new entity: (verdict, existing_id).
@@ -82,6 +93,7 @@ class ConsolidationStats:
     added: int = 0
     updated: int = 0
     noop: int = 0
+    contradicted: int = 0
     judge_failed: bool = False
 
 
@@ -155,7 +167,9 @@ class EntityConsolidator:
         stats = self._apply(entities, decisions)
         logger.info(
             "Consolidation run for project %s: %d added, %d updated, "
-            "%d noop", project_id, stats.added, stats.updated, stats.noop,
+            "%d noop, %d contradicted",
+            project_id, stats.added, stats.updated, stats.noop,
+            stats.contradicted,
         )
         self._log_run(project_id, stats)
         return stats
@@ -340,7 +354,7 @@ class EntityConsolidator:
                 return None
 
             existing_id = item.get("existing_id")
-            if verdict in ("UPDATE", "NOOP"):
+            if verdict in ("UPDATE", "NOOP", "CONTRADICTS"):
                 if not isinstance(existing_id, str):
                     return None
                 if existing_id in batch_ids:
@@ -391,6 +405,21 @@ class EntityConsolidator:
                 self.repo.archive_entity(entity.id)
                 self.repo.touch_entity(survivor_id)
                 stats.noop += 1
+            elif verdict == "CONTRADICTS" and existing_id is not None:
+                acted = self.repo.mark_stale(
+                    existing_id, reason="contradicted",
+                    superseded_by=entity.id, invalidated=True,
+                )
+                if acted:
+                    superseded_this_run[existing_id] = entity.id
+                    stats.contradicted += 1
+                else:
+                    # Checked no-op: the target was already stale (e.g. a
+                    # sibling in this same batch already contradicted or
+                    # updated it moments ago). Nothing was invalidated, so
+                    # don't count a contradiction that didn't happen -- the
+                    # new entity is still kept, same disposition as ADD.
+                    stats.added += 1
             else:
                 # ADD, or an UPDATE/NOOP somehow missing its existing_id --
                 # _parse already guarantees the latter can't happen, but
@@ -401,7 +430,8 @@ class EntityConsolidator:
     def _log_run(self, project_id: str, stats: ConsolidationStats) -> None:
         self.repo.log_consolidation_run(
             project_id, added=stats.added, updated=stats.updated,
-            noop=stats.noop, judge_failed=stats.judge_failed,
+            noop=stats.noop, contradicted=stats.contradicted,
+            judge_failed=stats.judge_failed,
         )
 
 

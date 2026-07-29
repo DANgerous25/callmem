@@ -108,19 +108,24 @@ Respond in this exact JSON format:
 If a category has no items, use an empty array. Do not include explanatory text outside the JSON."""
 
 
-CONSOLIDATION_PROMPT = """You are auditing newly-extracted project memory entries against similar existing entries to prevent duplication.
+CONSOLIDATION_PROMPT = """You are auditing newly-extracted project memory entries against similar existing entries to prevent duplication and outdated or conflicting knowledge.
 
 For EACH new entry below, decide exactly ONE verdict:
-- "ADD"    - genuinely distinct from every listed candidate; keep both entries.
-- "UPDATE" - refines, extends, or replaces ONE listed candidate with an
-             updated version of the same decision/fact/todo/etc. The new
-             entry is kept; the named candidate becomes stale.
-- "NOOP"   - duplicates ONE listed candidate with no new information. The
-             new entry is discarded; the named candidate is kept.
+- "ADD"         - genuinely distinct from every listed candidate; keep both entries.
+- "UPDATE"      - refines, extends, or replaces ONE listed candidate with an
+                  updated version of the same decision/fact/todo/etc. The new
+                  entry is kept; the named candidate becomes stale.
+- "NOOP"        - duplicates ONE listed candidate with no new information. The
+                  new entry is discarded; the named candidate is kept.
+- "CONTRADICTS" - directly conflicts with ONE listed candidate -- mutually
+                  exclusive statements about the same thing, not merely an
+                  updated version of it. BOTH entries are kept, but the named
+                  candidate is flagged as contradicted/invalidated.
 
 Be conservative: prefer ADD unless a candidate clearly covers the same
-concept. When the verdict is UPDATE or NOOP you MUST name which candidate
-by its id from the list shown for that entry -- never invent an id.
+concept. When the verdict is UPDATE, NOOP, or CONTRADICTS you MUST name
+which candidate by its id from the list shown for that entry -- never
+invent an id.
 
 New entries and their most similar existing candidates:
 {entries_block}
@@ -128,8 +133,9 @@ New entries and their most similar existing candidates:
 Respond with ONLY a JSON array, exactly one object per new entry listed
 above, in this exact shape:
 [
-  {{"new_id": "<new entry id>", "verdict": "ADD" | "UPDATE" | "NOOP",
-    "existing_id": "<candidate id, required for UPDATE/NOOP, else null>",
+  {{"new_id": "<new entry id>",
+    "verdict": "ADD" | "UPDATE" | "NOOP" | "CONTRADICTS",
+    "existing_id": "<candidate id, required for UPDATE/NOOP/CONTRADICTS, else null>",
     "reason": "<one short sentence>"}}
 ]
 

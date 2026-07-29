@@ -149,7 +149,7 @@ class _SpyEmbedder(Embedder):
 
 class TestSchema:
     def test_consolidation_log_table_exists(self, memory_db: Database) -> None:
-        assert memory_db.get_schema_version() == 21
+        assert memory_db.get_schema_version() == 22
         conn = memory_db.connect()
         try:
             row = conn.execute(
@@ -159,6 +159,28 @@ class TestSchema:
         finally:
             conn.close()
         assert row is not None
+
+    def test_entities_have_invalidated_at_column(self, memory_db: Database) -> None:
+        conn = memory_db.connect()
+        try:
+            cols = [r["name"] for r in conn.execute("PRAGMA table_info(entities)")]
+        finally:
+            conn.close()
+        assert "invalidated_at" in cols
+
+    def test_consolidation_log_has_contradicted_column(
+        self, memory_db: Database,
+    ) -> None:
+        conn = memory_db.connect()
+        try:
+            cols = [
+                r["name"] for r in conn.execute(
+                    "PRAGMA table_info(consolidation_log)",
+                )
+            ]
+        finally:
+            conn.close()
+        assert "contradicted" in cols
 
 
 class TestConfigDefaults:
@@ -257,6 +279,188 @@ class TestUpdateVerdict:
         new_row = engine.repo.get_entity(new_entity.id)
         assert new_row["archived_at"] is None
         assert new_row["stale"] == 0
+
+
+class TestContradictsVerdict:
+    def test_contradicts_marks_existing_stale_with_invalidated_at(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "DB is SQLite", "single-writer, WAL mode",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="DB is SQLite",
+            content="Actually Postgres now -- SQLite dropped for concurrency",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("CONTRADICTS", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+
+        stats = consolidator.consolidate(engine.project_id, [new_entity])
+
+        assert stats.contradicted == 1
+        assert stats.added == 0
+        assert stats.updated == 0
+        assert stats.noop == 0
+
+        old_row = engine.repo.get_entity(old_id)
+        assert old_row["stale"] == 1
+        assert old_row["staleness_reason"] == "contradicted"
+        assert old_row["superseded_by"] == new_entity.id
+        assert old_row["invalidated_at"] is not None
+        assert old_row["archived_at"] is None  # non-destructive
+
+        # Both entries are kept -- unlike UPDATE, the new entity isn't
+        # a refinement, it's an independent, conflicting fact.
+        new_row = engine.repo.get_entity(new_entity.id)
+        assert new_row["archived_at"] is None
+        assert new_row["stale"] == 0
+
+    def test_contradicts_id_validation_matches_update(
+        self, memory_db: Database,
+    ) -> None:
+        """Same guard as UPDATE: existing_id must be a string drawn from
+        that entity's own candidate list, not invented or borrowed from
+        a batch sibling."""
+        engine = _make_engine(memory_db)
+        _insert_entity(
+            engine.repo, engine.project_id, "fact", "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        response = json.dumps([{
+            "new_id": new_entity.id, "verdict": "CONTRADICTS",
+            "existing_id": "not-a-real-candidate-id",
+        }])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(engine.project_id, [new_entity])
+
+        assert stats.judge_failed is True
+        assert stats.added == 1
+        assert stats.contradicted == 0
+
+    def test_contradicts_rejects_existing_id_naming_a_batch_sibling(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        _insert_entity(
+            engine.repo, engine.project_id, "fact", "Auth uses JWT", "RS256",
+        )
+        entity_a = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        entity_b = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, entity_a)
+        _insert_new(engine.repo, entity_b)
+
+        response = json.dumps([
+            {
+                "new_id": entity_a.id, "verdict": "CONTRADICTS",
+                "existing_id": entity_b.id,
+            },
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [entity_a, entity_b],
+        )
+
+        assert stats.judge_failed is True
+        assert stats.added == 2
+        assert stats.contradicted == 0
+
+    def test_contradicts_on_already_stale_target_is_checked_noop(
+        self, memory_db: Database,
+    ) -> None:
+        """Two new entities both CONTRADICT the same existing entity.
+        Only the first invalidation actually happens (mark_stale's
+        WHERE stale=0 guard); the second must not be double-counted."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "Region is us-east", "x",
+        )
+        entity_a = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="Moved to eu-west",
+        )
+        entity_b = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="Moved to ap-south",
+        )
+        _insert_new(engine.repo, entity_a)
+        _insert_new(engine.repo, entity_b)
+
+        response = json.dumps([
+            {
+                "new_id": entity_a.id, "verdict": "CONTRADICTS",
+                "existing_id": old_id,
+            },
+            {
+                "new_id": entity_b.id, "verdict": "CONTRADICTS",
+                "existing_id": old_id,
+            },
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+
+        stats = consolidator.consolidate(
+            engine.project_id, [entity_a, entity_b],
+        )
+
+        # Only one actual invalidation happened -- the second CONTRADICTS
+        # found the target already stale and is a checked no-op.
+        assert stats.contradicted == 1
+        assert stats.added == 1
+
+        old_row = engine.repo.get_entity(old_id)
+        assert old_row["stale"] == 1
+        # First writer wins.
+        assert old_row["superseded_by"] == entity_a.id
+
+        # Neither new entity is archived or otherwise destroyed.
+        assert engine.repo.get_entity(entity_a.id)["archived_at"] is None
+        assert engine.repo.get_entity(entity_b.id)["archived_at"] is None
+
+    def test_consolidation_log_records_contradicted_count(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="Actually mTLS now",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("CONTRADICTS", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        consolidator.consolidate(engine.project_id, [new_entity])
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT contradicted FROM consolidation_log "
+                "WHERE project_id = ? ORDER BY run_at DESC LIMIT 1",
+                (engine.project_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["contradicted"] == 1
 
 
 class TestNoopVerdict:
@@ -835,6 +1039,55 @@ class TestOneCallPerBatch:
         assert new_b.id in judge.calls[0]
         assert stats.noop == 1
         assert stats.updated == 1
+
+
+class TestMixedVerdictsInOneBatch:
+    def test_update_and_contradicts_in_same_batch_are_independent(
+        self, memory_db: Database,
+    ) -> None:
+        """Adding CONTRADICTS must not change how UPDATE (or NOOP/ADD)
+        already behave -- each new entity's verdict is applied purely on
+        its own terms."""
+        engine = _make_engine(memory_db)
+        old_a = _insert_entity(
+            engine.repo, engine.project_id, "decision",
+            "Use Redis for caching", "Chose Redis because it is fast",
+        )
+        old_b = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_a = Entity(
+            project_id=engine.project_id, type="decision",
+            title="Use Redis for caching",
+            content="Chose Redis with a 1-hour TTL after benchmarking",
+        )
+        new_b = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="Actually mTLS now",
+        )
+        _insert_new(engine.repo, new_a)
+        _insert_new(engine.repo, new_b)
+
+        response = json.dumps([
+            {"new_id": new_a.id, "verdict": "UPDATE", "existing_id": old_a},
+            {"new_id": new_b.id, "verdict": "CONTRADICTS", "existing_id": old_b},
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+
+        stats = consolidator.consolidate(engine.project_id, [new_a, new_b])
+
+        assert stats.updated == 1
+        assert stats.contradicted == 1
+
+        old_a_row = engine.repo.get_entity(old_a)
+        assert old_a_row["staleness_reason"] == "consolidated"
+        assert old_a_row["invalidated_at"] is None
+
+        old_b_row = engine.repo.get_entity(old_b)
+        assert old_b_row["staleness_reason"] == "contradicted"
+        assert old_b_row["invalidated_at"] is not None
 
 
 class TestVectorSimilarity:

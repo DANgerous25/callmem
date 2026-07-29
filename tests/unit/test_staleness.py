@@ -99,7 +99,7 @@ class TestSchemaV7:
     def test_new_columns_exist(self, tmp_path: Path) -> None:
         db = Database(tmp_path / "mem.db")
         db.initialize()
-        assert db.get_schema_version() == 21
+        assert db.get_schema_version() == 22
         conn = db.connect()
         try:
             cols = [r["name"] for r in conn.execute("PRAGMA table_info(entities)")]
@@ -478,3 +478,40 @@ class TestCli:
         ])
         assert result.exit_code == 0
         assert "stale=False" in result.output
+
+    def test_stale_list_flags_contradiction_invalidated_entries(
+        self, tmp_path: Path,
+    ) -> None:
+        """A contradiction-invalidated entry (invalidated_at set, as done
+        by consolidation's CONTRADICTS verdict) must be visibly
+        distinguished from an ordinary stale entry in the listing."""
+        engine = _make_engine(tmp_path)
+        plain_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "plain stale", "x",
+        )
+        contradicted_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "contradicted stale", "y",
+        )
+        engine.repo.mark_stale(plain_id, reason="superseded")
+        engine.repo.mark_stale(
+            contradicted_id, reason="contradicted",
+            superseded_by="other", invalidated=True,
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["stale", "--project", str(tmp_path)])
+        assert result.exit_code == 0
+
+        plain_line = next(
+            line for line in result.output.splitlines()
+            if "plain stale" in line
+        )
+        contradicted_line = next(
+            line for line in result.output.splitlines()
+            if "contradicted stale" in line
+        )
+        # Both lines mention their own staleness_reason text ("superseded"
+        # vs "contradicted"), but only the contradiction-invalidated one
+        # additionally surfaces its invalidated_at timestamp.
+        assert "invalidated" not in plain_line
+        assert "invalidated" in contradicted_line

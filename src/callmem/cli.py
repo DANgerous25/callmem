@@ -1416,10 +1416,12 @@ def stale_cmd(
         reason = e.get("staleness_reason") or "?"
         sup = e.get("superseded_by")
         sup_str = f" → {sup[:8]}" if sup else ""
+        invalidated_at = e.get("invalidated_at")
+        inv_str = f" [invalidated {invalidated_at}]" if invalidated_at else ""
         click.echo(
             f"  {e['id'][:8]} [{e['type']}] "
             f"{(e.get('title') or '')[:60]} "
-            f"({reason}{sup_str})"
+            f"({reason}{sup_str}){inv_str}"
         )
 
 

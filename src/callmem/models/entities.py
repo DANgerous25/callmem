@@ -47,6 +47,7 @@ class Entity(BaseModel):
     stale: bool = False
     superseded_by: str | None = None
     staleness_reason: str | None = None
+    invalidated_at: str | None = None
     extracted_by: str | None = None
     eval_score: float | None = None
     eval_feedback: str | None = None
@@ -76,6 +77,7 @@ class Entity(BaseModel):
             "stale": 1 if self.stale else 0,
             "superseded_by": self.superseded_by,
             "staleness_reason": self.staleness_reason,
+            "invalidated_at": self.invalidated_at,
             "extracted_by": self.extracted_by,
             "eval_score": self.eval_score,
             "eval_feedback": self.eval_feedback,
