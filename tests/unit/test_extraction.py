@@ -142,7 +142,11 @@ class TestEntityExtractor:
 
         assert entities == []
 
-    def test_ollama_failure_retries_job(self, memory_db: Database) -> None:
+    def test_ollama_failure_defers_retry_with_backoff(
+        self, memory_db: Database
+    ) -> None:
+        """A failure schedules a backoff retry rather than burning through
+        all attempts in the same drain pass (phase0-reliability task 2)."""
         engine, extractor = _setup_engine_and_extractor(memory_db)
         engine.start_session()
         engine.ingest_one("response", "some content")
@@ -155,7 +159,9 @@ class TestEntityExtractor:
         assert entities == []
 
         queue = JobQueue(memory_db)
-        assert queue.get_pending_count("extract_entities") == 0
+        # Still pending — deferred for retry, not burned through instantly.
+        assert queue.get_pending_count("extract_entities") == 1
+        assert queue.dequeue("extract_entities") is None  # backoff not yet elapsed
 
         conn = memory_db.connect()
         try:
@@ -163,7 +169,8 @@ class TestEntityExtractor:
                 "SELECT * FROM jobs WHERE type = 'extract_entities' LIMIT 1"
             ).fetchone()
             assert row is not None
-            assert row["status"] == "failed"
+            assert row["status"] == "pending"
+            assert row["next_attempt_at"] is not None
             assert "Ollama returned no response" in row["error"]
         finally:
             conn.close()

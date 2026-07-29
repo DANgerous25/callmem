@@ -36,7 +36,7 @@ def test_schema_version_set(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     version = db.get_schema_version()
-    assert version == 15
+    assert version == 16
 
 
 def test_wal_mode_enabled(tmp_path: Path) -> None:
@@ -54,7 +54,7 @@ def test_idempotent_init(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     db.initialize()  # Should not raise
-    assert db.get_schema_version() == 15
+    assert db.get_schema_version() == 16
 
 
 def test_foreign_keys_enabled(tmp_path: Path) -> None:
@@ -88,9 +88,43 @@ def test_triggers_created(tmp_path: Path) -> None:
         conn.close()
 
 
+def test_migration_016_on_populated_v15_database(tmp_path: Path) -> None:
+    """A job row inserted before the backoff/requeue-count migration must
+    dequeue and behave exactly as before: NULL next_attempt_at is treated
+    as immediately ready, and requeue_count defaults to 0."""
+    import sqlite3
+
+    from callmem.core.queue import JobQueue
+
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db.initialize()
+
+    # Simulate a v15 row inserted before this migration existed (no
+    # next_attempt_at / requeue_count columns to write to at the time).
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO jobs (id, type, payload, status, attempts, max_attempts, "
+        "created_at) VALUES ('legacy-job', 'extract_entities', '{}', "
+        "'pending', 0, 3, datetime('now'))"
+    )
+    conn.commit()
+    conn.close()
+
+    queue = JobQueue(db)
+    job = queue.get_job("legacy-job")
+    assert job is not None
+    assert job.next_attempt_at is None
+    assert job.requeue_count == 0
+
+    dequeued = queue.dequeue("extract_entities")
+    assert dequeued is not None
+    assert dequeued.id == "legacy-job"
+
+
 def test_in_memory_database() -> None:
     db = Database(":memory:")
     db.initialize()
     tables = db.list_tables()
     assert "events" in tables
-    assert db.get_schema_version() == 15
+    assert db.get_schema_version() == 16

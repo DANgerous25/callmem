@@ -171,6 +171,8 @@ class TestOllamaUnavailable:
     def test_jobs_queue_when_ollama_down(
         self, memory_db: Database
     ) -> None:
+        """A failure schedules a backoff retry rather than burning through
+        all attempts in the same drain pass (phase0-reliability task 2)."""
         engine, summarizer = _make_engine(memory_db)
         session = engine.start_session()
         for i in range(5):
@@ -185,7 +187,9 @@ class TestOllamaUnavailable:
         assert summaries == []
 
         queue = JobQueue(memory_db)
-        assert queue.get_pending_count("generate_summary") == 0
+        # Still pending — deferred for retry, not burned through instantly.
+        assert queue.get_pending_count("generate_summary") > 0
+        assert queue.dequeue("generate_summary") is None  # backoff not yet elapsed
 
         conn = memory_db.connect()
         try:
@@ -193,6 +197,12 @@ class TestOllamaUnavailable:
                 "SELECT COUNT(*) as c FROM jobs "
                 "WHERE type = 'generate_summary' AND status = 'failed'"
             ).fetchone()
-            assert failed["c"] > 0
+            assert failed["c"] == 0
+            pending_with_backoff = conn.execute(
+                "SELECT COUNT(*) as c FROM jobs "
+                "WHERE type = 'generate_summary' AND status = 'pending' "
+                "AND next_attempt_at IS NOT NULL"
+            ).fetchone()
+            assert pending_with_backoff["c"] > 0
         finally:
             conn.close()

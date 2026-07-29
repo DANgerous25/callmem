@@ -373,6 +373,80 @@ class TestClaimedJobPayloadProcessed:
         assert final_statuses[job_b["id"]] == "completed"
 
 
+class TestAutoResurrection:
+    """Event-driven recovery: a successful job completion is proof the
+    backend is healthy again, so the worker requeues failed same-type
+    jobs for the same project — no polling, no health-check pinging.
+    """
+
+    def test_successful_completion_resurrects_failed_same_type_job(
+        self, memory_db: Database
+    ) -> None:
+        engine, ollama = _make_engine(memory_db)
+        engine.start_session()
+        session = engine.get_active_session()
+        assert session is not None
+
+        queue = JobQueue(memory_db)
+        failed_id = queue.enqueue(
+            "extract_entities",
+            {"event_ids": [], "session_id": session.id},
+            max_attempts=1,
+        )
+        queue.dequeue("extract_entities")
+        queue.fail(failed_id, "backend was down")
+        assert queue.get_job(failed_id).status == "failed"  # type: ignore[union-attr]
+
+        engine.ingest_one("response", "Use cursor-based pagination")
+        llm_response = (
+            '{"decisions": [{"title": "Use pagination", "content": "Cursor-based"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        runner = WorkerRunner(memory_db, ollama, engine.config)
+        with patch.object(ollama, "_generate", return_value=llm_response):
+            processed = runner.process_one()
+
+        assert processed is True
+        assert queue.get_job(failed_id).status == "pending"  # type: ignore[union-attr]
+
+    def test_resurrection_respects_requeue_count_cap(
+        self, memory_db: Database
+    ) -> None:
+        engine, ollama = _make_engine(memory_db)
+        engine.start_session()
+        session = engine.get_active_session()
+        assert session is not None
+
+        queue = JobQueue(memory_db)
+        failed_id = queue.enqueue(
+            "extract_entities",
+            {"event_ids": [], "session_id": session.id},
+            max_attempts=1,
+        )
+        queue.dequeue("extract_entities")
+        queue.fail(failed_id, "backend was down")
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE jobs SET requeue_count = 3 WHERE id = ?", (failed_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        engine.ingest_one("response", "Use cursor-based pagination")
+        llm_response = (
+            '{"decisions": [{"title": "Use pagination", "content": "Cursor-based"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        runner = WorkerRunner(memory_db, ollama, engine.config)
+        with patch.object(ollama, "_generate", return_value=llm_response):
+            processed = runner.process_one()
+
+        assert processed is True
+        assert queue.get_job(failed_id).status == "failed"  # type: ignore[union-attr]
+
+
 class TestWorkerThread:
     def test_start_and_stop(self, memory_db: Database) -> None:
         engine, ollama = _make_engine(memory_db)

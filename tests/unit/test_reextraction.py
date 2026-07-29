@@ -284,6 +284,103 @@ class TestReExtractCLI:
         assert result.exit_code == 0
         assert "events" in result.output.lower() or "Sessions" in result.output
 
+    def test_dry_run_with_yes_flag_runs_without_a_tty(self, memory_db: Database) -> None:
+        """--yes combined with --dry-run must never block on a confirmation
+        prompt — required for non-interactive/automated re-extract."""
+        from callmem.cli import main
+
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        engine = MemoryEngine(memory_db, config)
+        engine.start_session()
+        engine.ingest_one("note", "test event")
+
+        runner = CliRunner()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from callmem.core.database import Database
+
+            project_dir = Path(tmpdir)
+            callmem_dir = project_dir / ".callmem"
+            callmem_dir.mkdir()
+            db = Database(callmem_dir / "memory.db")
+            db.initialize()
+
+            cfg = Config(sensitive_data={"enabled": False, "llm_scan": False})
+            eng = MemoryEngine(db, cfg)
+            eng.start_session()
+            eng.ingest_one("note", "test event")
+
+            config_path = callmem_dir / "config.toml"
+            config_path.write_text(
+                '[project]\nname = "test"\n[llm]\nbackend = "ollama"\n[ollama]\nmodel = "test"\n'
+            )
+
+            with patch("callmem.core.engine._create_llm_client") as mock_create:
+                mock_llm = MagicMock()
+                mock_llm.is_available.return_value = True
+                mock_llm._generate.return_value = '{"decisions":[],"todos":[]}'
+                mock_create.return_value = mock_llm
+
+                result = runner.invoke(
+                    main,
+                    [
+                        "re-extract", "--dry-run", "--yes",
+                        "--project", str(project_dir),
+                    ],
+                    input="",
+                )
+
+        assert result.exit_code == 0
+        assert "Cancelled" not in result.output
+
+    def test_yes_flag_skips_confirmation_prompt(self, memory_db: Database) -> None:
+        """Without --yes, the CLI reads a confirmation from stdin; with no
+        input available that would abort. --yes must bypass that entirely
+        for a real (non-dry-run) re-extract."""
+        from callmem.cli import main
+
+        runner = CliRunner()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from callmem.core.database import Database
+
+            project_dir = Path(tmpdir)
+            callmem_dir = project_dir / ".callmem"
+            callmem_dir.mkdir()
+            db = Database(callmem_dir / "memory.db")
+            db.initialize()
+
+            cfg = Config(
+                project={"name": "test"},
+                sensitive_data={"enabled": False, "llm_scan": False},
+            )
+            eng = MemoryEngine(db, cfg)
+            eng.start_session()
+            eng.ingest_one("note", "test event")
+
+            config_path = callmem_dir / "config.toml"
+            config_path.write_text(
+                '[project]\nname = "test"\n[llm]\nbackend = "ollama"\n[ollama]\nmodel = "test"\n'
+            )
+
+            with patch("callmem.core.engine._create_llm_client") as mock_create:
+                mock_llm = MagicMock()
+                mock_llm.is_available.return_value = True
+                mock_llm._generate.return_value = '{"decisions":[],"todos":[]}'
+                mock_create.return_value = mock_llm
+
+                result = runner.invoke(
+                    main,
+                    ["re-extract", "--yes", "--project", str(project_dir)],
+                    input="",
+                )
+
+        assert result.exit_code == 0
+        assert "Cancelled" not in result.output
+        assert "Re-extraction complete" in result.output
+
     def test_no_db_shows_error(self) -> None:
         from callmem.cli import main
 

@@ -54,7 +54,7 @@ class TestInit:
     def test_database_initialized(self, tmp_path: Path) -> None:
         runner = CliRunner()
         result = runner.invoke(main, ["init", "--project", str(tmp_path)])
-        assert "Schema:   v15" in result.output
+        assert "Schema:   v16" in result.output
 
     def test_idempotent(self, tmp_path: Path) -> None:
         runner = CliRunner()
@@ -111,7 +111,7 @@ class TestStatus:
         result = runner.invoke(main, ["status", "--project", str(tmp_path)])
         assert result.exit_code == 0
         assert "Events:       0" in result.output
-        assert "Schema:       v15" in result.output
+        assert "Schema:       v16" in result.output
 
     def test_status_no_database(self, tmp_path: Path) -> None:
         runner = CliRunner()
@@ -123,6 +123,77 @@ class TestStatus:
         runner.invoke(main, ["init", "--project", str(tmp_path)])
         result = runner.invoke(main, ["status", "--project", str(tmp_path)])
         assert str(tmp_path) in result.output
+
+
+class TestRequeueFailed:
+    def _seed_failed_job(
+        self, tmp_path: Path, job_type: str = "extract_entities"
+    ) -> None:
+        import sqlite3
+
+        db_path = tmp_path / ".callmem" / "memory.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO jobs (id, type, payload, status, attempts, max_attempts, "
+            "created_at) VALUES (?, ?, '{}', 'failed', 1, 1, datetime('now'))",
+            (f"job-{job_type}", job_type),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_requeues_failed_jobs_and_reports_count(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_failed_job(tmp_path)
+
+        result = runner.invoke(
+            main, ["requeue-failed", "--project", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "1" in result.output
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        row = conn.execute(
+            "SELECT status, attempts, next_attempt_at FROM jobs WHERE id = ?",
+            ("job-extract_entities",),
+        ).fetchone()
+        conn.close()
+        assert row == ("pending", 0, None)
+
+    def test_type_filter(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_failed_job(tmp_path, "extract_entities")
+        self._seed_failed_job(tmp_path, "generate_summary")
+
+        result = runner.invoke(
+            main,
+            [
+                "requeue-failed", "--project", str(tmp_path),
+                "--type", "extract_entities",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "1" in result.output
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        statuses = dict(
+            conn.execute("SELECT id, status FROM jobs").fetchall()
+        )
+        conn.close()
+        assert statuses["job-extract_entities"] == "pending"
+        assert statuses["job-generate_summary"] == "failed"
+
+    def test_no_db_shows_error(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["requeue-failed", "--project", str(tmp_path)]
+        )
+        assert "No callmem database" in result.output
 
 
 class TestAudit:
