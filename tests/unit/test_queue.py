@@ -280,6 +280,33 @@ class TestRequeueFailed:
         count = queue.requeue_failed()
         assert count == 1
 
+    def test_requeue_failed_resets_requeue_count_to_zero(
+        self, memory_db: Database
+    ) -> None:
+        """A human running `requeue-failed` is declaring the underlying
+        problem fixed — the job must be eligible for auto-resurrection
+        again if it later fails for a new, unrelated reason, not
+        permanently capped by resurrections from before the fix."""
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "x")
+
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE jobs SET requeue_count = 3 WHERE id = ?", (job_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        queue.requeue_failed()
+
+        job = queue.get_job(job_id)
+        assert job is not None
+        assert job.requeue_count == 0
+
 
 class TestAutoRequeueFailed:
     def test_requeues_up_to_cap_for_matching_project_via_session(

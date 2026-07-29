@@ -180,6 +180,12 @@ class JobQueue:
         """Reset `failed` jobs back to `pending`, ignoring the requeue_count
         cap. Manual recovery path backing `callmem requeue-failed`.
 
+        Also resets requeue_count to 0: a human running this command is
+        declaring the underlying problem fixed, so these jobs must be
+        eligible for auto-resurrection again if they fail later for a new
+        reason — not permanently capped by resurrections from before the
+        fix.
+
         Returns the number of rows reset.
         """
         conn = self.db.connect()
@@ -187,14 +193,14 @@ class JobQueue:
             if job_type is not None:
                 cur = conn.execute(
                     "UPDATE jobs SET status = 'pending', attempts = 0, "
-                    "next_attempt_at = NULL "
+                    "next_attempt_at = NULL, requeue_count = 0 "
                     "WHERE status = 'failed' AND type = ?",
                     (job_type,),
                 )
             else:
                 cur = conn.execute(
                     "UPDATE jobs SET status = 'pending', attempts = 0, "
-                    "next_attempt_at = NULL "
+                    "next_attempt_at = NULL, requeue_count = 0 "
                     "WHERE status = 'failed'"
                 )
             conn.commit()
