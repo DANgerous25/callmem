@@ -290,6 +290,88 @@ class TestClaimedJobPayloadProcessed:
             "claimed job must go through queue.fail on error, not complete"
         )
 
+    def test_drain_phase_fault_does_not_reclassify_claimed_job(
+        self, memory_db: Database
+    ) -> None:
+        """A fault while draining OTHER pending jobs (e.g. the queue's own
+        dequeue() raising under contention) must not flip the status of the
+        job process_one already claimed and processed successfully — and
+        must not cause it to be reprocessed (duplicate entities) later.
+        """
+        engine, ollama = _make_engine(memory_db)
+        engine.start_session()
+        engine.ingest_one("response", "Decision one about caching")
+        engine.ingest_one("response", "Decision two about pagination")
+
+        queue = JobQueue(memory_db)
+        assert queue.get_pending_count("extract_entities") == 2
+
+        llm_response = (
+            '{"decisions": [{"title": "A decision", "content": "content"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        runner = WorkerRunner(memory_db, ollama, engine.config)
+        extractor = runner._handlers["extract_entities"]
+
+        with patch.object(ollama, "_generate", return_value=llm_response):
+            with patch.object(
+                extractor.queue, "dequeue",
+                side_effect=RuntimeError("database is locked"),
+            ):
+                processed = runner.process_one()
+
+            assert processed is True
+
+            conn = memory_db.connect()
+            try:
+                rows = conn.execute(
+                    "SELECT id, status FROM jobs WHERE type = 'extract_entities' "
+                    "ORDER BY created_at ASC"
+                ).fetchall()
+                entity_count = conn.execute(
+                    "SELECT COUNT(*) as c FROM entities"
+                ).fetchone()["c"]
+            finally:
+                conn.close()
+
+            job_a, job_b = rows[0], rows[1]
+            assert job_a["status"] == "completed", (
+                "the claimed job succeeded and must not be reclassified by "
+                "a fault in the unrelated drain phase"
+            )
+            assert job_b["status"] == "pending", (
+                "the fault happened before the drain could claim the second "
+                "job — it must stay pending for the next tick"
+            )
+            assert entity_count == 1
+
+            # Next tick: dequeue works again, second job drains normally.
+            processed_again = runner.process_one()
+
+        assert processed_again is True
+
+        conn = memory_db.connect()
+        try:
+            final_entity_count = conn.execute(
+                "SELECT COUNT(*) as c FROM entities"
+            ).fetchone()["c"]
+            final_statuses = {
+                r["id"]: r["status"]
+                for r in conn.execute(
+                    "SELECT id, status FROM jobs WHERE type = 'extract_entities'"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert final_entity_count == 2, (
+            "the second job should be processed exactly once on the next "
+            "tick — no duplicate entity from the previously-claimed job "
+            "being reprocessed"
+        )
+        assert final_statuses[job_a["id"]] == "completed"
+        assert final_statuses[job_b["id"]] == "completed"
+
 
 class TestWorkerThread:
     def test_start_and_stop(self, memory_db: Database) -> None:
