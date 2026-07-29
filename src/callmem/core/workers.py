@@ -124,12 +124,26 @@ class WorkerRunner:
         """Dispatch a job to the appropriate handler method.
 
         For EntityExtractor/Summarizer, the claimed job's own payload is
-        processed directly first — process_one owns that job's complete/fail
-        — then process_pending() drains any other jobs still pending.
+        processed directly first — process_one owns that job's complete/fail.
+        A fault here must propagate so process_one can fail the claimed job.
+
+        process_pending() then drains any other jobs still pending, in its
+        own try/except: a fault during the drain (e.g. the queue's dequeue
+        call itself raising under contention) must never be attributed to
+        the claimed job, which may have already completed successfully and
+        is not safe to reprocess — extraction/summarization inserts are not
+        idempotent. Any still-pending jobs the drain didn't reach are simply
+        picked up on the next tick.
         """
         if isinstance(handler, (EntityExtractor, Summarizer)):
             handler.process_job(job)
-            handler.process_pending()
+            try:
+                handler.process_pending()
+            except Exception as exc:
+                logger.error(
+                    "Drain phase failed after claimed job %s (type=%s) "
+                    "already succeeded: %s", job.id[:8], job.type, exc,
+                )
         elif isinstance(handler, (Compactor, StalenessChecker)):
             project_id = job.payload.get("project_id", "")
             handler.run(project_id)
