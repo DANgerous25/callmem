@@ -72,10 +72,17 @@ document_prefix = "search_document: "
 # are available, full-text otherwise). If the best match clears `threshold`,
 # one batched LLM call judges ADD (distinct, keep both) / UPDATE (new entity
 # refines an old one — old marked stale+superseded) / NOOP (duplicate — new
-# entity archived). Fail-open: a malformed or absent judge response keeps
-# everything as ADD. Nothing is ever deleted.
+# entity archived). Fail-open: a malformed, absent, or even partially-answered
+# judge response keeps everything as ADD. Nothing is ever deleted — verdicts
+# only ever mark an entity stale or archived, both reversible states.
+#
+# Off by default: this feature marks stale / archives entities that already
+# exist in your project's memory, and `threshold` is only calibrated against
+# a small probe corpus, not your data. Turn it on once you've watched it run
+# (consolidation_log records added/updated/noop/judge_failed per run) and are
+# comfortable with the threshold.
 [consolidation]
-enabled = true
+enabled = false
 # Same 0..1 similarity scale as [embeddings].min_similarity
 threshold = 0.55
 # Top-K similar existing entities considered per new entity

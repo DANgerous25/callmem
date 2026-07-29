@@ -131,9 +131,18 @@ query_prefix = "search_query: "    # nomic task prefixes; "" for other models
 document_prefix = "search_document: "
 
 [consolidation]
-# LLM-routed ADD/UPDATE/NOOP judgment at extraction-batch completion.
-# Fail-open: malformed/absent judge output keeps everything as ADD.
-enabled = true
+# LLM-routed ADD/UPDATE/NOOP judgment at extraction-batch completion: each
+# new entity is compared to its most similar existing entities and, above
+# `threshold`, judged in one batched LLM call as ADD (distinct, keep both),
+# UPDATE (refines an old entity — old marked stale+superseded), or NOOP
+# (duplicate — new entity archived). Fail-open: a malformed, absent, or
+# partial judge response keeps everything as ADD; nothing is ever deleted.
+#
+# Off by default — this marks stale / archives entities in your existing
+# memory, and `threshold` is only calibrated against a small probe corpus.
+# Enable per project once you've reviewed `consolidation_log` (per-run
+# added/updated/noop/judge_failed counts) and are comfortable with it.
+enabled = false
 threshold = 0.55                   # same 0..1 scale as [embeddings].min_similarity
 top_k = 5                          # similar existing entities considered per new entity
 

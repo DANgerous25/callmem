@@ -8,6 +8,15 @@ discipline as ``retrieval.py``'s hybrid search). Entities whose best match
 clears the configured threshold go into ONE batched LLM judgment call;
 anything below the threshold is left alone (ADD, no LLM call spent on it).
 
+Batch siblings can never be candidates for each other. Entities are
+persisted (and FTS-indexed) before consolidation runs, so without an
+explicit exclusion a same-batch entity would look like a legitimate
+"existing" candidate -- a judge mistakenly returning mutual NOOP would
+archive both copies of the same new fact, and mutual UPDATE would create a
+supersede 2-cycle. Every candidate lookup excludes the whole batch's ids,
+not just the entity being judged, and ``_parse`` rejects any
+``existing_id`` that names a batch entity as a second line of defense.
+
 Verdicts are applied through the existing non-destructive staleness verbs
 -- nothing is ever deleted:
   - ADD:    the default. No action.
@@ -16,14 +25,21 @@ Verdicts are applied through the existing non-destructive staleness verbs
             new entity is kept as-is.
   - NOOP:   the new entity duplicates an existing one with nothing new.
             The new entity is archived immediately; the existing entity's
-            updated_at is bumped so it surfaces as current.
+            updated_at is bumped so it surfaces as current. If that
+            existing entity was itself superseded earlier in the same
+            batch, the touch (and the "duplicate of") redirects to its
+            still-active successor instead -- the survivor must be live.
 
 Fail-open is the hard requirement here: any judge response that isn't
 exactly the expected JSON shape -- covering every candidate entity with a
-valid verdict and, for UPDATE/NOOP, an id drawn from that entity's own
-candidate list -- is treated as a bad LLM day. Every entity in the batch
-stays ADD, the failure is logged loudly, and the run is still recorded in
-``consolidation_log`` with ``judge_failed=True``.
+valid verdict and, for UPDATE/NOOP, a string id drawn from that entity's
+own candidate list -- is treated as a bad LLM day. Every entity in the
+batch stays ADD, the failure is logged loudly, and the run is still
+recorded in ``consolidation_log`` with ``judge_failed=True``.
+
+Ships disabled by default (see ``ConsolidationConfig``): the similarity
+threshold is uncalibrated and this feature archives user memory, so it is
+opt-in per project until tuned against real data.
 """
 
 from __future__ import annotations
@@ -93,15 +109,23 @@ class EntityConsolidator:
 
         Only entities passed in ``entities`` are ever touched as the
         "new" side; candidates are read-only until a verdict says
-        otherwise.
+        otherwise, and no entity in ``entities`` can ever be a candidate
+        for another entity also in ``entities``.
         """
         settings = self.config.consolidation
         if not settings.enabled or not entities or self.llm is None:
             return ConsolidationStats()
 
+        batch_ids = {e.id for e in entities}
+        # One embed() call for the whole batch rather than one per entity.
+        vectors_by_id = self._embed_batch(project_id, entities) or {}
+
         qualifying: dict[str, tuple[Entity, list[dict[str, Any]]]] = {}
         for entity in entities:
-            hits = self._find_similar(project_id, entity, settings.top_k)
+            hits = self._find_similar(
+                project_id, entity, settings.top_k, batch_ids,
+                vectors_by_id.get(entity.id),
+            )
             if hits and hits[0]["_similarity"] >= settings.threshold:
                 qualifying[entity.id] = (entity, hits)
 
@@ -114,7 +138,7 @@ class EntityConsolidator:
             entries_block=_format_entries(qualifying.values()),
         )
         raw = self.llm.extract(prompt)
-        decisions = self._parse(raw, qualifying)
+        decisions = self._parse(raw, qualifying, batch_ids)
 
         if decisions is None:
             logger.warning(
@@ -129,6 +153,10 @@ class EntityConsolidator:
             return stats
 
         stats = self._apply(entities, decisions)
+        logger.info(
+            "Consolidation run for project %s: %d added, %d updated, "
+            "%d noop", project_id, stats.added, stats.updated, stats.noop,
+        )
         self._log_run(project_id, stats)
         return stats
 
@@ -140,27 +168,18 @@ class EntityConsolidator:
             self._embedder_resolved = True
         return self._embedder
 
-    def _find_similar(
-        self, project_id: str, entity: Entity, top_k: int,
-    ) -> list[dict[str, Any]]:
-        """Top-K similar existing entities, most similar first.
+    def _embed_batch(
+        self, project_id: str, entities: list[Entity],
+    ) -> dict[str, list[float]] | None:
+        """Embed every entity in the batch with ONE backend call.
 
-        Vector search when this project has usable embeddings, FTS
-        text-similarity otherwise. Both paths exclude ``entity`` itself,
-        archived entities, and stale entities, and restrict candidates to
-        ``entity.type`` -- a `todo` should never be judged against a
-        `fact`.
+        Returns None when vector data is unusable for this project at
+        all (feature off, no stored embeddings, backend unreachable, or
+        the batched call itself failed) -- callers then fall back to FTS
+        for every entity. A per-entity vector can still be missing from
+        an otherwise-successful result (an empty vector for one input);
+        that entity individually falls back to FTS.
         """
-        vector_hits = self._vector_similar(project_id, entity, top_k)
-        if vector_hits is not None:
-            return vector_hits
-        return self._fts_similar(project_id, entity, top_k)
-
-    def _vector_similar(
-        self, project_id: str, entity: Entity, top_k: int,
-    ) -> list[dict[str, Any]] | None:
-        """Vector-ranked candidates, or None when vector data is unusable
-        for this project -- signals the caller to fall back to FTS."""
         settings = self.config.embeddings
         if not settings.enabled or not self.repo.has_embeddings(project_id):
             return None
@@ -169,14 +188,58 @@ class EntityConsolidator:
         if embedder is None:
             return None
 
-        text = settings.document_prefix + entity_embedding_text({
-            "title": entity.title, "synopsis": entity.synopsis,
-            "key_points": entity.key_points, "content": entity.content,
-        })
-        vectors = embedder.embed([text], timeout=settings.timeout)
-        if not vectors or not vectors[0]:
+        texts = [
+            settings.document_prefix + entity_embedding_text({
+                "title": e.title, "synopsis": e.synopsis,
+                "key_points": e.key_points, "content": e.content,
+            })
+            for e in entities
+        ]
+        vectors = embedder.embed(texts, timeout=settings.timeout)
+        if not vectors or len(vectors) != len(entities):
             return None
 
+        return {
+            e.id: v for e, v in zip(entities, vectors, strict=True) if v
+        }
+
+    def _find_similar(
+        self,
+        project_id: str,
+        entity: Entity,
+        top_k: int,
+        exclude_ids: set[str],
+        vector: list[float] | None,
+    ) -> list[dict[str, Any]]:
+        """Top-K similar existing entities, most similar first.
+
+        Vector search when a precomputed vector is available for this
+        entity, FTS text-similarity otherwise. Both paths exclude every
+        id in ``exclude_ids`` (the whole current batch, not just
+        ``entity`` itself), archived entities, and stale entities, and
+        restrict candidates to ``entity.type`` -- a `todo` should never
+        be judged against a `fact`.
+        """
+        if vector is not None:
+            hits = self._vector_candidates(
+                project_id, entity, top_k, exclude_ids, vector,
+            )
+            if hits is not None:
+                return hits
+        return self._fts_similar(project_id, entity, top_k, exclude_ids)
+
+    def _vector_candidates(
+        self,
+        project_id: str,
+        entity: Entity,
+        top_k: int,
+        exclude_ids: set[str],
+        vector: list[float],
+    ) -> list[dict[str, Any]] | None:
+        """Vector-ranked candidates for a precomputed ``vector``, or None
+        when vector data is unusable for this candidate set -- signals
+        the caller to fall back to FTS."""
+        settings = self.config.embeddings
         model_key = embedding_model_key(self.config)
         candidates = self.repo.load_embedding_candidates(
             project_id, model_key, types=[entity.type],
@@ -186,11 +249,16 @@ class EntityConsolidator:
             return None
 
         # No floor here: an empty result at floor 0.0 can only mean "no
-        # usable vector data for this candidate set", which is exactly
-        # the fallback signal. The configured threshold is applied later,
-        # by the caller, against these raw similarity scores.
-        scored = rank_by_similarity(vectors[0], candidates, min_similarity=0.0)
-        ids = [eid for _score, eid in scored if eid != entity.id][:top_k]
+        # usable vector data for this candidate set" (e.g. every stored
+        # vector has a different dimensionality than the query -- a
+        # model mismatch). That is the fallback signal, so it must
+        # return None, not []. The configured threshold is applied
+        # later, by the caller, against these raw similarity scores.
+        scored = rank_by_similarity(vector, candidates, min_similarity=0.0)
+        if not scored:
+            return None
+
+        ids = [eid for _score, eid in scored if eid not in exclude_ids][:top_k]
         if not ids:
             return []
 
@@ -207,19 +275,26 @@ class EntityConsolidator:
         ]
 
     def _fts_similar(
-        self, project_id: str, entity: Entity, top_k: int,
+        self,
+        project_id: str,
+        entity: Entity,
+        top_k: int,
+        exclude_ids: set[str],
     ) -> list[dict[str, Any]]:
         if not entity.title:
             return []
+        # Over-fetch by the exclusion set's size so filtering out every
+        # batch sibling (worst case: they all rank above the real
+        # candidates) still leaves up to top_k real results.
         rows = self.repo.search_entities_fts(
             project_id, entity.title, types=[entity.type],
-            include_stale=False, limit=top_k + 1,
+            include_stale=False, limit=top_k + len(exclude_ids),
         )
         scored = [
             dict(row, _similarity=_text_similarity(
                 entity.title, row.get("title") or "",
             ))
-            for row in rows if row["id"] != entity.id
+            for row in rows if row["id"] not in exclude_ids
         ]
         scored.sort(key=lambda r: r["_similarity"], reverse=True)
         return scored[:top_k]
@@ -230,9 +305,16 @@ class EntityConsolidator:
         self,
         raw: str | None,
         qualifying: dict[str, tuple[Entity, list[dict[str, Any]]]],
+        batch_ids: set[str],
     ) -> dict[str, _Decision] | None:
         """Validate the judge's JSON, or None on any deviation from the
-        expected shape -- the caller treats None as fail-open."""
+        expected shape -- the caller treats None as fail-open.
+
+        Every id involved must be a string: a list/dict-valued id would
+        raise TypeError on the ``in`` checks below (unhashable), which
+        would bypass the fail-open path entirely -- so ids are type
+        -checked before any membership test.
+        """
         if not raw:
             return None
         try:
@@ -246,14 +328,27 @@ class EntityConsolidator:
         for item in data:
             if not isinstance(item, dict):
                 return None
+
             new_id = item.get("new_id")
+            if not isinstance(new_id, str):
+                return None
             if new_id not in qualifying or new_id in decisions:
                 return None
+
             verdict = str(item.get("verdict", "")).strip().upper()
             if verdict not in _VALID_VERDICTS:
                 return None
+
             existing_id = item.get("existing_id")
             if verdict in ("UPDATE", "NOOP"):
+                if not isinstance(existing_id, str):
+                    return None
+                if existing_id in batch_ids:
+                    # Belt-and-braces: candidate lookups already exclude
+                    # every batch id (see _find_similar), so this should
+                    # be unreachable. Treat it as malformed rather than
+                    # ever risk a same-batch archive/supersede cycle.
+                    return None
                 candidate_ids = {c["id"] for c in qualifying[new_id][1]}
                 if existing_id not in candidate_ids:
                     return None
@@ -272,6 +367,12 @@ class EntityConsolidator:
         self, entities: list[Entity], decisions: dict[str, _Decision],
     ) -> ConsolidationStats:
         stats = ConsolidationStats()
+        # old_id -> new_id for every UPDATE applied earlier in this same
+        # loop. A NOOP whose existing_id shows up here targets an entity
+        # that this very run just marked stale -- redirect the touch (and
+        # the "duplicate of") to its still-active successor so the
+        # survivor of a NOOP is never a just-superseded entity.
+        superseded_this_run: dict[str, str] = {}
         for entity in entities:
             decision = decisions.get(entity.id)
             if decision is None:
@@ -283,10 +384,12 @@ class EntityConsolidator:
                     existing_id, reason="consolidated",
                     superseded_by=entity.id,
                 )
+                superseded_this_run[existing_id] = entity.id
                 stats.updated += 1
             elif verdict == "NOOP" and existing_id is not None:
+                survivor_id = superseded_this_run.get(existing_id, existing_id)
                 self.repo.archive_entity(entity.id)
-                self.repo.touch_entity(existing_id)
+                self.repo.touch_entity(survivor_id)
                 stats.noop += 1
             else:
                 # ADD, or an UPDATE/NOOP somehow missing its existing_id --

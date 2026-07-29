@@ -110,9 +110,16 @@ class ConsolidationConfig(BaseModel):
     Fail-open by design: an unparseable or absent judge response keeps
     every entity in the batch as ADD rather than risk destroying data on
     a bad LLM day.
+
+    ``enabled`` defaults to False: this feature archives and marks stale
+    entities that already exist in a project's memory, and the default
+    ``threshold`` is not yet calibrated against real project data (only
+    against a small probe corpus -- see the phase-1 task report). Turn it
+    on per project once you've watched it run and are comfortable with
+    the threshold; the fail-open guarantee above holds regardless.
     """
 
-    enabled: bool = True
+    enabled: bool = False
     threshold: float = 0.55
     top_k: int = 5
 
