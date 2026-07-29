@@ -392,6 +392,23 @@ class Repository:
         finally:
             conn.close()
 
+    def get_newest_event_timestamp(self, project_id: str) -> str | None:
+        """Return the `timestamp` of the most recent event for a project.
+
+        Used by the briefing's pipeline health check to detect events still
+        being captured while extraction has stalled.
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT timestamp FROM events WHERE project_id = ? "
+                "ORDER BY timestamp DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            return row["timestamp"] if row else None
+        finally:
+            conn.close()
+
     def get_events_by_ids(
         self, event_ids: list[str], order_by: str = "timestamp ASC"
     ) -> list[dict[str, Any]]:

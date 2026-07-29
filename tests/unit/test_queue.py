@@ -457,3 +457,53 @@ class TestGetPendingCount:
         queue.enqueue("generate_summary", {})
         assert queue.get_pending_count("extract_entities") == 1
         assert queue.get_pending_count("generate_summary") == 1
+
+
+class TestGetFailedCount:
+    def test_zero_when_no_failed_jobs(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {})
+        assert queue.get_failed_count() == 0
+
+    def test_counts_failed_jobs(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "boom")
+        assert queue.get_failed_count() == 1
+
+    def test_does_not_count_pending_or_completed(
+        self, memory_db: Database,
+    ) -> None:
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {})
+        completed_id = queue.enqueue("extract_entities", {})
+        queue.dequeue("extract_entities")
+        job = queue.dequeue("extract_entities")
+        assert job is not None
+        queue.complete(job.id)
+        assert queue.get_failed_count() == 0
+        assert job.id == completed_id
+
+
+class TestGetLastCompletedAt:
+    def test_none_when_never_completed(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        assert queue.get_last_completed_at("extract_entities") is None
+
+    def test_returns_completed_at_of_most_recent(
+        self, memory_db: Database,
+    ) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {})
+        queue.dequeue("extract_entities")
+        queue.complete(job_id)
+        result = queue.get_last_completed_at("extract_entities")
+        assert result is not None
+
+    def test_filters_by_job_type(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        summary_id = queue.enqueue("generate_summary", {})
+        queue.dequeue("generate_summary")
+        queue.complete(summary_id)
+        assert queue.get_last_completed_at("extract_entities") is None

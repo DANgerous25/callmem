@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from callmem.core.briefing import BriefingGenerator
+from callmem.core.queue import JobQueue
 from callmem.core.repository import Repository
 from callmem.models.config import Config
 from callmem.models.entities import Entity
@@ -292,3 +293,91 @@ class TestBriefingGeneration:
         content = summary_path.read_text()
         assert len(content) > 0
         assert isinstance(briefing.observations_loaded, int)
+
+
+class TestPipelineHealth:
+    """Pipeline health banner: unhealthy on too many failed jobs, or when
+    events keep arriving but extraction has stalled.
+    """
+
+    def _seed_failed_jobs(self, memory_db: Database, count: int) -> None:
+        queue = JobQueue(memory_db)
+        for _ in range(count):
+            job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+            queue.dequeue("extract_entities")
+            queue.fail(job_id, "backend unreachable")
+
+    def _complete_job_at(
+        self, memory_db: Database, job_type: str, completed_at: str,
+    ) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue(job_type, {})
+        queue.dequeue(job_type)
+        queue.complete(job_id)
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE jobs SET completed_at = ? WHERE id = ?",
+                (completed_at, job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_many_failed_jobs_trigger_banner(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        self._seed_failed_jobs(memory_db, 21)
+        repo = Repository(memory_db)
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" in briefing.content
+        assert "21 failed jobs" in briefing.content
+        assert "callmem requeue-failed" in briefing.content
+        assert briefing.pipeline_health["status"] == "unhealthy"
+        assert briefing.pipeline_health["failed_jobs"] == 21
+        # Banner must appear before entity sections.
+        banner_idx = briefing.content.index("MEMORY PIPELINE UNHEALTHY")
+        action_idx = briefing.content.index("Add auth middleware")
+        assert banner_idx < action_idx
+
+    def test_stale_extraction_with_fresh_events_triggers_banner(
+        self, memory_db: Database,
+    ) -> None:
+        from datetime import datetime, timedelta
+
+        from callmem.compat import UTC
+
+        # _seed_with_entities already inserts one event stamped "now".
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+
+        stale_completed_at = (
+            datetime.now(UTC) - timedelta(days=10)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        self._complete_job_at(memory_db, "extract_entities", stale_completed_at)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" in briefing.content
+        assert briefing.pipeline_health["status"] == "unhealthy"
+        assert briefing.pipeline_health["days_since_last_extraction"] == 10
+
+    def test_healthy_db_has_no_banner(self, memory_db: Database) -> None:
+        from datetime import datetime
+
+        from callmem.compat import UTC
+
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        self._complete_job_at(
+            memory_db, "extract_entities",
+            datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" not in briefing.content
+        assert briefing.pipeline_health["status"] == "healthy"
+        assert briefing.pipeline_health["failed_jobs"] == 0

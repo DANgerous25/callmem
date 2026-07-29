@@ -252,6 +252,37 @@ class TestEventQueries:
         assert repo.count_events(project.id, session_id=s1.id) == 3
         assert repo.count_events(project.id, session_id=s2.id) == 1
 
+    def test_get_newest_event_timestamp_none_when_empty(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project, _ = self._make_project_and_session(repo)
+        assert repo.get_newest_event_timestamp(project.id) is None
+
+    def test_get_newest_event_timestamp_returns_latest(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project, session = self._make_project_and_session(repo)
+        repo.insert_event(
+            Event(
+                session_id=session.id, project_id=project.id,
+                type="prompt", content="older",
+                timestamp="2020-01-01T00:00:00+00:00",
+            )
+        )
+        repo.insert_event(
+            Event(
+                session_id=session.id, project_id=project.id,
+                type="prompt", content="newer",
+                timestamp="2024-06-01T00:00:00+00:00",
+            )
+        )
+        assert (
+            repo.get_newest_event_timestamp(project.id)
+            == "2024-06-01T00:00:00+00:00"
+        )
+
     def test_find_recent_event_found(self, memory_db: Database) -> None:
         repo = Repository(memory_db)
         project, session = self._make_project_and_session(repo)

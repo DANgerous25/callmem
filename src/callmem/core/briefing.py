@@ -33,6 +33,10 @@ _PYPI_JSON_URL = "https://pypi.org/pypi/callmem/json"
 # from the token-budget calculation — it is capped independently here.
 _OVERVIEW_MAX_TOKENS = 500
 
+# Pipeline health thresholds (see _compute_pipeline_health).
+_PIPELINE_FAILED_JOBS_THRESHOLD = 20
+_PIPELINE_STALE_EXTRACTION_DAYS = 3
+
 
 CATEGORY_EMOJI: dict[str, str] = {
     "feature": "\U0001f7e2",
@@ -75,6 +79,7 @@ class Briefing:
     read_tokens: int = 0
     work_investment: int = 0
     savings_pct: float = 0.0
+    pipeline_health: dict[str, Any] = field(default_factory=dict)
 
 
 NEW_PROJECT_MESSAGE = (
@@ -91,6 +96,20 @@ def _truncate_to_tokens(text: str, max_tokens: int) -> str:
     if len(text) <= max_chars:
         return text
     return text[:max_chars - 3] + "..."
+
+
+def _parse_db_timestamp(ts: str) -> datetime:
+    """Parse a DB timestamp into an aware UTC datetime.
+
+    Timestamps in this codebase come from two sources: SQLite's
+    ``datetime('now')`` (naive ``"YYYY-MM-DD HH:MM:SS"``, always UTC) and
+    Python's ``datetime.now(UTC).isoformat()`` (aware, ``T``-separated).
+    Naive values are assumed UTC so both compare correctly.
+    """
+    parsed = datetime.fromisoformat(ts.replace(" ", "T"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
 
 
 def _short_id(full_id: str | None) -> str:
@@ -228,6 +247,9 @@ class BriefingGenerator:
     ) -> Briefing:
         budget = max_tokens or self.config.briefing.max_tokens
 
+        pipeline_health = self._compute_pipeline_health(project_id)
+        health_banner = self._build_pipeline_health_banner(pipeline_health)
+
         all_entities, suppressed_stale = self._fetch_all_entities(
             project_id, focus,
         )
@@ -255,11 +277,14 @@ class BriefingGenerator:
                 )
             if overview_block:
                 content = overview_block + "\n" + content
+            if health_banner:
+                content = health_banner + "\n\n" + content
             return Briefing(
                 project_name=project_name,
                 content=content,
                 token_count=_estimate_tokens(content),
                 components={"new_project": 1},
+                pipeline_health=pipeline_health,
             )
 
         observations_loaded = len(all_entities)
@@ -347,6 +372,11 @@ class BriefingGenerator:
         if last_session:
             components["last_session"] = 1
 
+        # The health banner is prepended after truncation/budget trimming so
+        # it always survives intact, like the protected footer tail.
+        if health_banner:
+            assembled = health_banner + "\n\n" + assembled
+
         return Briefing(
             project_name=project_name,
             content=assembled,
@@ -356,6 +386,7 @@ class BriefingGenerator:
             read_tokens=read_tokens,
             work_investment=work_investment,
             savings_pct=savings_pct,
+            pipeline_health=pipeline_health,
         )
 
     def write_session_summary(
@@ -635,6 +666,74 @@ class BriefingGenerator:
             parts.append(f"  {line}")
         parts.append("")
         return "\n".join(parts)
+
+    def _compute_pipeline_health(self, project_id: str) -> dict[str, Any]:
+        """Determine extraction pipeline health from the DB only.
+
+        No network or LLM calls — this only reads job/event timestamps and
+        counts. Unhealthy when either:
+          - more than _PIPELINE_FAILED_JOBS_THRESHOLD jobs are 'failed', or
+          - events are still arriving (newest event less than
+            _PIPELINE_STALE_EXTRACTION_DAYS days old) while the newest
+            successfully-completed extract_entities job is more than
+            _PIPELINE_STALE_EXTRACTION_DAYS days older than that event
+            — i.e. capture is working but extraction has silently stalled.
+
+        A project with no extract_entities job history at all (e.g. it
+        doesn't use the async job queue for extraction) is not flagged by
+        the second condition — there's no completed job to compare
+        against, so this only fires once a *regression* from a working
+        state is observable.
+        """
+        from callmem.core.queue import JobQueue
+
+        queue = JobQueue(self.repo.db)
+        failed_jobs = queue.get_failed_count()
+        last_extraction_at = queue.get_last_completed_at("extract_entities")
+        newest_event_at = self.repo.get_newest_event_timestamp(project_id)
+
+        now = datetime.now(UTC)
+        extraction_stalled = False
+        if newest_event_at is not None and last_extraction_at is not None:
+            newest_event_dt = _parse_db_timestamp(newest_event_at)
+            event_age_days = (now - newest_event_dt).total_seconds() / 86400
+            if event_age_days < _PIPELINE_STALE_EXTRACTION_DAYS:
+                gap_days = (
+                    newest_event_dt - _parse_db_timestamp(last_extraction_at)
+                ).total_seconds() / 86400
+                if gap_days > _PIPELINE_STALE_EXTRACTION_DAYS:
+                    extraction_stalled = True
+
+        unhealthy = (
+            failed_jobs > _PIPELINE_FAILED_JOBS_THRESHOLD or extraction_stalled
+        )
+
+        if last_extraction_at is not None:
+            reference_dt = _parse_db_timestamp(last_extraction_at)
+        elif newest_event_at is not None:
+            # Extraction has never completed — fall back to event age so
+            # the banner still reports a real, meaningful number.
+            reference_dt = _parse_db_timestamp(newest_event_at)
+        else:
+            reference_dt = now
+        days_since_last_extraction = round((now - reference_dt).total_seconds() / 86400)
+
+        return {
+            "status": "unhealthy" if unhealthy else "healthy",
+            "failed_jobs": failed_jobs,
+            "days_since_last_extraction": days_since_last_extraction,
+        }
+
+    def _build_pipeline_health_banner(self, health: dict[str, Any]) -> str | None:
+        """Render the pipeline-health banner, or None when healthy."""
+        if health.get("status") != "unhealthy":
+            return None
+        return (
+            f"⚠ MEMORY PIPELINE UNHEALTHY: {health['failed_jobs']} failed jobs; "
+            f"last successful extraction {health['days_since_last_extraction']}d ago "
+            "(events still being captured). Fix: check backend config, then run "
+            "'callmem requeue-failed'."
+        )
 
     def _fetch_event_count(self, project_id: str) -> int:
         conn = self.repo.db.connect()

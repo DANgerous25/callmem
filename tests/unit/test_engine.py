@@ -545,3 +545,12 @@ class TestProjectAutoCreation:
         project = repo.get_project(engine.project_id)
         assert project is not None
         assert project.name == "my-app"
+
+
+class TestGetBriefing:
+    def test_briefing_payload_includes_pipeline_health(
+        self, engine: MemoryEngine,
+    ) -> None:
+        briefing = engine.get_briefing()
+        assert "pipeline_health" in briefing
+        assert briefing["pipeline_health"]["status"] == "healthy"

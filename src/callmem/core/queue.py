@@ -345,3 +345,37 @@ class JobQueue:
             return counts
         finally:
             conn.close()
+
+    def get_failed_count(self) -> int:
+        """Return the total number of jobs currently in 'failed' status.
+
+        Used by the briefing's pipeline health check — a large failed
+        count means a backend outage is silently piling up dead jobs.
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed'"
+            ).fetchone()
+            return row["c"]
+        finally:
+            conn.close()
+
+    def get_last_completed_at(self, job_type: str) -> str | None:
+        """Return the `completed_at` of the most recently completed job of
+        `job_type`, or None if no such job has ever completed.
+
+        Used by the briefing's pipeline health check to detect a stalled
+        extraction pipeline (events flowing in but nothing being extracted).
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT completed_at FROM jobs "
+                "WHERE status = 'completed' AND type = ? "
+                "ORDER BY completed_at DESC LIMIT 1",
+                (job_type,),
+            ).fetchone()
+            return row["completed_at"] if row else None
+        finally:
+            conn.close()
