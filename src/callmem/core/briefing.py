@@ -674,49 +674,54 @@ class BriefingGenerator:
         counts. Unhealthy when either:
           - more than _PIPELINE_FAILED_JOBS_THRESHOLD jobs are 'failed', or
           - events are still arriving (newest event less than
-            _PIPELINE_STALE_EXTRACTION_DAYS days old) while the newest
-            successfully-completed extract_entities job is more than
-            _PIPELINE_STALE_EXTRACTION_DAYS days older than that event
-            — i.e. capture is working but extraction has silently stalled.
+            _PIPELINE_STALE_EXTRACTION_DAYS days old) while extraction isn't
+            keeping up — either a completed extract_entities job exists but
+            is more than _PIPELINE_STALE_EXTRACTION_DAYS days older than
+            that event (a regression), or extract_entities jobs exist in
+            the queue (any status) but none has EVER completed (extraction
+            has never worked, not just regressed).
 
-        A project with no extract_entities job history at all (e.g. it
-        doesn't use the async job queue for extraction) is not flagged by
-        the second condition — there's no completed job to compare
-        against, so this only fires once a *regression* from a working
-        state is observable.
+        A project with no extract_entities job rows at all (e.g. it doesn't
+        use the async job queue for extraction, or an empty test fixture)
+        is not flagged by either extraction condition — there's no job
+        history to judge it against.
         """
         from callmem.core.queue import JobQueue
 
         queue = JobQueue(self.repo.db)
         failed_jobs = queue.get_failed_count()
         last_extraction_at = queue.get_last_completed_at("extract_entities")
+        has_extraction_jobs = queue.has_any_jobs("extract_entities")
         newest_event_at = self.repo.get_newest_event_timestamp(project_id)
 
         now = datetime.now(UTC)
         extraction_stalled = False
-        if newest_event_at is not None and last_extraction_at is not None:
+        if newest_event_at is not None:
             newest_event_dt = _parse_db_timestamp(newest_event_at)
             event_age_days = (now - newest_event_dt).total_seconds() / 86400
             if event_age_days < _PIPELINE_STALE_EXTRACTION_DAYS:
-                gap_days = (
-                    newest_event_dt - _parse_db_timestamp(last_extraction_at)
-                ).total_seconds() / 86400
-                if gap_days > _PIPELINE_STALE_EXTRACTION_DAYS:
+                if last_extraction_at is not None:
+                    gap_days = (
+                        newest_event_dt - _parse_db_timestamp(last_extraction_at)
+                    ).total_seconds() / 86400
+                    if gap_days > _PIPELINE_STALE_EXTRACTION_DAYS:
+                        extraction_stalled = True
+                elif has_extraction_jobs:
                     extraction_stalled = True
 
         unhealthy = (
             failed_jobs > _PIPELINE_FAILED_JOBS_THRESHOLD or extraction_stalled
         )
 
+        days_since_last_extraction: int | None
         if last_extraction_at is not None:
-            reference_dt = _parse_db_timestamp(last_extraction_at)
-        elif newest_event_at is not None:
-            # Extraction has never completed — fall back to event age so
-            # the banner still reports a real, meaningful number.
-            reference_dt = _parse_db_timestamp(newest_event_at)
+            days_since_last_extraction = round(
+                (now - _parse_db_timestamp(last_extraction_at)).total_seconds() / 86400
+            )
         else:
-            reference_dt = now
-        days_since_last_extraction = round((now - reference_dt).total_seconds() / 86400)
+            # Extraction has never completed — no meaningful "days ago"
+            # figure exists; the banner renders "never" for this case.
+            days_since_last_extraction = None
 
         return {
             "status": "unhealthy" if unhealthy else "healthy",
@@ -728,9 +733,11 @@ class BriefingGenerator:
         """Render the pipeline-health banner, or None when healthy."""
         if health.get("status") != "unhealthy":
             return None
+        days = health.get("days_since_last_extraction")
+        extraction_desc = "never" if days is None else f"{days}d ago"
         return (
             f"⚠ MEMORY PIPELINE UNHEALTHY: {health['failed_jobs']} failed jobs; "
-            f"last successful extraction {health['days_since_last_extraction']}d ago "
+            f"last successful extraction {extraction_desc} "
             "(events still being captured). Fix: check backend config, then run "
             "'callmem requeue-failed'."
         )

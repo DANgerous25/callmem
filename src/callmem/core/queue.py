@@ -361,6 +361,24 @@ class JobQueue:
         finally:
             conn.close()
 
+    def has_any_jobs(self, job_type: str) -> bool:
+        """Return True if any job of `job_type` exists, in any status.
+
+        Used by the briefing's pipeline health check to distinguish "this
+        project has never run extraction through the job queue at all" (not
+        a regression — e.g. legacy/synchronous extraction) from "jobs have
+        been queued but none has ever completed" (extraction has never
+        worked).
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM jobs WHERE type = ? LIMIT 1", (job_type,)
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def get_last_completed_at(self, job_type: str) -> str | None:
         """Return the `completed_at` of the most recently completed job of
         `job_type`, or None if no such job has ever completed.

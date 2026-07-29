@@ -507,3 +507,26 @@ class TestGetLastCompletedAt:
         queue.dequeue("generate_summary")
         queue.complete(summary_id)
         assert queue.get_last_completed_at("extract_entities") is None
+
+
+class TestHasAnyJobs:
+    def test_false_when_no_jobs_of_type(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        assert queue.has_any_jobs("extract_entities") is False
+
+    def test_true_for_pending_job(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {})
+        assert queue.has_any_jobs("extract_entities") is True
+
+    def test_true_for_failed_job(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "boom")
+        assert queue.has_any_jobs("extract_entities") is True
+
+    def test_filters_by_job_type(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        queue.enqueue("generate_summary", {})
+        assert queue.has_any_jobs("extract_entities") is False

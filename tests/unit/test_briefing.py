@@ -364,6 +364,45 @@ class TestPipelineHealth:
         assert briefing.pipeline_health["status"] == "unhealthy"
         assert briefing.pipeline_health["days_since_last_extraction"] == 10
 
+    def test_never_completed_extraction_with_pending_jobs_triggers_banner(
+        self, memory_db: Database,
+    ) -> None:
+        # extract_entities jobs exist (one failed, one still pending) but
+        # NONE has ever completed — extraction has never worked, not just
+        # regressed. Well under the failed-count threshold on its own, so
+        # this must be caught by the never-completed condition alone.
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+
+        queue = JobQueue(memory_db)
+        failed_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(failed_id, "backend unreachable")
+        queue.enqueue("extract_entities", {})  # stays pending
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" in briefing.content
+        assert "never" in briefing.content
+        assert briefing.pipeline_health["status"] == "unhealthy"
+        assert briefing.pipeline_health["failed_jobs"] == 1
+        assert briefing.pipeline_health["days_since_last_extraction"] is None
+
+    def test_no_job_queue_history_stays_healthy(
+        self, memory_db: Database,
+    ) -> None:
+        # Legacy/synchronous-extraction project (or an empty test fixture):
+        # entities exist but no extract_entities job row was ever created.
+        # Fresh events alone must not trigger the never-completed condition.
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" not in briefing.content
+        assert briefing.pipeline_health["status"] == "healthy"
+        assert briefing.pipeline_health["days_since_last_extraction"] is None
+
     def test_healthy_db_has_no_banner(self, memory_db: Database) -> None:
         from datetime import datetime
 
