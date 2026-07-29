@@ -1223,11 +1223,65 @@ class Repository:
         conn = self.db.connect()
         try:
             rows = conn.execute(
-                "SELECT file_path, relation FROM entity_files "
+                "SELECT file_path, relation, line_number FROM entity_files "
                 "WHERE entity_id = ?",
                 (entity_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_files_for_entities(
+        self, entity_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Batch-fetch entity_files rows for multiple entities in one query.
+
+        Used to validate citation anchors for exactly the entities a
+        caller is about to surface (briefing render, mem_get_entities,
+        mem_search) — bounded work, never a scan of the whole table.
+        """
+        if not entity_ids:
+            return {}
+        conn = self.db.connect()
+        try:
+            placeholders = ",".join("?" for _ in entity_ids)
+            rows = conn.execute(
+                "SELECT entity_id, file_path, relation, line_number "
+                f"FROM entity_files WHERE entity_id IN ({placeholders})",
+                entity_ids,
+            ).fetchall()
+            result: dict[str, list[dict[str, Any]]] = {}
+            for r in rows:
+                result.setdefault(r["entity_id"], []).append({
+                    "file_path": r["file_path"],
+                    "relation": r["relation"],
+                    "line_number": r["line_number"],
+                })
+            return result
+        finally:
+            conn.close()
+
+    def insert_entity_file_anchors(
+        self, entity_id: str, anchors: list[tuple[str, int | None]]
+    ) -> None:
+        """Persist deterministically-parsed file:line anchors.
+
+        Extends the existing entity_files table (INSERT OR IGNORE, keyed
+        on (entity_id, file_path)) rather than a separate table — a path
+        already present via the LLM-derived file list, or an earlier
+        anchor, is left untouched.
+        """
+        if not anchors:
+            return
+        conn = self.db.connect()
+        try:
+            conn.executemany(
+                "INSERT OR IGNORE INTO entity_files "
+                "(entity_id, file_path, relation, line_number) "
+                "VALUES (?, ?, 'related', ?)",
+                [(entity_id, path, line) for path, line in anchors if path],
+            )
+            conn.commit()
         finally:
             conn.close()
 

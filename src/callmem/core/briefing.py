@@ -153,6 +153,19 @@ def _short_id(full_id: str | None) -> str:
     return full_id[-8:]
 
 
+# Phase-1 scope: a missing anchor only annotates the entity line — it
+# never auto-stales the entity itself.
+_STALE_ANCHOR_MARKER = "⚠ file gone:"
+
+
+def _stale_anchor_suffix(
+    entity_id: str | None, annotations: dict[str, str],
+) -> str:
+    """Return the ` (⚠ file gone: path)` suffix for an entity line, or ''."""
+    note = annotations.get(entity_id or "")
+    return f"  ({note})" if note else ""
+
+
 def _session_hook(session: dict[str, Any], max_chars: int = 70) -> str:
     """Extract a single-line session hook from the summary field."""
     summary = (session.get("summary") or "").strip()
@@ -286,6 +299,14 @@ class BriefingGenerator:
         work_investment = self._compute_work_investment(project_id)
         self._suppressed_stale_count = suppressed_stale
 
+        # Anchor validation is bounded to exactly the entities being
+        # surfaced in this briefing, and computed once — cached — so the
+        # two-pass render below (provisional, then final) doesn't stat
+        # the same files twice.
+        anchor_annotations = self._compute_stale_anchor_annotations(
+            project_id, all_entities,
+        )
+
         # Project overview — fetched once, rendered at the top of the
         # briefing but excluded from the token budget (it is independently
         # capped at _OVERVIEW_MAX_TOKENS).
@@ -333,9 +354,12 @@ class BriefingGenerator:
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, 0.0, overview_block,
+            anchor_annotations=anchor_annotations,
         ))
         suggested_next_str = "\n".join(
-            self._build_suggested_next_parts(all_entities, w)
+            self._build_suggested_next_parts(
+                all_entities, w, anchor_annotations=anchor_annotations,
+            )
         )
         # Render the provisional footer using `budget` as a placeholder for
         # briefing_tokens so it hits the same layout branch as the final
@@ -371,6 +395,7 @@ class BriefingGenerator:
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, savings_pct, overview_block,
+            anchor_annotations=anchor_annotations,
         ))
         footer = "\n".join(self._build_footer_parts(
             work_investment, observations_loaded, briefing_tokens, w,
@@ -442,9 +467,11 @@ class BriefingGenerator:
         work_investment: int,
         savings_pct: float,
         overview_block: str = "",
+        anchor_annotations: dict[str, str] | None = None,
     ) -> list[str]:
         parts: list[str] = []
         w = 58  # box width
+        annotations = anchor_annotations or {}
 
         now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
 
@@ -537,13 +564,15 @@ class BriefingGenerator:
             for e in failures:
                 eid = _short_id(e.get("id"))
                 title = e.get("title") or e.get("content", "")[:60]
-                parts.append(f"  #{eid}  \u274c  {title}")
+                note = _stale_anchor_suffix(e.get("id"), annotations)
+                parts.append(f"  #{eid}  \u274c  {title}{note}")
             for e in todos:
                 eid = _short_id(e.get("id"))
                 title = e.get("title") or e.get("content", "")[:60]
                 priority = e.get("priority", "")
                 flag = f" [{priority}]" if priority else ""
-                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}")
+                note = _stale_anchor_suffix(e.get("id"), annotations)
+                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}{note}")
             parts.append("")
 
         # ── Observations by date ──
@@ -562,7 +591,8 @@ class BriefingGenerator:
                     eid = _short_id(e.get("id"))
                     emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
                     title = e.get("title") or ""
-                    parts.append(f"    #{eid}  {emoji}  {title}")
+                    note = _stale_anchor_suffix(e.get("id"), annotations)
+                    parts.append(f"    #{eid}  {emoji}  {title}{note}")
                 parts.append("")
 
         # Body ends here; the caller appends Suggested next + footer
@@ -573,7 +603,9 @@ class BriefingGenerator:
         self,
         entities: list[dict[str, Any]],
         w: int,
+        anchor_annotations: dict[str, str] | None = None,
     ) -> list[str]:
+        annotations = anchor_annotations or {}
         failures = [
             e for e in entities
             if e.get("type") == "failure"
@@ -597,12 +629,13 @@ class BriefingGenerator:
         for e in candidates:
             eid = _short_id(e.get("id"))
             title = e.get("title") or e.get("content", "")[:60]
+            note = _stale_anchor_suffix(e.get("id"), annotations)
             if e.get("type") == "failure":
-                parts.append(f"  #{eid}  ❌  {title}")
+                parts.append(f"  #{eid}  ❌  {title}{note}")
             else:
                 priority = e.get("priority", "")
                 flag = f" [{priority}]" if priority else ""
-                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}")
+                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}{note}")
         parts.append("")
         return parts
 
@@ -821,6 +854,48 @@ class BriefingGenerator:
             score += cfg.citation_weight * math.log1p(cited_count) * citation_recency
 
         return score
+
+    def _compute_stale_anchor_annotations(
+        self, project_id: str, entities: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Validate code anchors for exactly the entities in this briefing.
+
+        Bounded work: only entities already selected for surfacing are
+        checked (never a scan of the whole entity_files table), and
+        every file path involved is validated at most once per call —
+        callers that render the briefing body twice (provisional +
+        final pass) share this one result.
+
+        Returns entity_id -> annotation text (e.g. "⚠ file gone: path")
+        for entities that reference at least one missing file. This is
+        annotation-only (phase-1 scope) — it never marks the entity
+        stale. A file whose anchor is unvalidated (no project root
+        known, or it resolves outside the project root) is treated as
+        "can't tell", not "missing", and produces no annotation.
+        """
+        entity_ids = [e["id"] for e in entities if e.get("id")]
+        if not entity_ids:
+            return {}
+        files_by_entity = self.repo.get_files_for_entities(entity_ids)
+        if not files_by_entity:
+            return {}
+
+        project = self.repo.get_project(project_id)
+        project_root = project.root_path if project else None
+
+        from callmem.core.anchors import validate_anchor
+
+        validity_cache: dict[str, bool | None] = {}
+        annotations: dict[str, str] = {}
+        for entity_id, files in files_by_entity.items():
+            for f in files:
+                path = f["file_path"]
+                if path not in validity_cache:
+                    validity_cache[path] = validate_anchor(path, project_root)
+                if validity_cache[path] is False:
+                    annotations[entity_id] = f"{_STALE_ANCHOR_MARKER} {path}"
+                    break
+        return annotations
 
     def _most_recent_session_entity_ids(self, project_id: str) -> set[str]:
         """IDs of non-stale entities extracted from the most recent session.

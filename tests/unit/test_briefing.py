@@ -743,3 +743,171 @@ class TestOpenItemsFloor:
         entities, _ = gen._fetch_all_entities(project_id, focus=None)
 
         assert resolved.id not in {e["id"] for e in entities}
+
+
+def _seed_project_with_root(memory_db: Database, root_path) -> str:
+    repo = Repository(memory_db)
+    project = Project(name="test-project", root_path=str(root_path))
+    repo.create_project(project)
+    return project.id
+
+
+def _insert_entity_file(
+    memory_db: Database,
+    entity_id: str,
+    file_path: str,
+    line_number: int | None = None,
+) -> None:
+    conn = memory_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO entity_files "
+            "(entity_id, file_path, relation, line_number) "
+            "VALUES (?, ?, 'related', ?)",
+            (entity_id, file_path, line_number),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestStaleAnchorAnnotation:
+    """5b: briefing render validates code anchors for entities being
+    surfaced and annotates missing files inline (annotation only —
+    phase-1 scope never auto-stales the entity)."""
+
+    def test_missing_file_gets_annotated_in_briefing(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert "⚠ file gone: widget.py" in briefing.content
+
+    def test_existing_file_is_not_annotated(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        (tmp_path / "widget.py").write_text("x = 1\n")
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert "file gone" not in briefing.content
+
+    def test_missing_file_does_not_mark_entity_stale(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        gen.generate(project_id, project_name="test")
+
+        stored = repo.get_entity(todo.id)
+        assert stored is not None
+        assert not stored.get("stale")
+
+    def test_no_project_root_skips_validation_without_crashing(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_project(memory_db)  # no root_path set
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert "file gone" not in briefing.content
+
+    def test_path_outside_root_is_never_statted(
+        self, memory_db: Database, tmp_path, monkeypatch,
+    ) -> None:
+        """Security: an anchor that resolves outside the project root
+        must never reach the filesystem, even indirectly via a full
+        briefing render."""
+        from pathlib import Path
+
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Suspicious anchor", content="unrelated",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "../../etc/passwd")
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert not any("passwd" in c for c in calls)
+        assert "file gone" not in briefing.content
+
+    def test_anchor_validation_cached_across_two_pass_render(
+        self, memory_db: Database, tmp_path, monkeypatch,
+    ) -> None:
+        """generate() renders the body twice (a provisional pass to
+        measure the token budget, then the final pass) — anchor
+        validation must be computed once and reused, not stat the same
+        file twice."""
+        from pathlib import Path
+
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        gen = BriefingGenerator(repo, Config())
+        gen.generate(project_id, project_name="test")
+
+        widget_calls = [c for c in calls if c.endswith("widget.py")]
+        assert len(widget_calls) == 1

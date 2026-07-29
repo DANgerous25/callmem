@@ -337,6 +337,7 @@ class ReExtractor:
 
             for entity, files in new_entities:
                 extractor._insert_entity(entity)
+                extractor._insert_anchors_from_entity(entity)
                 if files:
                     extractor._insert_entity_files(entity.id, files)
             entities_created += len(new_entities)

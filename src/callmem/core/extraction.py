@@ -10,6 +10,7 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
+from callmem.core.anchors import parse_file_anchors
 from callmem.core.json_utils import parse_json
 from callmem.core.prompts import EXTRACTION_PROMPT
 from callmem.core.queue import JobQueue
@@ -177,6 +178,7 @@ class EntityExtractor:
                 )
                 self._insert_entity(entity)
                 entities.append(entity)
+                self._insert_anchors_from_entity(entity)
                 files = item.get("files", [])
                 if isinstance(files, list) and files:
                     self._insert_entity_files(entity.id, files)
@@ -427,3 +429,29 @@ class EntityExtractor:
             conn.commit()
         finally:
             conn.close()
+
+    def _insert_anchors_from_entity(self, entity: Entity) -> None:
+        """Parse deterministic file:line anchors out of entity content
+        and persist them into entity_files.
+
+        Extends the population path above (which stores the LLM's
+        freeform "files" list) with anchors parsed directly from the
+        entity's own text — precise enough (file + line) to validate
+        against the working tree later. Both write into the same table;
+        INSERT OR IGNORE means whichever runs first for a given path
+        wins, so this is called before the freeform files insert to
+        prefer the more precise anchor.
+        """
+        text = "\n".join(
+            part for part in (
+                entity.title, entity.content, entity.key_points,
+                entity.synopsis,
+            )
+            if part
+        )
+        anchors = parse_file_anchors(text)
+        if not anchors:
+            return
+        from callmem.core.repository import Repository
+
+        Repository(self.db).insert_entity_file_anchors(entity.id, anchors)

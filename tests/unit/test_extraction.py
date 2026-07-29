@@ -265,6 +265,98 @@ class TestEntityExtractor:
         assert entities[0].synopsis is None
 
 
+class TestFileAnchorExtraction:
+    """Deterministic file:line anchors parsed from entity content,
+    independent of whatever the LLM put in the "files" field."""
+
+    def test_parses_path_and_line_from_content_into_entity_files(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        event = engine.ingest_one(
+            "response", "Fixed the FK constraint bug",
+        )
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], "features": [], '
+            '"bugfixes": [{"title": "Fix FK constraint", '
+            '"content": "Fixed FK constraint bug in '
+            'src/callmem/core/repository.py:842"}], '
+            '"research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        from callmem.core.repository import Repository
+
+        repo = Repository(memory_db)
+        files = repo.get_files_for_entity(entities[0].id)
+        assert {
+            "file_path": "src/callmem/core/repository.py",
+            "relation": "related",
+            "line_number": 842,
+        } in files
+
+    def test_content_without_file_references_inserts_nothing(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("response", "Discussed roadmap priorities")
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [{"title": "Prioritize v2", '
+            '"content": "No files involved, just a decision"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        from callmem.core.repository import Repository
+
+        repo = Repository(memory_db)
+        assert repo.get_files_for_entity(entities[0].id) == []
+
+    def test_llm_provided_files_still_inserted_alongside_parsed_anchors(
+        self, memory_db: Database,
+    ) -> None:
+        """The existing LLM "files" list keeps working — content-parsed
+        anchors extend it, they don't replace it."""
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("response", "Added a new feature")
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], '
+            '"features": [{"title": "Add widget", '
+            '"content": "Added a widget, no inline path here", '
+            '"files": ["src/callmem/widget.py"]}], '
+            '"bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        from callmem.core.repository import Repository
+
+        repo = Repository(memory_db)
+        files = repo.get_files_for_entity(entities[0].id)
+        assert {
+            "file_path": "src/callmem/widget.py",
+            "relation": "related",
+            "line_number": None,
+        } in files
+
+
 class TestFormatEvents:
     def test_format_events_includes_tool_result_content(
         self, memory_db: Database,
