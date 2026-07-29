@@ -741,10 +741,14 @@ class MemoryEngine:
     def _should_skip_tool_call(self, inp: EventInput) -> bool:
         """Return True if this event matches the configured tool filter.
 
-        Only ``tool_call`` events are eligible — other event types
-        (prompt, response, etc.) are always ingested.
+        Only ``tool_call`` and ``tool_result`` events are eligible —
+        other event types (prompt, response, etc.) are always ingested.
+        A ``tool_result``'s tool name comes from its ``tool_name``
+        metadata (set by the mapper when it can resolve the originating
+        ``tool_use`` block); without it, only ``skip_patterns`` can
+        still match its content.
         """
-        if inp.type != "tool_call":
+        if inp.type not in ("tool_call", "tool_result"):
             return False
 
         skip_tools = self.config.ingestion.skip_tools
@@ -753,19 +757,23 @@ class MemoryEngine:
             return False
 
         content = inp.content or ""
-        tool_name = content.split("(", 1)[0].strip()
+        if inp.type == "tool_call":
+            tool_name = content.split("(", 1)[0].strip()
+        else:
+            tool_name = (inp.metadata or {}).get("tool_name", "")
 
         if tool_name and tool_name in skip_tools:
-            logger.debug("Skipped tool call: %s (matches skip_tools)", tool_name)
+            logger.debug("Skipped %s: %s (matches skip_tools)", inp.type, tool_name)
             return True
 
-        for pattern in skip_patterns:
-            if fnmatch.fnmatchcase(content, pattern):
-                logger.debug(
-                    "Skipped tool call: %s (matches skip_patterns=%r)",
-                    tool_name or content[:40], pattern,
-                )
-                return True
+        if inp.type == "tool_call":
+            for pattern in skip_patterns:
+                if fnmatch.fnmatchcase(content, pattern):
+                    logger.debug(
+                        "Skipped tool call: %s (matches skip_patterns=%r)",
+                        tool_name or content[:40], pattern,
+                    )
+                    return True
 
         return False
 

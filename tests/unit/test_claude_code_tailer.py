@@ -187,6 +187,48 @@ class TestOffsetTracking:
         assert _count_events(project) == 2
 
 
+class TestToolResultIngestion:
+    def test_tool_result_ingested_with_tool_name_from_prior_tool_use(
+        self, tmp_path: Path,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        roots = tmp_path / "claude-projects"
+        transcript = claude_project_dir(project, roots) / "aaa.jsonl"
+        _append_records(transcript, [
+            {"type": "user", "message": {"content": "run ls"},
+             "timestamp": "2026-04-19T10:00:00Z"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                 "input": {"command": "ls"}}]},
+             "timestamp": "2026-04-19T10:00:01Z"},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1",
+                 "content": "file1.txt"}]},
+             "timestamp": "2026-04-19T10:00:02Z"},
+        ])
+        engine = _make_engine(project)
+        adapter = ClaudeCodeAdapter(
+            engine, project_path=project, claude_projects_dir=roots,
+        )
+        adapter._tick()
+
+        db_path = project / ".callmem" / "memory.db"
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT type, content, metadata FROM events ORDER BY timestamp"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        types = [r[0] for r in rows]
+        assert types == ["prompt", "tool_call", "tool_result"]
+        meta = json.loads(rows[2][2])
+        assert meta["tool_use_id"] == "toolu_1"
+        assert meta["tool_name"] == "Bash"
+
+
 class TestSessionLifecycle:
     def test_session_opens_on_first_record(self, tmp_path: Path) -> None:
         project = tmp_path / "proj"

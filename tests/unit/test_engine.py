@@ -302,6 +302,35 @@ class TestToolFiltering:
         assert "main.py" in stored[0].content
         assert engine.ingestion_stats()["skipped_tool_calls"] == 1
 
+    def test_skip_tools_drops_matching_tool_result(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_filters(memory_db, skip_tools=["Glob"])
+        engine.start_session()
+        stored = engine.ingest([
+            EventInput(
+                type="tool_result", content="a.py\nb.py",
+                metadata={"tool_use_id": "t1", "tool_name": "Glob"},
+            ),
+            EventInput(
+                type="tool_result", content="file contents",
+                metadata={"tool_use_id": "t2", "tool_name": "Read"},
+            ),
+        ])
+        assert len(stored) == 1
+        assert stored[0].content == "file contents"
+        assert engine.ingestion_stats()["skipped_tool_calls"] == 1
+
+    def test_tool_result_without_tool_name_metadata_not_skipped(
+        self, memory_db: Database,
+    ) -> None:
+        engine = self._engine_with_filters(memory_db, skip_tools=["Glob"])
+        engine.start_session()
+        stored = engine.ingest([
+            EventInput(type="tool_result", content="mystery output"),
+        ])
+        assert len(stored) == 1
+
     def test_non_tool_events_never_skipped(
         self, memory_db: Database,
     ) -> None:

@@ -70,6 +70,9 @@ class ClaudeCodeAdapter:
         self._offsets: dict[str, int] = self._load_offsets()
         # source_id -> (session_id, last_activity_monotonic, title_so_far)
         self._active: dict[str, tuple[str, float, str | None]] = {}
+        # source_id -> {tool_use_id: tool_name}, for resolving tool_result
+        # metadata against the tool_use block that preceded it.
+        self._tool_names: dict[str, dict[str, str]] = {}
         self._stop_event = threading.Event()
 
     # ── Public API ────────────────────────────────────────────────
@@ -190,7 +193,8 @@ class ClaudeCodeAdapter:
     def _ingest_record(
         self, jsonl_path: Path, source_id: str, record: dict[str, Any],
     ) -> bool:
-        inputs = _map_record(record)
+        tool_names = self._tool_names.setdefault(source_id, {})
+        inputs = _map_record(record, tool_names)
         user_title = _extract_user_text(record)
 
         if not inputs and user_title is None:
@@ -255,6 +259,7 @@ class ClaudeCodeAdapter:
 
     def _close_session(self, source_id: str, reason: str) -> None:
         entry = self._active.pop(source_id, None)
+        self._tool_names.pop(source_id, None)
         if entry is None:
             return
         session_id, _, title = entry

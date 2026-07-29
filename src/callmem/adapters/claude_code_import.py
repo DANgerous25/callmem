@@ -204,12 +204,54 @@ def _extract_user_text(record: dict[str, Any]) -> str | None:
     return stripped
 
 
-def _truncate(value: str, limit: int = 200) -> str:
+def _truncate(value: str, limit: int = 1500) -> str:
     return value if len(value) <= limit else value[:limit]
 
 
-def _map_record(record: dict[str, Any]) -> list[EventInput]:
-    """Translate one transcript record into zero or more EventInputs."""
+_TOOL_RESULT_HEAD = 2500
+_TOOL_RESULT_TAIL = 1500
+_TOOL_RESULT_TRUNCATION_MARKER = "\n[... truncated ...]\n"
+
+
+def _truncate_head_tail(
+    value: str, head: int = _TOOL_RESULT_HEAD, tail: int = _TOOL_RESULT_TAIL,
+) -> str:
+    """Truncate long text keeping both ends — errors often live at the tail."""
+    if len(value) <= head + tail:
+        return value
+    return value[:head] + _TOOL_RESULT_TRUNCATION_MARKER + value[-tail:]
+
+
+def _extract_tool_result_text(content: Any) -> str:
+    """Return the text of a tool_result block's ``content`` field.
+
+    ``content`` may be a plain string or a list of content blocks (only
+    ``text`` blocks carry text; others, e.g. ``tool_reference``, are
+    skipped).
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        texts = [
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(t for t in texts if t)
+    return ""
+
+
+def _map_record(
+    record: dict[str, Any],
+    tool_names: dict[str, str] | None = None,
+) -> list[EventInput]:
+    """Translate one transcript record into zero or more EventInputs.
+
+    ``tool_names`` is an optional, caller-owned ``tool_use_id -> name``
+    cache. When supplied it is updated as ``tool_use`` blocks are seen
+    and consulted when mapping a later ``tool_result`` so the result
+    event's metadata can carry the originating tool's name.
+    """
     rtype = record.get("type", "")
     if not rtype or rtype in _SKIP_TYPES or rtype.startswith("system"):
         return []
@@ -229,8 +271,30 @@ def _map_record(record: dict[str, Any]) -> list[EventInput]:
                 # Slash-command invocations: keep, helps trace what ran
                 return [EventInput(type="prompt", content=stripped, timestamp=ts)]
             return [EventInput(type="prompt", content=stripped, timestamp=ts)]
-        # tool_result list content — no dedicated EventType yet; skip
-        return []
+        if not isinstance(content, list):
+            return []
+
+        tool_results: list[EventInput] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            text = _extract_tool_result_text(block.get("content"))
+            if not text.strip():
+                continue
+            tool_use_id = block.get("tool_use_id")
+            metadata: dict[str, Any] = {}
+            if tool_use_id:
+                metadata["tool_use_id"] = tool_use_id
+                tool_name = (tool_names or {}).get(tool_use_id)
+                if tool_name:
+                    metadata["tool_name"] = tool_name
+            tool_results.append(EventInput(
+                type="tool_result",
+                content=_truncate_head_tail(text),
+                timestamp=ts,
+                metadata=metadata or None,
+            ))
+        return tool_results
 
     if rtype == "assistant":
         content = msg.get("content")
@@ -250,6 +314,9 @@ def _map_record(record: dict[str, Any]) -> list[EventInput]:
                     out.append(EventInput(type="response", content=text, timestamp=ts))
             elif btype == "tool_use":
                 name = block.get("name", "unknown")
+                tool_id = block.get("id")
+                if tool_names is not None and tool_id:
+                    tool_names[tool_id] = name
                 args = block.get("input", {})
                 if isinstance(args, dict):
                     try:
@@ -356,6 +423,7 @@ def import_session(
     event_count = 0
     errors: list[str] = []
     title: str | None = None
+    tool_names: dict[str, str] = {}
 
     try:
         with jsonl_path.open(encoding="utf-8") as fh:
@@ -369,7 +437,7 @@ def import_session(
                     if candidate:
                         title = candidate[:80]
                 try:
-                    inputs = _map_record(record)
+                    inputs = _map_record(record, tool_names)
                     if inputs:
                         stored = engine.ingest(inputs, session_id=session.id)
                         event_count += len(stored)

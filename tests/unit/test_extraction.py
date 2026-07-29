@@ -225,6 +225,45 @@ class TestEntityExtractor:
         assert entities[0].synopsis is None
 
 
+class TestFormatEvents:
+    def test_format_events_includes_tool_result_content(
+        self, memory_db: Database,
+    ) -> None:
+        _, extractor = _setup_engine_and_extractor(memory_db)
+        formatted = extractor._format_events([
+            {"type": "tool_call", "content": "Bash(ls)"},
+            {"type": "tool_result", "content": "file1.txt\nfile2.txt"},
+        ])
+        assert "file1.txt" in formatted
+        assert "[tool_result]" in formatted
+
+    def test_tool_result_event_reaches_extraction_prompt(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        event = engine.ingest_one(
+            "tool_result", "traceback: KeyError: 'missing_field'",
+        )
+        assert event is not None
+
+        captured_prompts: list[str] = []
+
+        def _fake_extract(prompt: str) -> str:
+            captured_prompts.append(prompt)
+            return (
+                '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+                '"discoveries": [], "features": [], "bugfixes": [], '
+                '"research": [], "changes": []}'
+            )
+
+        with patch.object(extractor.ollama, "extract", side_effect=_fake_extract):
+            extractor.process_pending()
+
+        assert len(captured_prompts) == 1
+        assert "KeyError: 'missing_field'" in captured_prompts[0]
+
+
 class TestEventBusHandling:
     def test_no_error_when_event_bus_is_none(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)

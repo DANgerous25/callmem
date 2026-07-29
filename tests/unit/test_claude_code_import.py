@@ -72,14 +72,102 @@ class TestMapRecord:
             "message": {"role": "user", "content": "x"},
         }) == []
 
-    def test_user_tool_result_list_skipped(self) -> None:
-        assert _map_record({
+    def test_user_tool_result_is_mapped_to_tool_result_event(self) -> None:
+        events = _map_record({
             "type": "user",
             "message": {
                 "role": "user",
                 "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}],
             },
-        }) == []
+            "timestamp": "2026-04-19T10:00:03.000Z",
+        })
+        assert len(events) == 1
+        assert events[0].type == "tool_result"
+        assert events[0].content == "ok"
+        assert events[0].timestamp == "2026-04-19T10:00:03.000Z"
+        assert events[0].metadata == {"tool_use_id": "t1"}
+
+    def test_user_tool_result_with_text_blocks_joins_text(self) -> None:
+        events = _map_record({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "t2",
+                    "content": [
+                        {"type": "text", "text": "line one"},
+                        {"type": "text", "text": "line two"},
+                    ],
+                }],
+            },
+        })
+        assert len(events) == 1
+        assert events[0].content == "line one\nline two"
+
+    def test_user_tool_result_with_no_text_blocks_is_skipped(self) -> None:
+        events = _map_record({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": "t3",
+                    "content": [{"type": "tool_reference", "tool_name": "Foo"}],
+                }],
+            },
+        })
+        assert events == []
+
+    def test_tool_result_carries_tool_name_from_prior_tool_use(self) -> None:
+        tool_names: dict[str, str] = {}
+        _map_record({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "id": "abc123", "name": "Bash",
+                 "input": {"command": "ls"}},
+            ]},
+        }, tool_names)
+
+        events = _map_record({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result", "tool_use_id": "abc123", "content": "ok",
+                }],
+            },
+        }, tool_names)
+        assert len(events) == 1
+        assert events[0].metadata == {"tool_use_id": "abc123", "tool_name": "Bash"}
+
+    def test_tool_result_head_tail_truncation(self) -> None:
+        head = "H" * 2500
+        tail = "T" * 1500
+        middle = "M" * 5000
+        big = head + middle + tail
+        events = _map_record({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result", "tool_use_id": "t4", "content": big,
+                }],
+            },
+        })
+        assert len(events) == 1
+        content = events[0].content
+        assert content.startswith(head)
+        assert content.endswith(tail)
+        assert "truncated" in content
+        assert len(content) < len(big)
+
+    def test_tool_result_short_content_is_not_truncated(self) -> None:
+        events = _map_record({
+            "type": "user",
+            "message": {
+                "content": [{
+                    "type": "tool_result", "tool_use_id": "t5", "content": "short output",
+                }],
+            },
+        })
+        assert events[0].content == "short output"
 
     def test_assistant_text_block_is_response(self) -> None:
         events = _map_record({
@@ -103,6 +191,21 @@ class TestMapRecord:
         assert events[0].type == "tool_call"
         assert "Bash" in events[0].content
         assert "ls -la" in events[0].content
+
+    def test_assistant_tool_use_args_truncate_at_1500_not_200(self) -> None:
+        long_command = "x" * 1800
+        events = _map_record({
+            "type": "assistant",
+            "message": {"content": [
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": long_command}},
+            ]},
+        })
+        assert len(events) == 1
+        # 200-char truncation would cut this off; 1500 keeps far more.
+        assert len(events[0].content) > 1000
+        assert "x" * 1600 not in events[0].content
+        assert long_command not in events[0].content
 
     def test_assistant_thinking_is_skipped(self) -> None:
         events = _map_record({
@@ -218,6 +321,46 @@ class TestImportSession:
             assert types == ["prompt", "response", "tool_call"]
         finally:
             conn.close()
+
+    def test_tool_use_and_tool_result_pair_both_ingested(
+        self, tmp_path: Path
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        jsonl = tmp_path / "cc.jsonl"
+        _write_transcript(jsonl, [
+            {"type": "user", "message": {"content": "run ls"},
+             "timestamp": "2026-04-19T10:00:00Z"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "Bash",
+                 "input": {"command": "ls"}}]},
+             "timestamp": "2026-04-19T10:00:01Z"},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1",
+                 "content": "file1.txt\nfile2.txt"}]},
+             "timestamp": "2026-04-19T10:00:02Z"},
+        ])
+
+        result = import_session(engine, jsonl)
+        assert result["event_count"] == 3
+
+        db_path = tmp_path / ".callmem" / "memory.db"
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT type, content, metadata FROM events "
+                "WHERE session_id=? ORDER BY timestamp",
+                (result["session_id"],),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        types = [r[0] for r in rows]
+        assert types == ["prompt", "tool_call", "tool_result"]
+        tool_result_row = rows[2]
+        assert tool_result_row[1] == "file1.txt\nfile2.txt"
+        meta = json.loads(tool_result_row[2])
+        assert meta["tool_use_id"] == "toolu_1"
+        assert meta["tool_name"] == "Bash"
 
     def test_idempotent_reimport(self, tmp_path: Path) -> None:
         engine = _make_engine(tmp_path)

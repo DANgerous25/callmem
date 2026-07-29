@@ -13,7 +13,7 @@ from ulid import ULID
 from callmem.compat import UTC
 
 EventType = Literal[
-    "prompt", "response", "tool_call", "file_change",
+    "prompt", "response", "tool_call", "tool_result", "file_change",
     "decision", "todo", "failure", "discovery", "fact", "note",
 ]
 
