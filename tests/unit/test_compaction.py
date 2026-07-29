@@ -320,6 +320,126 @@ class TestCompactionProtection:
         assert stats.entities_archived > 0
 
 
+def _seed_multi_event_todo(memory_db: Database) -> tuple[str, str, str]:
+    """Two old, summarized events; a todo whose source_event_id is the
+    first but whose source_event_ids covers both. Returns
+    (project_id, first_event_id, second_event_id)."""
+    from callmem.core.repository import Repository
+    from callmem.models.entities import Entity
+    from callmem.models.events import Event
+    from callmem.models.projects import Project
+    from callmem.models.sessions import Session
+    from callmem.models.summaries import Summary
+
+    repo = Repository(memory_db)
+    project = Project(name="test-project")
+    repo.create_project(project)
+
+    session = Session(project_id=project.id)
+    repo.insert_session(session)
+
+    old_ts = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+
+    e1 = Event(
+        session_id=session.id, project_id=project.id,
+        type="note", content="First event", timestamp=old_ts,
+    )
+    e2 = Event(
+        session_id=session.id, project_id=project.id,
+        type="note", content="Second event", timestamp=old_ts,
+    )
+    repo.insert_event(e1)
+    repo.insert_event(e2)
+
+    summary = Summary(
+        project_id=project.id, session_id=session.id, level="chunk",
+        content="Summary covering both events",
+        event_range_start=old_ts, event_range_end=old_ts,
+    )
+    conn = memory_db.connect()
+    try:
+        row = summary.to_row()
+        conn.execute(
+            "INSERT INTO summaries "
+            "(id, project_id, session_id, level, content, "
+            "event_range_start, event_range_end, event_count, "
+            "token_count, created_at, metadata) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row["project_id"], row["session_id"],
+                row["level"], row["content"],
+                row["event_range_start"], row["event_range_end"],
+                row["event_count"], row["token_count"],
+                row["created_at"], row["metadata"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    todo = Entity(
+        project_id=project.id,
+        source_event_id=e1.id,
+        source_event_ids=[e1.id, e2.id],
+        type="todo",
+        title="Multi-event task",
+        content="Spans two events",
+        status="open",
+        priority="high",
+        updated_at=old_ts,
+    )
+    conn = memory_db.connect()
+    try:
+        row = todo.to_row()
+        conn.execute(
+            "INSERT INTO entities "
+            "(id, project_id, source_event_id, source_event_ids, type, "
+            "title, content, status, priority, pinned, created_at, "
+            "updated_at, resolved_at, metadata, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row["project_id"], row["source_event_id"],
+                row["source_event_ids"], row["type"], row["title"],
+                row["content"], row["status"], row["priority"],
+                row["pinned"], row["created_at"], row["updated_at"],
+                row["resolved_at"], row["metadata"], row["archived_at"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return project.id, e1.id, e2.id
+
+
+class TestCompactionProtectsFullEventList:
+    def test_protection_covers_non_first_source_event(
+        self, memory_db: Database
+    ) -> None:
+        """An open todo's source_event_ids may include events beyond the
+        first — all of them must be protected from archival, not just
+        source_event_id (phase0-reliability task 6)."""
+        project_id, first_id, second_id = _seed_multi_event_todo(memory_db)
+        compactor = Compactor(memory_db, Config())
+        compactor.run(project_id)
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM events WHERE id = ?", (second_id,)
+            ).fetchone()
+            assert row["archived_at"] is None, (
+                "second event referenced only via source_event_ids "
+                "was archived despite the open todo protecting it"
+            )
+            row = conn.execute(
+                "SELECT archived_at FROM events WHERE id = ?", (first_id,)
+            ).fetchone()
+            assert row["archived_at"] is None
+        finally:
+            conn.close()
+
+
 class TestCompactionLog:
     def test_log_created(self, memory_db: Database) -> None:
         project_id = _seed_old_events(memory_db)

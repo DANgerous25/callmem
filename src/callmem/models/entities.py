@@ -26,6 +26,7 @@ class Entity(BaseModel):
     id: str = Field(default_factory=lambda: str(ULID()))
     project_id: str
     source_event_id: str | None = None
+    source_event_ids: list[str] | None = None
     type: EntityType
     title: str
     content: str
@@ -55,6 +56,10 @@ class Entity(BaseModel):
             "id": self.id,
             "project_id": self.project_id,
             "source_event_id": self.source_event_id,
+            "source_event_ids": (
+                json.dumps(self.source_event_ids)
+                if self.source_event_ids else None
+            ),
             "type": self.type,
             "title": self.title,
             "content": self.content,
@@ -81,6 +86,8 @@ class Entity(BaseModel):
         data = dict(row)
         if data.get("metadata") and isinstance(data["metadata"], str):
             data["metadata"] = json.loads(data["metadata"])
+        if data.get("source_event_ids") and isinstance(data["source_event_ids"], str):
+            data["source_event_ids"] = json.loads(data["source_event_ids"])
         if "pinned" in data:
             data["pinned"] = bool(data["pinned"])
         if "stale" in data:

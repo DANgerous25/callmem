@@ -165,6 +165,7 @@ class EntityExtractor:
                 entity = Entity(
                     project_id=project_id,
                     source_event_id=source_event_id,
+                    source_event_ids=list(event_ids) if event_ids else None,
                     type=entity_type,
                     title=title,
                     content=content,
@@ -393,13 +394,15 @@ class EntityExtractor:
             row = entity.to_row()
             conn.execute(
                 "INSERT INTO entities "
-                "(id, project_id, source_event_id, type, title, content, "
+                "(id, project_id, source_event_id, source_event_ids, type, "
+                "title, content, "
                 "key_points, synopsis, extracted_by, "
                 "status, priority, pinned, created_at, updated_at, "
                 "resolved_at, metadata, archived_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["id"], row["project_id"], row["source_event_id"],
+                    row["source_event_ids"],
                     row["type"], row["title"], row["content"],
                     row["key_points"], row["synopsis"], row["extracted_by"],
                     row["status"], row["priority"], row["pinned"],

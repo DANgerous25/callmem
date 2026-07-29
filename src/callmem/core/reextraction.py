@@ -196,9 +196,21 @@ class ReExtractor:
         finally:
             conn.close()
 
-    def _extract_batch(self, events: list[dict[str, Any]]) -> list[Entity]:
-        """Run extraction on a batch of events."""
-        extractor = EntityExtractor(self.db, self.ollama)
+    def _extract_batch(
+        self,
+        events: list[dict[str, Any]],
+        extractor: EntityExtractor | None = None,
+    ) -> list[tuple[Entity, list[str]]]:
+        """Run extraction on a batch of events.
+
+        Returns the entities that would be created, each paired with its
+        associated file list, WITHOUT persisting them. Callers must only
+        insert (and archive what they replace) once extraction has
+        succeeded — persisting here would let a batch's own new entities
+        get swept up by the batch's own archive-by-source-event step.
+        """
+        if extractor is None:
+            extractor = EntityExtractor(self.db, self.ollama)
 
         events_text = extractor._format_events(events)
         # Re-extraction operates on historical events with no notion of a
@@ -209,8 +221,10 @@ class ReExtractor:
             prior_titles="(none — running a historical re-extraction pass)",
         )
         response = self.ollama._generate(prompt)
-        if response is None:
-            return []
+        if not response:
+            raise RuntimeError(
+                "Ollama returned no response for re-extraction batch"
+            )
 
         from callmem.core.extraction import ENTITY_TYPE_MAP
 
@@ -221,7 +235,7 @@ class ReExtractor:
         project_id = events[0]["project_id"]
         event_ids = [e["id"] for e in events]
 
-        entities: list[Entity] = []
+        entities: list[tuple[Entity, list[str]]] = []
         for category, items in extracted.items():
             entity_type = ENTITY_TYPE_MAP.get(category)
             if entity_type is None:
@@ -250,6 +264,7 @@ class ReExtractor:
                 entity = Entity(
                     project_id=project_id,
                     source_event_id=source_event_id,
+                    source_event_ids=list(event_ids) if event_ids else None,
                     type=entity_type,
                     title=title,
                     content=content,
@@ -258,12 +273,11 @@ class ReExtractor:
                     status=item.get("status"),
                     priority=item.get("priority"),
                 )
-                extractor._insert_entity(entity)
-                entities.append(entity)
-
                 files = item.get("files", [])
-                if isinstance(files, list) and files:
-                    extractor._insert_entity_files(entity.id, files)
+                clean_files = (
+                    [f for f in files if f] if isinstance(files, list) else []
+                )
+                entities.append((entity, clean_files))
 
         return entities
 
@@ -296,6 +310,7 @@ class ReExtractor:
                 "events_processed": 0,
                 "entities_created": 0,
                 "entities_archived": 0,
+                "failed_batches": 0,
             }
 
         batches = self._get_event_batches(
@@ -313,23 +328,45 @@ class ReExtractor:
         events_processed = 0
         entities_created = 0
         entities_archived = 0
+        failed_batches = 0
+        extractor = EntityExtractor(self.db, self.ollama)
 
         for batch_idx, batch in enumerate(batches):
             event_ids = [e["id"] for e in batch]
+
+            # Extract first. Only on success do we archive the prior
+            # entities for these events and persist the replacements — a
+            # failed batch must not leave a hole where old entities were
+            # archived but nothing replaced them.
+            try:
+                new_entities = self._extract_batch(batch, extractor)
+            except Exception as exc:
+                logger.error(
+                    "Re-extraction batch %d failed: %s", batch_idx, exc
+                )
+                failed_batches += 1
+                events_processed += len(batch)
+                if progress_callback is not None:
+                    progress_callback({
+                        "batch": batch_idx + 1,
+                        "total_batches": len(batches),
+                        "events_processed": events_processed,
+                        "total_events": total_events,
+                        "entities_created": entities_created,
+                        "entities_archived": entities_archived,
+                    })
+                continue
 
             archived = self._archive_entities_for_events(
                 event_ids, project_id, force=force,
             )
             entities_archived += archived
 
-            try:
-                new_entities = self._extract_batch(batch)
-                entities_created += len(new_entities)
-            except Exception as exc:
-                logger.error(
-                    "Re-extraction batch %d failed: %s", batch_idx, exc
-                )
-
+            for entity, files in new_entities:
+                extractor._insert_entity(entity)
+                if files:
+                    extractor._insert_entity_files(entity.id, files)
+            entities_created += len(new_entities)
             events_processed += len(batch)
 
             if progress_callback is not None:
@@ -348,4 +385,5 @@ class ReExtractor:
             "events_processed": events_processed,
             "entities_created": entities_created,
             "entities_archived": entities_archived,
+            "failed_batches": failed_batches,
         }

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import CliRunner
 
 from callmem.core.engine import MemoryEngine
@@ -223,6 +224,107 @@ class TestReExtractorPreservesEdits:
             conn.close()
 
 
+class TestReExtractorFailureHandling:
+    def test_extract_batch_raises_on_none_response(
+        self, memory_db: Database
+    ) -> None:
+        """A None transport response is a failure, not 'no entities'
+        (phase0-reliability task 6)."""
+        engine, re_extractor = _setup_with_events(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("note", "some content")
+        assert event is not None
+
+        events = [{
+            "id": event.id,
+            "project_id": engine.project_id,
+            "type": "note",
+            "content": "some content",
+        }]
+
+        with patch.object(re_extractor.ollama, "_generate", return_value=None):
+            with pytest.raises(Exception):
+                re_extractor._extract_batch(events)
+
+    def test_extract_batch_raises_on_empty_response(
+        self, memory_db: Database
+    ) -> None:
+        engine, re_extractor = _setup_with_events(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("note", "some content")
+        assert event is not None
+
+        events = [{
+            "id": event.id,
+            "project_id": engine.project_id,
+            "type": "note",
+            "content": "some content",
+        }]
+
+        with patch.object(re_extractor.ollama, "_generate", return_value=""):
+            with pytest.raises(Exception):
+                re_extractor._extract_batch(events)
+
+    def test_failed_batch_leaves_prior_entities_unarchived_and_is_counted(
+        self, memory_db: Database
+    ) -> None:
+        """Re-extraction must extract FIRST and only archive prior entities
+        for a batch once extraction succeeds. A failing batch must leave
+        its prior entities untouched, be counted, and the run must
+        continue to the next batch (phase0-reliability task 6)."""
+        engine, re_extractor = _setup_with_events(memory_db)
+        engine.start_session()
+        e1 = engine.ingest_one("note", "first event content")
+        e2 = engine.ingest_one("note", "second event content")
+        assert e1 is not None and e2 is not None
+
+        from callmem.core.extraction import EntityExtractor
+
+        extractor = EntityExtractor(memory_db, OllamaClient())
+        seed_response = (
+            '{"decisions": [{"title": "Original decision", "content": "c"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=seed_response):
+            seeded = extractor.process_pending()
+        assert len(seeded) == 2
+
+        project_id = engine.project_id
+        success_response = (
+            '{"decisions": [{"title": "Replacement decision", "content": "c2"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+
+        with patch.object(
+            re_extractor.ollama, "_generate",
+            side_effect=[success_response, None],
+        ):
+            result = re_extractor.run(project_id, batch_size=1, force=True)
+
+        assert result["failed_batches"] == 1
+
+        conn = memory_db.connect()
+        try:
+            archived = conn.execute(
+                "SELECT COUNT(*) as c FROM entities WHERE archived_at IS NOT NULL"
+            ).fetchone()
+            active = conn.execute(
+                "SELECT * FROM entities WHERE archived_at IS NULL "
+                "ORDER BY created_at ASC"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # Only the successful batch's prior entity was archived.
+        assert archived["c"] == 1
+        # The failed batch's prior entity is still active/unarchived.
+        titles = {r["title"] for r in active}
+        assert "Original decision" in titles
+        assert "Replacement decision" in titles
+
+
 class TestReExtractorSessionFilter:
     def test_limits_to_single_session(self, memory_db: Database) -> None:
         engine, re_extractor = _setup_with_events(memory_db)
@@ -380,6 +482,54 @@ class TestReExtractCLI:
         assert result.exit_code == 0
         assert "Cancelled" not in result.output
         assert "Re-extraction complete" in result.output
+
+    def test_failed_batch_prints_summary_and_exits_nonzero(
+        self, memory_db: Database
+    ) -> None:
+        """End-of-run must report failed batches and exit non-zero so
+        automation notices a partial re-extraction (phase0-reliability
+        task 6)."""
+        from callmem.cli import main
+
+        runner = CliRunner()
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from callmem.core.database import Database
+
+            project_dir = Path(tmpdir)
+            callmem_dir = project_dir / ".callmem"
+            callmem_dir.mkdir()
+            db = Database(callmem_dir / "memory.db")
+            db.initialize()
+
+            cfg = Config(
+                project={"name": "test"},
+                sensitive_data={"enabled": False, "llm_scan": False},
+            )
+            eng = MemoryEngine(db, cfg)
+            eng.start_session()
+            eng.ingest_one("note", "test event")
+
+            config_path = callmem_dir / "config.toml"
+            config_path.write_text(
+                '[project]\nname = "test"\n[llm]\nbackend = "ollama"\n[ollama]\nmodel = "test"\n'
+            )
+
+            with patch("callmem.core.engine._create_llm_client") as mock_create:
+                mock_llm = MagicMock()
+                mock_llm.is_available.return_value = True
+                mock_llm._generate.return_value = None
+                mock_create.return_value = mock_llm
+
+                result = runner.invoke(
+                    main,
+                    ["re-extract", "--yes", "--project", str(project_dir)],
+                    input="",
+                )
+
+        assert result.exit_code != 0
+        assert "failed" in result.output.lower()
 
     def test_no_db_shows_error(self) -> None:
         from callmem.cli import main

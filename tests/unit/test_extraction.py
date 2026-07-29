@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -129,6 +130,45 @@ class TestEntityExtractor:
 
         assert len(entities) == 1
         assert entities[0].source_event_id == event.id
+
+    def test_entities_carry_full_source_event_ids(
+        self, memory_db: Database
+    ) -> None:
+        """A batch job spanning multiple events must record every event id
+        on each extracted entity, not just the first (phase0-reliability
+        task 6)."""
+        from callmem.models.events import EventInput
+
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        events = engine.ingest([
+            EventInput(type="note", content="event 1"),
+            EventInput(type="note", content="event 2"),
+        ])
+        assert len(events) == 2
+        event_ids = [e.id for e in events]
+
+        llm_response = (
+            '{"decisions": [{"title": "Use Redis", "content": "Caching"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        assert len(entities) == 1
+        assert entities[0].source_event_id == event_ids[0]
+        assert entities[0].source_event_ids == event_ids
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT source_event_ids FROM entities WHERE id = ?",
+                (entities[0].id,),
+            ).fetchone()
+            assert json.loads(row["source_event_ids"]) == event_ids
+        finally:
+            conn.close()
 
     def test_invalid_json_returns_empty(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)

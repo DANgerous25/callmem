@@ -241,23 +241,44 @@ class Compactor:
 
         if self.policy.protect_active_todos:
             rows = conn.execute(
-                "SELECT DISTINCT source_event_id FROM entities "
-                "WHERE project_id = ? AND type = 'todo' "
-                "AND status = 'open' AND source_event_id IS NOT NULL",
+                "SELECT source_event_id, source_event_ids FROM entities "
+                "WHERE project_id = ? AND type = 'todo' AND status = 'open'",
                 (project_id,),
             ).fetchall()
-            protected.update(r["source_event_id"] for r in rows)
+            protected.update(self._event_ids_from_rows(rows))
 
         if self.policy.protect_pinned:
             rows = conn.execute(
-                "SELECT DISTINCT source_event_id FROM entities "
-                "WHERE project_id = ? AND pinned = 1 "
-                "AND source_event_id IS NOT NULL",
+                "SELECT source_event_id, source_event_ids FROM entities "
+                "WHERE project_id = ? AND pinned = 1",
                 (project_id,),
             ).fetchall()
-            protected.update(r["source_event_id"] for r in rows)
+            protected.update(self._event_ids_from_rows(rows))
 
         return protected
+
+    @staticmethod
+    def _event_ids_from_rows(rows: Any) -> set[str]:
+        """Collect every protected event id from a set of entity rows.
+
+        Prefers the full ``source_event_ids`` list (a batch may cover
+        several events); falls back to ``source_event_id`` for rows
+        predating that column (still NULL there).
+        """
+        ids: set[str] = set()
+        for row in rows:
+            raw = row["source_event_ids"]
+            parsed: Any = None
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, ValueError):
+                    parsed = None
+            if isinstance(parsed, list) and parsed:
+                ids.update(str(eid) for eid in parsed if eid)
+            elif row["source_event_id"]:
+                ids.add(row["source_event_id"])
+        return ids
 
     def _log_run(
         self,

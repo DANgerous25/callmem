@@ -2222,6 +2222,16 @@ def re_extract(
     click.echo(f"  Entities archived: {result['entities_archived']}")
     click.echo(f"  Time:              {elapsed_str}")
 
+    failed_batches = result.get("failed_batches", 0)
+    if failed_batches:
+        click.echo()
+        click.echo(
+            f"  Failed batches:    {failed_batches} "
+            "(prior entities for these events were left untouched; "
+            "see logs for details)"
+        )
+        raise SystemExit(1)
+
 
 @main.command("requeue-failed")
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
