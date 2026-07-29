@@ -12,13 +12,27 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from callmem.compat import UTC
+from callmem.core.embeddings import create_embedder, rank_by_similarity
 
 if TYPE_CHECKING:
+    from callmem.core.embeddings import Embedder
     from callmem.core.repository import Repository
     from callmem.models.config import Config
 
 RECENCY_HALF_LIFE_DAYS = 7.0
 DEFAULT_STRATEGIES = ("fts", "entities")
+
+#: Reciprocal rank fusion constant. 60 is the value from the original
+#: Cormack et al. paper and the de-facto default across hybrid-search
+#: implementations: large enough that the top few ranks of each list
+#: stay close together, so a strong hit in one ranking is not buried by
+#: a mediocre hit that happens to appear in both.
+RRF_K = 60
+
+#: Weight of the recency term in a fused score. Deliberately far smaller
+#: than the gap between adjacent normalised RRF scores, so recency only
+#: ever breaks ties rather than reordering genuinely different ranks.
+RRF_RECENCY_TIEBREAK = 0.001
 
 
 @dataclass
@@ -74,9 +88,16 @@ def _estimate_tokens(text: str) -> int:
 class RetrievalEngine:
     """Multi-strategy retrieval over events, entities, and summaries."""
 
-    def __init__(self, repo: Repository, config: Config) -> None:
+    def __init__(
+        self,
+        repo: Repository,
+        config: Config,
+        embedder: Embedder | None = None,
+    ) -> None:
         self.repo = repo
         self.config = config
+        self._embedder = embedder
+        self._embedder_resolved = embedder is not None
 
     def search(
         self,
@@ -90,8 +111,35 @@ class RetrievalEngine:
         strategies: list[str] | None = None,
     ) -> list[SearchResult]:
         """Search across events and entities using multiple strategies."""
+        results, _mode = self.search_with_mode(
+            project_id, query, types=types, session_id=session_id,
+            limit=limit, include_archived=include_archived,
+            include_stale=include_stale, strategies=strategies,
+        )
+        return results
+
+    def search_with_mode(
+        self,
+        project_id: str,
+        query: str,
+        types: list[str] | None = None,
+        session_id: str | None = None,
+        limit: int = 20,
+        include_archived: bool = False,
+        include_stale: bool = False,
+        strategies: list[str] | None = None,
+    ) -> tuple[list[SearchResult], str]:
+        """Search, also reporting which entity ranking served the query.
+
+        Mode is ``"hybrid"`` when FTS and vector rankings were fused, and
+        ``"fts"`` whenever the vector side contributed nothing — no
+        embeddings stored, feature disabled, or backend unreachable. In
+        every ``"fts"`` case the results are identical to what this engine
+        produced before embeddings existed.
+        """
         active_strategies = strategies or list(DEFAULT_STRATEGIES)
         results: dict[str, SearchResult] = {}
+        mode = "fts"
 
         if "fts" in active_strategies and query:
             self._search_fts(
@@ -99,7 +147,7 @@ class RetrievalEngine:
             )
 
         if "entities" in active_strategies:
-            self._search_entities(
+            mode = self._search_entities(
                 project_id, query, types, session_id, limit, results,
                 include_stale=include_stale,
             )
@@ -109,7 +157,7 @@ class RetrievalEngine:
         if not include_archived:
             ranked = [r for r in ranked if r.metadata.get("archived_at") is None]
 
-        return ranked[:limit]
+        return ranked[:limit], mode
 
     def get_recent(
         self,
@@ -176,7 +224,11 @@ class RetrievalEngine:
         limit: int,
         results: dict[str, SearchResult],
         include_stale: bool = False,
-    ) -> None:
+    ) -> str:
+        """Populate ``results`` with entity hits; returns the mode used."""
+        relevance: dict[str, float] | None = None
+        mode = "fts"
+
         if query:
             # Relevance search: entities_fts MATCH over ALL non-archived
             # entities, ranked by bm25 — no recency pre-limit, so an
@@ -185,6 +237,14 @@ class RetrievalEngine:
                 project_id, query, types=types,
                 include_stale=include_stale, limit=limit,
             )
+            vector_ids = self._vector_ranked_ids(
+                project_id, query, types, include_stale, limit,
+            )
+            if vector_ids:
+                rows, relevance = self._fuse_rankings(
+                    rows, vector_ids, types, include_stale, limit,
+                )
+                mode = "hybrid"
         else:
             # No query to rank by relevance — browse recent entities.
             rows = self.repo.list_entities_for_browse(
@@ -198,7 +258,13 @@ class RetrievalEngine:
             recency = _recency_factor(r["updated_at"], now)
             pin_boost = 1.5 if r["pinned"] else 1.0
             stale_penalty = 0.3 if r["stale"] else 1.0
-            score = 0.8 * recency * pin_boost * stale_penalty
+            if relevance is None:
+                score = 0.8 * recency * pin_boost * stale_penalty
+            else:
+                # Fused ordering comes from RRF; recency only breaks ties.
+                score = 0.8 * pin_boost * stale_penalty * (
+                    relevance[r["id"]] + RRF_RECENCY_TIEBREAK * recency
+                )
 
             results[r["id"]] = SearchResult(
                 id=r["id"],
@@ -221,3 +287,104 @@ class RetrievalEngine:
                 pinned=bool(r["pinned"]),
                 stale=bool(r["stale"]),
             )
+
+        return mode
+
+    # ── Vector search & fusion ───────────────────────────────────────
+
+    def _get_embedder(self) -> Embedder | None:
+        """Resolve the configured embedder once, lazily.
+
+        Only ever called after ``has_embeddings`` confirmed this project
+        has vectors, so a project without embeddings never constructs a
+        backend client at all.
+        """
+        if not self._embedder_resolved:
+            self._embedder = create_embedder(self.config)
+            self._embedder_resolved = True
+        return self._embedder
+
+    def _vector_ranked_ids(
+        self,
+        project_id: str,
+        query: str,
+        types: list[str] | None,
+        include_stale: bool,
+        limit: int,
+    ) -> list[str]:
+        """Entity IDs ranked by cosine similarity to ``query``.
+
+        Returns an empty list for every degraded state — feature off, no
+        vectors stored, backend down, model mismatch, nothing above the
+        similarity floor — which is what makes the caller fall back to
+        the untouched pure-FTS path.
+        """
+        settings = self.config.embeddings
+        if not settings.enabled:
+            return []
+        if not self.repo.has_embeddings(project_id):
+            return []
+
+        embedder = self._get_embedder()
+        if embedder is None:
+            return []
+
+        # Asymmetric task prefix: queries and documents are embedded
+        # differently by design (see EmbeddingsConfig).
+        vectors = embedder.embed([settings.query_prefix + query])
+        if not vectors or not vectors[0]:
+            return []
+        query_vector = vectors[0]
+
+        candidates = self.repo.load_embedding_candidates(
+            project_id, embedder.model, types=types,
+            include_stale=include_stale, limit=settings.candidate_limit,
+        )
+        scored = rank_by_similarity(
+            query_vector, candidates, settings.min_similarity,
+        )
+        return [entity_id for _score, entity_id in scored[:limit]]
+
+    def _fuse_rankings(
+        self,
+        fts_rows: list[dict[str, Any]],
+        vector_ids: list[str],
+        types: list[str] | None,
+        include_stale: bool,
+        limit: int,
+    ) -> tuple[list[dict[str, Any]], dict[str, float]]:
+        """Fuse the FTS and vector rankings with reciprocal rank fusion.
+
+        Each list contributes ``1 / (RRF_K + rank)`` per entity, so an item
+        present in both rankings outranks one that is merely first in a
+        single ranking. Scores are normalised against the best fused score
+        to keep entity scores in the same band as the pure-FTS path — the
+        engine sorts entities and events together, so an unnormalised RRF
+        value (~0.03) would push every entity below every event.
+
+        Returns the fused rows plus the normalised relevance per entity ID.
+        """
+        fused: dict[str, float] = {}
+        for rank, row in enumerate(fts_rows):
+            fused[row["id"]] = fused.get(row["id"], 0.0) + 1.0 / (RRF_K + rank)
+        for rank, entity_id in enumerate(vector_ids):
+            fused[entity_id] = fused.get(entity_id, 0.0) + 1.0 / (RRF_K + rank)
+
+        by_id = {row["id"]: row for row in fts_rows}
+        missing = [eid for eid in fused if eid not in by_id]
+        for row in self.repo.get_entities_by_ids(
+            missing, types=types, include_stale=include_stale,
+        ):
+            by_id[row["id"]] = row
+
+        # An ID can drop out here if get_entities_by_ids filtered it (type
+        # or staleness); keep only rows we actually hold.
+        ordered_ids = sorted(
+            (eid for eid in fused if eid in by_id),
+            key=lambda eid: fused[eid],
+            reverse=True,
+        )[:limit]
+
+        best = max((fused[eid] for eid in ordered_ids), default=1.0) or 1.0
+        relevance = {eid: fused[eid] / best for eid in ordered_ids}
+        return [by_id[eid] for eid in ordered_ids], relevance

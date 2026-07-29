@@ -12,6 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from callmem.core.compaction import Compactor
+from callmem.core.embeddings import EMBED_JOB_TYPE, EntityEmbedder
 from callmem.core.extraction import EntityExtractor
 from callmem.core.queue import JobQueue
 from callmem.core.staleness import StalenessChecker
@@ -51,10 +52,13 @@ class WorkerRunner:
         self._extractions_since_summary = 0
 
         self._handlers: dict[str, Any] = {
-            "extract_entities": EntityExtractor(db, ollama, event_bus),
+            "extract_entities": EntityExtractor(
+                db, ollama, event_bus, config=config,
+            ),
             "generate_summary": Summarizer(db, ollama),
             "compact": Compactor(db, config),
             "staleness_check": StalenessChecker(db, ollama),
+            EMBED_JOB_TYPE: EntityEmbedder(db, config),
         }
 
     def start(self) -> None:
@@ -105,7 +109,9 @@ class WorkerRunner:
             self.queue.complete(job.id)
             logger.info("Job %s completed", job.id[:8])
             self._publish_queue_status()
-            if job.type in ("extract_entities", "generate_summary"):
+            if job.type in (
+                "extract_entities", "generate_summary", EMBED_JOB_TYPE,
+            ):
                 self._auto_resurrect_failed(job)
             if job.type == "extract_entities":
                 self._extractions_since_summary += 1
@@ -125,9 +131,10 @@ class WorkerRunner:
     def _dispatch(self, handler: Any, job: Any) -> None:
         """Dispatch a job to the appropriate handler method.
 
-        For EntityExtractor/Summarizer, the claimed job's own payload is
-        processed directly first — process_one owns that job's complete/fail.
-        A fault here must propagate so process_one can fail the claimed job.
+        For EntityExtractor/Summarizer/EntityEmbedder, the claimed job's own
+        payload is processed directly first — process_one owns that job's
+        complete/fail. A fault here must propagate so process_one can fail
+        the claimed job.
 
         process_pending() then drains any other jobs still pending, in its
         own try/except: a fault during the drain (e.g. the queue's dequeue
@@ -136,8 +143,12 @@ class WorkerRunner:
         is not safe to reprocess — extraction/summarization inserts are not
         idempotent. Any still-pending jobs the drain didn't reach are simply
         picked up on the next tick.
+
+        Embedding jobs are idempotent (``upsert_embedding`` + an
+        already-embedded skip), but they follow the same two-phase shape
+        so a drain fault is never charged to the claimed job.
         """
-        if isinstance(handler, (EntityExtractor, Summarizer)):
+        if isinstance(handler, (EntityExtractor, Summarizer, EntityEmbedder)):
             handler.process_job(job)
             try:
                 handler.process_pending()

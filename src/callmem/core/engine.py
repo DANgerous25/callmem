@@ -322,10 +322,25 @@ class MemoryEngine:
         include_stale: bool = False,
     ) -> list[dict[str, Any]]:
         """Search memories using the retrieval engine."""
+        results, _mode = self.search_with_mode(
+            query, types=types, session_id=session_id, limit=limit,
+            include_stale=include_stale,
+        )
+        return results
+
+    def search_with_mode(
+        self,
+        query: str,
+        types: list[str] | None = None,
+        session_id: str | None = None,
+        limit: int = 20,
+        include_stale: bool = False,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Search, also reporting which ranking served it ('hybrid'/'fts')."""
         from callmem.core.retrieval import RetrievalEngine
 
         engine = RetrievalEngine(self.repo, self.config)
-        results = engine.search(
+        results, mode = engine.search_with_mode(
             self.project_id,
             query,
             types=types,
@@ -352,7 +367,7 @@ class MemoryEngine:
                 "stale": r.stale,
             }
             for r in results
-        ]
+        ], mode
 
     def set_overview(self, content: str) -> dict[str, Any]:
         """Set the project overview (upsert). Returns the stored row."""

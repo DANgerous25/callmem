@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -1419,6 +1420,85 @@ def stale_cmd(
             f"  {e['id'][:8]} [{e['type']}] "
             f"{(e.get('title') or '')[:60]} "
             f"({reason}{sup_str})"
+        )
+
+
+@main.command("embed")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--backfill", is_flag=True,
+              help="Embed existing entities that have no vector yet.")
+@click.option("--batch-size", type=int, default=None,
+              help="Entities per backend call (default: config value).")
+@click.option("--limit", type=int, default=None,
+              help="Stop after embedding this many entities.")
+@click.option("--yes", "-y", "assume_yes", is_flag=True,
+              help="Skip the confirmation prompt (non-interactive).")
+def embed_cmd(
+    project: Path,
+    backfill: bool,
+    batch_size: int | None,
+    limit: int | None,
+    assume_yes: bool,
+) -> None:
+    """Show embedding coverage, or backfill missing entity embeddings."""
+    from callmem.core.config import load_config
+    from callmem.core.database import Database
+    from callmem.core.embeddings import EntityEmbedder, create_embedder
+    from callmem.core.engine import MemoryEngine
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}")
+        return
+
+    config = load_config(project)
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+
+    embedder = create_embedder(config)
+    worker = EntityEmbedder(db, config, embedder=embedder)
+    model = embedder.model if embedder is not None else None
+
+    embedded = engine.repo.count_embeddings(engine.project_id)
+    missing = len(engine.repo.list_entities_missing_embeddings(
+        engine.project_id, model or "", limit=1_000_000,
+    ))
+
+    click.echo(f"callmem embed — {project.resolve()}")
+    click.echo(f"  Backend:  {config.embeddings.backend} ({model or 'disabled'})")
+    click.echo(f"  Embedded: {embedded}")
+    click.echo(f"  Missing:  {missing}")
+
+    if not backfill:
+        if missing:
+            click.echo()
+            click.echo("  Run `callmem embed --backfill` to embed the rest.")
+        return
+
+    if embedder is None:
+        click.echo()
+        click.echo(
+            "Embeddings are disabled (no backend configured) — "
+            "nothing to backfill. Search continues to use FTS only."
+        )
+        return
+
+    if missing and not assume_yes and sys.stdin.isatty():
+        click.confirm(
+            f"Embed {missing} entity(ies) via {config.embeddings.backend}?",
+            abort=True,
+        )
+
+    result = worker.backfill(
+        engine.project_id, batch_size=batch_size, limit=limit,
+    )
+    click.echo()
+    click.echo(f"Embedded {result['embedded']} entity(ies).")
+    if result["remaining"]:
+        click.echo(
+            f"{result['remaining']} remaining — re-run to continue "
+            f"(the backfill resumes where it stopped)."
         )
 
 

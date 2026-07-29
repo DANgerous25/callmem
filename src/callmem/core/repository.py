@@ -1901,3 +1901,170 @@ class Repository:
             }
         finally:
             conn.close()
+
+    # ── Embeddings ───────────────────────────────────────────────────
+
+    def upsert_embedding(
+        self, entity_id: str, model: str, dim: int, vector: bytes,
+    ) -> None:
+        """Store (or replace) an entity's embedding vector."""
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO embeddings "
+                "(entity_id, model, dim, vector, created_at) "
+                "VALUES (?, ?, ?, ?, datetime('now')) "
+                "ON CONFLICT(entity_id) DO UPDATE SET "
+                "model = excluded.model, dim = excluded.dim, "
+                "vector = excluded.vector, created_at = excluded.created_at",
+                (entity_id, model, dim, vector),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_embedding(self, entity_id: str) -> dict[str, Any] | None:
+        """Return an entity's stored embedding row, or None."""
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM embeddings WHERE entity_id = ?", (entity_id,),
+            ).fetchone()
+            return dict(row) if row is not None else None
+        finally:
+            conn.close()
+
+    def count_embeddings(self, project_id: str) -> int:
+        """Number of stored embeddings for a project's entities."""
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM embeddings em "
+                "JOIN entities e ON e.id = em.entity_id "
+                "WHERE e.project_id = ?",
+                (project_id,),
+            ).fetchone()
+            return int(row["c"])
+        finally:
+            conn.close()
+
+    def has_embeddings(self, project_id: str) -> bool:
+        """Whether any embedding exists for this project.
+
+        Retrieval calls this before doing anything embedding-related, so a
+        project with no vectors never pays for a backend probe and always
+        takes the untouched pure-FTS path.
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM embeddings em "
+                "JOIN entities e ON e.id = em.entity_id "
+                "WHERE e.project_id = ? LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def list_entities_missing_embeddings(
+        self, project_id: str, model: str, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Live, non-archived entities with no embedding for ``model``.
+
+        Backfill re-runs this each batch, which is what makes it resumable:
+        rows drop out of the result as soon as they are embedded. An entity
+        embedded by a *different* model is still listed, so switching model
+        re-embeds the corpus.
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT e.* FROM entities e "
+                "LEFT JOIN embeddings em "
+                "  ON em.entity_id = e.id AND em.model = ? "
+                "WHERE e.project_id = ? AND e.archived_at IS NULL "
+                "AND em.entity_id IS NULL "
+                "ORDER BY e.updated_at DESC LIMIT ?",
+                (model, project_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def load_embedding_candidates(
+        self,
+        project_id: str,
+        model: str,
+        types: list[str] | None = None,
+        include_stale: bool = False,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Load vectors for the ``limit`` most-recent searchable entities.
+
+        This is the prefilter that bounds vector-search cost: candidates
+        are ordered most-recently-updated first and capped, so scoring
+        stays linear in ``limit`` rather than in the corpus size. Applies
+        the same visibility rules as ``search_entities_fts`` so hybrid
+        results can never surface something FTS would have hidden.
+        """
+        clauses = [
+            "e.project_id = ?", "e.archived_at IS NULL", "em.model = ?",
+        ]
+        params: list[Any] = [project_id, model]
+        if types:
+            placeholders = ",".join("?" for _ in types)
+            clauses.append(f"e.type IN ({placeholders})")
+            params.extend(types)
+        if not include_stale:
+            clauses.append("e.stale = 0")
+        where = " AND ".join(clauses)
+
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                f"SELECT em.entity_id, em.dim, em.vector "
+                f"FROM embeddings em "
+                f"JOIN entities e ON e.id = em.entity_id "
+                f"WHERE {where} "
+                f"ORDER BY e.updated_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_entities_by_ids(
+        self,
+        entity_ids: list[str],
+        types: list[str] | None = None,
+        include_stale: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Fetch raw, non-archived entity rows by ID.
+
+        Returns raw rows (not model round-trips) so the shape matches
+        ``search_entities_fts`` and the retrieval engine can score rows
+        from either source with one code path.
+        """
+        if not entity_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in entity_ids)
+        clauses = [f"id IN ({placeholders})", "archived_at IS NULL"]
+        params: list[Any] = list(entity_ids)
+        if types:
+            type_placeholders = ",".join("?" for _ in types)
+            clauses.append(f"type IN ({type_placeholders})")
+            params.extend(types)
+        if not include_stale:
+            clauses.append("stale = 0")
+        where = " AND ".join(clauses)
+
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM entities WHERE {where}", params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()

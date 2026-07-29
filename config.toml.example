@@ -33,6 +33,35 @@ model = "glm-4-flash"
 api_key_env = "CALLMEM_API_KEY"
 timeout = 120
 
+# ── Embeddings (hybrid search) ───────────────────────────
+# When a backend is reachable, entity search fuses full-text (bm25) and
+# semantic (cosine) rankings. With no backend or no stored vectors,
+# search silently falls back to full-text only — nothing breaks.
+[embeddings]
+enabled = true
+# "ollama" (local, free, private), "openai_compat", or "none"
+backend = "ollama"
+# Ollama: `ollama pull nomic-embed-text` (768 dims, ~270MB)
+model = "nomic-embed-text"
+# Overrides the backend's own endpoint when set; null uses
+# [ollama].endpoint / [openai_compat].endpoint
+endpoint = null
+timeout = 60
+# Entities per embedding request
+batch_size = 32
+# How many stored vectors one query scores, most-recently-updated first.
+# Higher = better recall over old entities, slower search. At 768 dims:
+# 500 ≈ 40ms, 2000 ≈ 93ms, 10000 ≈ 374ms.
+candidate_limit = 500
+# Cosine floor for a vector hit to enter the fused ranking. Calibrated
+# for nomic-embed-text (related pairs 0.49-0.57, unrelated below 0.43).
+min_similarity = 0.45
+# Asymmetric task prefixes nomic-embed-text is trained on. Set both to ""
+# for models that don't use them. Changing these after embedding requires
+# a re-embed (stored vectors would no longer match query vectors).
+query_prefix = "search_query: "
+document_prefix = "search_document: "
+
 # ── Web UI ───────────────────────────────────────────────
 [ui]
 # Port to serve the web interface on

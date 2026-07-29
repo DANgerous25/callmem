@@ -18,6 +18,7 @@ from callmem.models.entities import Entity
 if TYPE_CHECKING:
     from callmem.core.database import Database
     from callmem.core.ollama import OllamaClient
+    from callmem.models.config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +46,16 @@ class EntityExtractor:
         db: Database,
         ollama: OllamaClient,
         event_bus: Any | None = None,
+        config: Config | None = None,
     ) -> None:
         self.db = db
         self.ollama = ollama
         self.queue = JobQueue(db)
         self.event_bus = event_bus
+        # Optional: without a config the extractor cannot know whether
+        # embeddings are wanted, so it queues none. The daemon's
+        # WorkerRunner always passes one.
+        self.config = config
 
     def enqueue_extraction(
         self, event_ids: list[str], session_id: str | None = None
@@ -185,8 +191,34 @@ class EntityExtractor:
 
         if entities:
             self._auto_resolve(project_id, entities)
+            self._enqueue_embeddings(project_id, entities)
 
         return entities
+
+    def _enqueue_embeddings(
+        self, project_id: str, entities: list[Entity]
+    ) -> None:
+        """Queue an ``embed_entities`` job for the entities just created.
+
+        Never raises: the entities are already persisted, so a queueing
+        fault must not fail an otherwise-successful extraction job. The
+        worst case is these entities stay FTS-only until the next
+        ``callmem embed --backfill``.
+        """
+        if self.config is None or not self.config.embeddings.enabled:
+            return
+        try:
+            from callmem.core.embeddings import EMBED_JOB_TYPE
+
+            self.queue.enqueue(
+                EMBED_JOB_TYPE,
+                {
+                    "entity_ids": [e.id for e in entities],
+                    "project_id": project_id,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to enqueue embedding job: %s", exc)
 
     _RESOLUTION_DRIVER_TYPES = frozenset({"bugfix", "feature", "change"})
     _RESOLVABLE_TYPES = frozenset({"todo", "failure"})

@@ -49,10 +49,11 @@ dev = [
     "pre-commit>=4.0",
 ]
 
-embeddings = [
-    "sentence-transformers>=3.0",
-    "sqlite-vec>=0.1",
-]
+# Hybrid search needs no extra dependencies: vectors come from the
+# configured embedding backend over HTTP (httpx, already required) and
+# are stored as float32 blobs scored in Python. Kept as an empty extra so
+# `callmem[embeddings]` remains installable for anyone who pinned it.
+embeddings = []
 
 [project.urls]
 Homepage = "https://github.com/DANgerous25/callmem"

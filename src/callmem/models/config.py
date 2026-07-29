@@ -36,6 +36,55 @@ class OpenAICompatConfig(BaseModel):
     timeout: int = 120
 
 
+class EmbeddingsConfig(BaseModel):
+    """Vector embeddings for hybrid (FTS + semantic) retrieval.
+
+    Enabled by default but inert until a backend actually answers: with no
+    embeddings stored, search falls back to the pure-FTS path unchanged.
+
+    backend options:
+      - "ollama"        — local Ollama /api/embed (free, private, preferred)
+      - "openai_compat" — any OpenAI-compatible /embeddings endpoint
+      - "none"          — feature dormant
+
+    ``endpoint`` overrides the backend's own endpoint when set; otherwise
+    ``[ollama].endpoint`` / ``[openai_compat].endpoint`` is used.
+
+    ``candidate_limit`` caps how many stored vectors a single query scores.
+    Candidates are taken most-recently-updated first, so raising it trades
+    latency for recall over older entities. Measured at 768 dimensions on
+    the reference machine: 500 candidates ~40ms, 2000 ~93ms, 10000 ~374ms
+    — hence the cap. Keep it at or below ~2000 to stay inside the 200ms
+    search budget.
+
+    ``min_similarity`` is the cosine floor below which a vector hit is
+    discarded — without it every query would inject `limit` loosely-related
+    entities into the fused ranking. Calibrated for the default model:
+    measured against nomic-embed-text, genuinely related pairs scored
+    0.486–0.566 and unrelated pairs topped out at 0.425. Raise it for
+    models with a wider similarity spread.
+
+    ``query_prefix`` / ``document_prefix`` are the asymmetric task prefixes
+    nomic-embed-text is trained on. They are not cosmetic: on the probe
+    corpus, adding them moved top-1 retrieval from 1/3 to 3/3 correct.
+    Set both to "" for models that do not use prefixes. Changing either
+    after entities are embedded makes stored vectors inconsistent with
+    queries — re-run `callmem embed --backfill` against a fresh model name
+    if you change them.
+    """
+
+    enabled: bool = True
+    backend: str = "ollama"
+    model: str = "nomic-embed-text"
+    endpoint: str | None = None
+    timeout: int = 60
+    batch_size: int = 32
+    candidate_limit: int = 500
+    min_similarity: float = 0.45
+    query_prefix: str = "search_query: "
+    document_prefix: str = "search_document: "
+
+
 class BriefingConfig(BaseModel):
     max_tokens: int = 2000
     focus: str | None = None
@@ -120,6 +169,7 @@ class Config(BaseModel):
     llm: LLMBackendConfig = Field(default_factory=LLMBackendConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
+    embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
@@ -144,6 +194,13 @@ class Config(BaseModel):
         if self.llm.backend not in valid_backends:
             msg = (
                 f"Invalid llm backend '{self.llm.backend}'. "
+                f"Must be one of: {', '.join(sorted(valid_backends))}"
+            )
+            raise ValueError(msg)
+
+        if self.embeddings.backend not in valid_backends:
+            msg = (
+                f"Invalid embeddings backend '{self.embeddings.backend}'. "
                 f"Must be one of: {', '.join(sorted(valid_backends))}"
             )
             raise ValueError(msg)

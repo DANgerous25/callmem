@@ -84,7 +84,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "mem_search",
-        "description": "Search stored memories using full-text search.",
+        "description": (
+            "Search stored memories. Fuses full-text and semantic "
+            "(vector) ranking when embeddings are available; the "
+            "response's `mode` field reports which served the query "
+            "('hybrid' or 'fts')."
+        ),
         "inputSchema": {
             "type": "object",
             "required": ["query"],
@@ -751,8 +756,12 @@ def handle_search(engine: MemoryEngine, args: dict[str, Any]) -> list[TextConten
     query = args.get("query", "")
     limit = args.get("limit", 20)
     include_stale = bool(args.get("include_stale", False))
-    results = engine.search(query, limit=limit, include_stale=include_stale)
-    return _make_result({"results": results})
+    results, mode = engine.search_with_mode(
+        query, limit=limit, include_stale=include_stale,
+    )
+    # `mode` tells the agent whether semantic recall was in play: "hybrid"
+    # (FTS + vector fused) or "fts" (no embeddings available for this query).
+    return _make_result({"results": results, "mode": mode})
 
 
 def handle_get_briefing(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
