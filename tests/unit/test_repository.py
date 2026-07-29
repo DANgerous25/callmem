@@ -340,6 +340,26 @@ class TestEventFtsSanitization:
         results = repo.search_events_fts(project.id, "cookie-backed")
         assert isinstance(results, list)
 
+    def test_hyphenated_query_matches_hyphenated_document(
+        self, memory_db: Database
+    ) -> None:
+        # The FTS5 tokenizer (porter unicode61) splits "cookie-backed"
+        # into separate "cookie"/"backed" tokens when indexing the
+        # document. The query must be split the same way (not glued
+        # into "cookiebacked") or it will never match.
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        repo.insert_event(Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="cookie-backed sessions are in use",
+        ))
+
+        results = repo.search_events_fts(project.id, "cookie-backed")
+        assert any("cookie-backed" in r["content"].lower() for r in results)
+
     @pytest.mark.parametrize("query", HOSTILE_QUERIES)
     def test_hostile_queries_never_raise(
         self, memory_db: Database, query: str
@@ -374,6 +394,25 @@ class TestEntityFtsSearch:
         # yields zero rows, so the OR fallback must still find it.
         results = repo.search_entities_fts(project.id, "alpha zzznomatch")
         assert any(r["title"] == "alpha only entity" for r in results)
+
+    def test_hyphenated_query_matches_hyphenated_document(
+        self, memory_db: Database
+    ) -> None:
+        # Same compound-splitting requirement as events: the FTS5
+        # tokenizer splits "cookie-backed" into separate tokens when
+        # indexing, so the query must split the same way to match.
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        repo.create_entity(Entity(
+            project_id=project.id, type="fact",
+            title="cookie-backed session handling", content="detail",
+        ))
+
+        results = repo.search_entities_fts(project.id, "cookie-backed")
+        assert any(
+            "cookie-backed" in r["title"].lower() for r in results
+        )
 
     @pytest.mark.parametrize("query", HOSTILE_QUERIES)
     def test_hostile_queries_never_raise(

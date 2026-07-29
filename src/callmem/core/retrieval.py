@@ -186,27 +186,11 @@ class RetrievalEngine:
                 include_stale=include_stale, limit=limit,
             )
         else:
-            conn = self.repo.db.connect()
-            try:
-                clauses: list[str] = ["project_id = ?"]
-                params: list[Any] = [project_id]
-
-                if types:
-                    placeholders = ",".join("?" for _ in types)
-                    clauses.append(f"type IN ({placeholders})")
-                    params.extend(types)
-
-                if not include_stale:
-                    clauses.append("stale = 0")
-
-                where = " AND ".join(clauses)
-                rows = conn.execute(
-                    f"SELECT * FROM entities WHERE {where} "
-                    f"ORDER BY pinned DESC, updated_at DESC LIMIT ?",
-                    (*params, limit),
-                ).fetchall()
-            finally:
-                conn.close()
+            # No query to rank by relevance — browse recent entities.
+            rows = self.repo.list_entities_for_browse(
+                project_id, types=types,
+                include_stale=include_stale, limit=limit,
+            )
 
         now = datetime.now(UTC).isoformat()
 

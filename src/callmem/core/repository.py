@@ -6,6 +6,7 @@ Every method takes model objects and returns model objects.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from callmem.models.events import Event
@@ -19,8 +20,17 @@ if TYPE_CHECKING:
     from callmem.core.database import Database
 
 
+# Splits a word on any run of characters that aren't alphanumeric or
+# underscore — used by `split_compounds` to break "cookie-backed" into
+# "cookie" and "backed" *before* those characters get stripped.
+_COMPOUND_SPLIT_RE = re.compile(r"[^0-9a-zA-Z_]+")
+
+
 def sanitize_fts_tokens(
-    *sources: str, min_len: int = 1, max_tokens: int | None = None,
+    *sources: str,
+    min_len: int = 1,
+    max_tokens: int | None = None,
+    split_compounds: bool = False,
 ) -> list[str]:
     """Split one or more text sources into safe, deduped FTS5 tokens.
 
@@ -31,19 +41,31 @@ def sanitize_fts_tokens(
     risk of being parsed as an operator. Tokens are deduplicated in
     order of first appearance, and collection stops once `max_tokens`
     is reached (across all sources combined).
+
+    `split_compounds` additionally breaks a word like "cookie-backed"
+    into separate "cookie" and "backed" tokens *before* stripping — the
+    FTS5 tokenizer (`porter unicode61`) already splits hyphenated words
+    into separate tokens when indexing documents, so a glued
+    "cookiebacked" query token would never match a stored "cookie-backed"
+    phrase. Off by default so staleness.py's candidate-search tokenizing
+    (whose output must stay byte-identical) is unaffected.
     """
     tokens: list[str] = []
     for source in sources:
         if not source:
             continue
         for word in source.split():
-            cleaned = "".join(
-                c for c in word.lower() if c.isalnum() or c == "_"
-            )
-            if len(cleaned) >= min_len and cleaned not in tokens:
-                tokens.append(cleaned)
-            if max_tokens is not None and len(tokens) >= max_tokens:
-                return tokens
+            pieces = _COMPOUND_SPLIT_RE.split(word) if split_compounds else [word]
+            for piece in pieces:
+                if not piece:
+                    continue
+                cleaned = "".join(
+                    c for c in piece.lower() if c.isalnum() or c == "_"
+                )
+                if len(cleaned) >= min_len and cleaned not in tokens:
+                    tokens.append(cleaned)
+                if max_tokens is not None and len(tokens) >= max_tokens:
+                    return tokens
     return tokens
 
 
@@ -52,6 +74,7 @@ def build_fts_match_query(
     min_len: int = 1,
     max_tokens: int | None = None,
     joiner: str = "OR",
+    split_compounds: bool = False,
 ) -> str:
     """Build a safe, quoted FTS5 MATCH expression from text sources.
 
@@ -60,6 +83,7 @@ def build_fts_match_query(
     """
     tokens = sanitize_fts_tokens(
         *sources, min_len=min_len, max_tokens=max_tokens,
+        split_compounds=split_compounds,
     )
     if not tokens:
         return ""
@@ -561,7 +585,7 @@ class Repository:
         nothing, retry OR-joined so a multi-word query still surfaces
         partial matches.
         """
-        and_query = build_fts_match_query(query, joiner="AND")
+        and_query = build_fts_match_query(query, joiner="AND", split_compounds=True)
         if not and_query:
             return []
 
@@ -569,7 +593,9 @@ class Repository:
         try:
             rows = self._run_events_fts(conn, and_query, project_id, limit)
             if not rows:
-                or_query = build_fts_match_query(query, joiner="OR")
+                or_query = build_fts_match_query(
+                    query, joiner="OR", split_compounds=True,
+                )
                 if or_query != and_query:
                     rows = self._run_events_fts(
                         conn, or_query, project_id, limit,
@@ -606,7 +632,7 @@ class Repository:
         Tokens are AND-joined first; if that yields nothing, retry
         OR-joined so a reordered or partial query still matches.
         """
-        and_query = build_fts_match_query(query, joiner="AND")
+        and_query = build_fts_match_query(query, joiner="AND", split_compounds=True)
         if not and_query:
             return []
 
@@ -625,7 +651,9 @@ class Repository:
         try:
             rows = self._run_entities_fts(conn, and_query, where, params, limit)
             if not rows:
-                or_query = build_fts_match_query(query, joiner="OR")
+                or_query = build_fts_match_query(
+                    query, joiner="OR", split_compounds=True,
+                )
                 if or_query != and_query:
                     rows = self._run_entities_fts(
                         conn, or_query, where, params, limit,
@@ -651,28 +679,34 @@ class Repository:
             (match_query, *params, limit),
         ).fetchall()
 
-    def search_entities_fts_by_type(
-        self, project_id: str, query: str, entity_type: str,
-        before: str, exclude_id: str, limit: int = 5,
+    def list_entities_for_browse(
+        self,
+        project_id: str,
+        types: list[str] | None = None,
+        include_stale: bool = False,
+        limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Search entities using FTS5, filtered by project and type."""
+        """List entities without a search query — the retrieval engine's
+        fallback when there's nothing to rank by relevance. Ordered by
+        pinned, then recency (not bm25, since there's no query)."""
         conn = self.db.connect()
         try:
+            clauses: list[str] = ["project_id = ?"]
+            params: list[Any] = [project_id]
+            if types:
+                placeholders = ",".join("?" for _ in types)
+                clauses.append(f"type IN ({placeholders})")
+                params.extend(types)
+            if not include_stale:
+                clauses.append("stale = 0")
+
+            where = " AND ".join(clauses)
             rows = conn.execute(
-                "SELECT e.id, e.type, e.title, e.content, e.created_at "
-                "FROM entities_fts f "
-                "JOIN entities e ON e.rowid = f.rowid "
-                "WHERE entities_fts MATCH ? "
-                "AND e.project_id = ? AND e.type = ? "
-                "AND e.stale = 0 AND e.archived_at IS NULL "
-                "AND e.created_at < ? "
-                "AND e.id != ? "
-                "ORDER BY e.created_at DESC LIMIT ?",
-                (query, project_id, entity_type, before, exclude_id, limit),
+                f"SELECT * FROM entities WHERE {where} "
+                f"ORDER BY pinned DESC, updated_at DESC LIMIT ?",
+                (*params, limit),
             ).fetchall()
             return [dict(r) for r in rows]
-        except Exception:  # pragma: no cover — bad FTS query
-            return []
         finally:
             conn.close()
 
