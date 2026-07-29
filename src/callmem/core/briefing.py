@@ -104,9 +104,12 @@ def _parse_db_timestamp(ts: str) -> datetime:
     Timestamps in this codebase come from two sources: SQLite's
     ``datetime('now')`` (naive ``"YYYY-MM-DD HH:MM:SS"``, always UTC) and
     Python's ``datetime.now(UTC).isoformat()`` (aware, ``T``-separated).
-    Naive values are assumed UTC so both compare correctly.
+    Naive values are assumed UTC so both compare correctly. A ``Z`` suffix
+    (Claude Code transcript passthrough) is normalized to ``+00:00`` since
+    Python 3.10's ``fromisoformat`` — production's interpreter — rejects
+    the ``Z`` suffix outright (only 3.11+ accepts it).
     """
-    parsed = datetime.fromisoformat(ts.replace(" ", "T"))
+    parsed = datetime.fromisoformat(ts.replace(" ", "T").replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed

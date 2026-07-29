@@ -420,3 +420,32 @@ class TestPipelineHealth:
         assert "MEMORY PIPELINE UNHEALTHY" not in briefing.content
         assert briefing.pipeline_health["status"] == "healthy"
         assert briefing.pipeline_health["failed_jobs"] == 0
+
+
+class TestParseDbTimestamp:
+    """`_parse_db_timestamp` must accept Z-suffixed timestamps.
+
+    Python 3.10's ``datetime.fromisoformat`` rejects the ``Z`` UTC suffix
+    (only 3.11+ accepts it). Production runs 3.10, and Claude Code
+    transcript passthrough fills the DB with Z-suffixed event timestamps
+    (e.g. ``2026-07-29T11:53:39.725Z``), so this must be normalized before
+    parsing regardless of interpreter version.
+    """
+
+    def test_z_suffixed_timestamp_parses(self) -> None:
+        from datetime import datetime
+
+        from callmem.compat import UTC
+        from callmem.core.briefing import _parse_db_timestamp
+
+        parsed = _parse_db_timestamp("2026-07-29T11:53:39.725Z")
+        assert parsed == datetime(2026, 7, 29, 11, 53, 39, 725000, tzinfo=UTC)
+
+    def test_z_suffixed_timestamp_without_fraction_parses(self) -> None:
+        from datetime import datetime
+
+        from callmem.compat import UTC
+        from callmem.core.briefing import _parse_db_timestamp
+
+        parsed = _parse_db_timestamp("2026-07-29T11:53:39Z")
+        assert parsed == datetime(2026, 7, 29, 11, 53, 39, tzinfo=UTC)
