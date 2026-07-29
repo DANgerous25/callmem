@@ -1,0 +1,14 @@
+[
+  {
+    "id": "extraction-retry-backoff",
+    "prompt": "Explain where extraction retry logic lives in this codebase and what its backoff policy is (check for prior sessions' notes on this before re-deriving it from scratch). Propose (do not implement) how you would change the backoff constants to reduce load on the LLM backend during rate-limit spikes."
+  },
+  {
+    "id": "dedupe-driver-resolution",
+    "prompt": "Explain how the duplicate-resolution path around _resolve_by_drivers works, drawing on anything from past sessions that already covers this area. Propose (do not implement) a test case that would catch a regression in this path."
+  },
+  {
+    "id": "mcp-surface-audit",
+    "prompt": "Explain which MCP tools were most recently removed from the server surface and why (recall prior context on this if it exists rather than re-reading every file). Propose (do not implement) whether any remaining tools carry similar dead-code risk."
+  }
+]
