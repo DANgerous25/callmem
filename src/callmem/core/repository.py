@@ -6,9 +6,12 @@ Every method takes model objects and returns model objects.
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from callmem.compat import UTC
 from callmem.models.events import Event
 from callmem.models.model_registry import ModelRegistryEntry
 from callmem.models.projects import Project
@@ -818,6 +821,116 @@ class Repository:
             conn.commit()
         finally:
             conn.close()
+
+    def list_unarchived_entity_ids(self, project_id: str) -> set[str]:
+        """Snapshot the ids of every currently-unarchived entity.
+
+        Used by re-extraction to fix the candidate set of "old" entities
+        BEFORE a run starts — replacements inserted during the run must
+        never become archival candidates themselves (a new entity's own
+        source events are, trivially, always "fully covered").
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM entities "
+                "WHERE project_id = ? AND archived_at IS NULL",
+                (project_id,),
+            ).fetchall()
+            return {row["id"] for row in rows}
+        finally:
+            conn.close()
+
+    def archive_entities_with_full_coverage(
+        self,
+        project_id: str,
+        covered_event_ids: set[str],
+        candidate_ids: set[str],
+        force: bool = False,
+    ) -> int:
+        """Archive entities whose ENTIRE source-event coverage has
+        succeeded, not just any one of their events.
+
+        An entity's provenance is its ``source_event_ids`` list (falling
+        back to ``[source_event_id]`` for pre-migration rows where the
+        new column is still NULL). Re-extraction may split the events an
+        entity was originally derived from across several batches; if a
+        later batch covering some of those events then fails, archiving
+        the entity as soon as the first batch succeeds would silently
+        delete the only description of the events that never got
+        re-extracted. Archiving must wait until every one of an entity's
+        source events is confirmed covered.
+
+        ``candidate_ids`` restricts consideration to a caller-supplied
+        set of entity ids (e.g. a snapshot taken before a re-extraction
+        run began) — without it, a just-inserted replacement would
+        immediately qualify for archival too, since its own source
+        events are by definition already covered.
+
+        If ``force`` is False, pinned or resolved/done/cancelled entities
+        are left alone (same protection as the rest of re-extraction).
+        Returns the number of entities archived.
+        """
+        if not covered_event_ids or not candidate_ids:
+            return 0
+
+        conn = self.db.connect()
+        try:
+            clauses = [
+                "project_id = ?",
+                "archived_at IS NULL",
+                "(source_event_id IS NOT NULL OR source_event_ids IS NOT NULL)",
+            ]
+            params: list[Any] = [project_id]
+            if not force:
+                clauses.append("pinned = 0")
+                clauses.append(
+                    "(status IS NULL OR status NOT IN ('done', 'cancelled', 'resolved'))"
+                )
+
+            where = " AND ".join(clauses)
+            rows = conn.execute(
+                f"SELECT id, source_event_id, source_event_ids "
+                f"FROM entities WHERE {where}",
+                params,
+            ).fetchall()
+
+            to_archive = [
+                row["id"] for row in rows
+                if row["id"] in candidate_ids
+                and self._is_fully_covered(row, covered_event_ids)
+            ]
+
+            if not to_archive:
+                return 0
+
+            now = datetime.now(UTC).isoformat()
+            placeholders = ",".join("?" for _ in to_archive)
+            conn.execute(
+                f"UPDATE entities SET archived_at = ? WHERE id IN ({placeholders})",
+                [now, *to_archive],
+            )
+            conn.commit()
+            return len(to_archive)
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _is_fully_covered(row: Any, covered_event_ids: set[str]) -> bool:
+        """True if every one of a row's source events is in covered_event_ids."""
+        raw = row["source_event_ids"]
+        ids: list[str] | None = None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, list) and parsed:
+                ids = [str(eid) for eid in parsed if eid]
+        if ids is None:
+            source_event_id = row["source_event_id"]
+            ids = [source_event_id] if source_event_id else []
+        return bool(ids) and all(eid in covered_event_ids for eid in ids)
 
     def mark_current(self, entity_id: str) -> bool:
         """Clear the stale flag on an entity. Returns True if modified."""

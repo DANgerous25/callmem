@@ -2227,8 +2227,15 @@ def re_extract(
         click.echo()
         click.echo(
             f"  Failed batches:    {failed_batches} "
-            "(prior entities for these events were left untouched; "
-            "see logs for details)"
+            "(prior entities whose source events span a failed batch "
+            "were left untouched; see logs for details)"
+        )
+        click.echo(
+            "  Note: this may leave temporary duplicates (old entity + "
+            "partial replacements) where a batch succeeded but a sibling "
+            "batch for the same original entity did not — re-running "
+            "'re-extract' until it completes with no failed batches "
+            "will converge them."
         )
         raise SystemExit(1)
 

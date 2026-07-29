@@ -151,51 +151,6 @@ class ReExtractor:
             batches.append(events[i : i + batch_size])
         return batches
 
-    def _archive_entities_for_events(
-        self,
-        event_ids: list[str],
-        project_id: str,
-        force: bool = False,
-    ) -> int:
-        """Archive existing entities linked to the given events.
-
-        If force is False, skip entities that have been pinned or modified.
-        Returns the number of entities archived.
-        """
-        if not event_ids:
-            return 0
-
-        conn = self.db.connect()
-        try:
-            placeholders = ",".join("?" for _ in event_ids)
-            now = datetime.now(UTC).isoformat()
-
-            if force:
-                conn.execute(
-                    f"UPDATE entities SET archived_at = ? "
-                    f"WHERE source_event_id IN ({placeholders}) "
-                    f"AND project_id = ? AND archived_at IS NULL",
-                    [now, *event_ids, project_id],
-                )
-            else:
-                conn.execute(
-                    f"UPDATE entities SET archived_at = ? "
-                    f"WHERE source_event_id IN ({placeholders}) "
-                    f"AND project_id = ? AND archived_at IS NULL "
-                    f"AND pinned = 0 "
-                    f"AND (status IS NULL OR status NOT IN ('done', 'cancelled', 'resolved'))",
-                    [now, *event_ids, project_id],
-                )
-
-            conn.commit()
-
-            row = conn.execute(
-                "SELECT changes() as c"
-            ).fetchone()
-            return row["c"] if row else 0
-        finally:
-            conn.close()
-
     def _extract_batch(
         self,
         events: list[dict[str, Any]],
@@ -325,19 +280,36 @@ class ReExtractor:
                 "dry_run": True,
             }
 
+        from callmem.core.repository import Repository
+
+        repo = Repository(self.db)
+        # Snapshot BEFORE the run starts: only entities that already
+        # existed are archival candidates. Without this, a replacement
+        # entity inserted mid-run would itself qualify for archival the
+        # moment its own (already-covered) source events are checked.
+        candidate_ids = repo.list_unarchived_entity_ids(project_id)
+
         events_processed = 0
         entities_created = 0
         entities_archived = 0
         failed_batches = 0
+        # Event ids whose re-extraction has succeeded so far this run. An
+        # old entity is only archived once ALL of its source events are in
+        # this set — an entity originally extracted from a 5-event batch
+        # may be split across several re-extraction batches when
+        # batch_size differs, and archiving it as soon as the first of
+        # those batches succeeds would silently lose the events covered
+        # by a later batch that then fails.
+        succeeded_event_ids: set[str] = set()
         extractor = EntityExtractor(self.db, self.ollama)
 
         for batch_idx, batch in enumerate(batches):
             event_ids = [e["id"] for e in batch]
 
-            # Extract first. Only on success do we archive the prior
-            # entities for these events and persist the replacements — a
-            # failed batch must not leave a hole where old entities were
-            # archived but nothing replaced them.
+            # Extract first. Only on success do we consider these events
+            # covered and persist the replacements — a failed batch must
+            # not leave a hole where old entities were archived but
+            # nothing replaced them.
             try:
                 new_entities = self._extract_batch(batch, extractor)
             except Exception as exc:
@@ -357,8 +329,9 @@ class ReExtractor:
                     })
                 continue
 
-            archived = self._archive_entities_for_events(
-                event_ids, project_id, force=force,
+            succeeded_event_ids.update(event_ids)
+            archived = repo.archive_entities_with_full_coverage(
+                project_id, succeeded_event_ids, candidate_ids, force=force,
             )
             entities_archived += archived
 

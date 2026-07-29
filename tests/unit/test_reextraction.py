@@ -325,6 +325,215 @@ class TestReExtractorFailureHandling:
         assert "Replacement decision" in titles
 
 
+class TestReExtractorPartialCoverage:
+    """An entity's source_event_ids may span several re-extraction
+    batches when --batch-size differs from the batch size used for the
+    original extraction. Archiving must wait until ALL of an entity's
+    source events are confirmed re-extracted — archiving as soon as any
+    one covering batch succeeds would silently lose the events any
+    later, failing sibling batch never got to re-extract (Fix round 1,
+    phase0-reliability task 6)."""
+
+    def test_incomplete_coverage_after_batch_failure_does_not_archive(
+        self, memory_db: Database
+    ) -> None:
+        from callmem.models.events import EventInput
+
+        engine, re_extractor = _setup_with_events(memory_db)
+        engine.start_session()
+        events = engine.ingest([
+            EventInput(type="note", content=f"event {i}") for i in range(1, 5)
+        ])
+        assert len(events) == 4
+        event_ids = [e.id for e in events]
+
+        from callmem.core.extraction import EntityExtractor
+
+        extractor = EntityExtractor(memory_db, OllamaClient())
+        seed_response = (
+            '{"decisions": [{"title": "Original decision", "content": "c"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=seed_response):
+            seeded = extractor.process_pending()
+        assert len(seeded) == 1
+        original = seeded[0]
+        assert original.source_event_ids == event_ids
+
+        project_id = engine.project_id
+        response_a = (
+            '{"decisions": [{"title": "Replacement A", "content": "c2"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+
+        # batch_size=2 splits the 4 events differently than the original
+        # single 4-event batch: [e1,e2] succeeds, [e3,e4] fails.
+        with patch.object(
+            re_extractor.ollama, "_generate",
+            side_effect=[response_a, None],
+        ):
+            result = re_extractor.run(project_id, batch_size=2, force=True)
+
+        assert result["failed_batches"] == 1
+        assert result["entities_archived"] == 0
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM entities WHERE id = ?",
+                (original.id,),
+            ).fetchone()
+            active_titles = {
+                r["title"] for r in conn.execute(
+                    "SELECT title FROM entities WHERE archived_at IS NULL"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert row["archived_at"] is None, (
+            "original entity archived before all its source events "
+            "were successfully re-extracted — this is the data-loss bug"
+        )
+        # Temporary duplicate accepted: original stays visible alongside
+        # the partial replacement until a fully-successful run converges.
+        assert "Original decision" in active_titles
+        assert "Replacement A" in active_titles
+
+    def test_full_coverage_across_differing_batch_size_archives_once(
+        self, memory_db: Database
+    ) -> None:
+        from callmem.models.events import EventInput
+
+        engine, re_extractor = _setup_with_events(memory_db)
+        engine.start_session()
+        events = engine.ingest([
+            EventInput(type="note", content=f"event {i}") for i in range(1, 5)
+        ])
+        event_ids = [e.id for e in events]
+
+        from callmem.core.extraction import EntityExtractor
+
+        extractor = EntityExtractor(memory_db, OllamaClient())
+        seed_response = (
+            '{"decisions": [{"title": "Original decision", "content": "c"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=seed_response):
+            seeded = extractor.process_pending()
+        assert len(seeded) == 1
+        original = seeded[0]
+        assert original.source_event_ids == event_ids
+
+        project_id = engine.project_id
+        response_a = (
+            '{"decisions": [{"title": "Replacement A", "content": "c2"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        response_b = (
+            '{"decisions": [{"title": "Replacement B", "content": "c3"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+
+        # batch_size=2 (differs from the original 4-event batch): both
+        # sub-batches succeed, so the original must be archived exactly
+        # once, after the second (covering) batch completes.
+        with patch.object(
+            re_extractor.ollama, "_generate",
+            side_effect=[response_a, response_b],
+        ):
+            result = re_extractor.run(project_id, batch_size=2, force=True)
+
+        assert result["failed_batches"] == 0
+        assert result["entities_archived"] == 1
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM entities WHERE id = ?",
+                (original.id,),
+            ).fetchone()
+            active_titles = {
+                r["title"] for r in conn.execute(
+                    "SELECT title FROM entities WHERE archived_at IS NULL"
+                ).fetchall()
+            }
+        finally:
+            conn.close()
+
+        assert row["archived_at"] is not None
+        assert active_titles == {"Replacement A", "Replacement B"}
+
+    def test_legacy_null_source_event_ids_falls_back_to_source_event_id(
+        self, memory_db: Database
+    ) -> None:
+        """A pre-migration row (source_event_ids column still NULL) must
+        remain archivable via the source_event_id fallback once that
+        single event is fully covered."""
+        from callmem.models.entities import Entity
+
+        engine, re_extractor = _setup_with_events(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("note", "legacy event")
+        assert event is not None
+
+        legacy = Entity(
+            project_id=engine.project_id,
+            source_event_id=event.id,
+            type="decision",
+            title="Legacy decision",
+            content="Predates source_event_ids",
+        )
+        conn = memory_db.connect()
+        try:
+            row = legacy.to_row()
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "status, priority, pinned, created_at, updated_at, "
+                "resolved_at, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"],
+                    row["resolved_at"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        project_id = engine.project_id
+        success_response = (
+            '{"decisions": [{"title": "New decision", "content": "c"}],'
+            '"todos": [], "facts": [], "failures": [], "discoveries": [], '
+            '"features": [], "bugfixes": [], "research": [], "changes": []}'
+        )
+        with patch.object(
+            re_extractor.ollama, "_generate", return_value=success_response,
+        ):
+            result = re_extractor.run(project_id, force=True)
+
+        assert result["entities_archived"] == 1
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM entities WHERE id = ?",
+                (legacy.id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["archived_at"] is not None
+
+
 class TestReExtractorSessionFilter:
     def test_limits_to_single_session(self, memory_db: Database) -> None:
         engine, re_extractor = _setup_with_events(memory_db)
