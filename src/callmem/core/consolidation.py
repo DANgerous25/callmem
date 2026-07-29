@@ -421,9 +421,10 @@ class EntityConsolidator:
                     # new entity is still kept, same disposition as ADD.
                     stats.added += 1
             else:
-                # ADD, or an UPDATE/NOOP somehow missing its existing_id --
-                # _parse already guarantees the latter can't happen, but
-                # falling back to ADD here costs nothing and never deletes.
+                # ADD, or an UPDATE/NOOP/CONTRADICTS somehow missing its
+                # existing_id -- _parse already guarantees the latter can't
+                # happen, but falling back to ADD here costs nothing and
+                # never deletes.
                 stats.added += 1
         return stats
 
