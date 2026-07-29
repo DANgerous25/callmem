@@ -122,6 +122,51 @@ def test_migration_016_on_populated_v15_database(tmp_path: Path) -> None:
     assert dequeued.id == "legacy-job"
 
 
+def test_migration_017_on_populated_database(tmp_path: Path) -> None:
+    """An entity row inserted before the source_event_ids migration must
+    survive with source_event_ids NULL, and the provenance fallback to
+    the single source_event_id column must still work."""
+    import sqlite3
+
+    from callmem.core.repository import Repository
+
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db.initialize()
+
+    # Simulate a pre-017 row inserted before this migration existed (no
+    # source_event_ids column to write to at the time — only the single
+    # source_event_id column).
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO projects (id, name, created_at, updated_at) "
+        "VALUES ('proj-1', 'legacy-project', datetime('now'), datetime('now'))"
+    )
+    conn.execute(
+        "INSERT INTO entities (id, project_id, source_event_id, type, title, "
+        "content, created_at, updated_at) VALUES ('legacy-entity', 'proj-1', "
+        "'event-1', 'todo', 'Legacy todo', 'Pre-migration content', "
+        "datetime('now'), datetime('now'))"
+    )
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT source_event_id, source_event_ids FROM entities WHERE id = ?",
+        ("legacy-entity",),
+    ).fetchone()
+    conn.close()
+    assert row[0] == "event-1"
+    assert row[1] is None
+
+    repo = Repository(db)
+    archived = repo.archive_entities_with_full_coverage(
+        project_id="proj-1",
+        covered_event_ids={"event-1"},
+        candidate_ids={"legacy-entity"},
+    )
+    assert archived == 1
+
+
 def test_in_memory_database() -> None:
     db = Database(":memory:")
     db.initialize()
