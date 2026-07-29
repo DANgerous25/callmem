@@ -33,6 +33,8 @@ class Job:
     started_at: str | None
     completed_at: str | None
     error: str | None
+    next_attempt_at: str | None
+    requeue_count: int
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Job:
@@ -50,6 +52,8 @@ class Job:
             started_at=row["started_at"],
             completed_at=row["completed_at"],
             error=row["error"],
+            next_attempt_at=row["next_attempt_at"],
+            requeue_count=row["requeue_count"],
         )
 
 
@@ -97,6 +101,7 @@ class JobQueue:
                     "WHERE id = ("
                     "  SELECT id FROM jobs "
                     "  WHERE status = 'pending' AND type = ? "
+                    "  AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now')) "
                     "  ORDER BY created_at ASC LIMIT 1"
                     ") RETURNING *",
                     (job_type,),
@@ -109,6 +114,7 @@ class JobQueue:
                     "WHERE id = ("
                     "  SELECT id FROM jobs "
                     "  WHERE status = 'pending' "
+                    "  AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now')) "
                     "  ORDER BY created_at ASC LIMIT 1"
                     ") RETURNING *",
                 ).fetchone()
@@ -135,7 +141,14 @@ class JobQueue:
             conn.close()
 
     def fail(self, job_id: str, error: str) -> None:
-        """Mark a job as failed. If under max_attempts, reset to pending for retry."""
+        """Mark a job as failed. If under max_attempts, reset to pending for retry.
+
+        A retried job gets an exponential backoff `next_attempt_at`
+        (60s * 4^(attempts-1): 60s, 240s, 960s, ...) so dequeue() won't
+        re-claim it immediately — without this, all retries burn within
+        seconds of a backend outage and the job dies permanently before
+        the backend has any chance to recover.
+        """
         conn = self.db.connect()
         try:
             job_row = conn.execute(
@@ -148,9 +161,11 @@ class JobQueue:
             max_attempts = job_row["max_attempts"]
 
             if attempts < max_attempts:
+                delay_seconds = 60 * (4 ** max(attempts - 1, 0))
                 conn.execute(
-                    "UPDATE jobs SET status = 'pending', error = ? WHERE id = ?",
-                    (error, job_id),
+                    "UPDATE jobs SET status = 'pending', error = ?, "
+                    "next_attempt_at = datetime('now', ?) WHERE id = ?",
+                    (error, f"+{delay_seconds} seconds", job_id),
                 )
             else:
                 conn.execute(
@@ -158,6 +173,74 @@ class JobQueue:
                     (error, job_id),
                 )
             conn.commit()
+        finally:
+            conn.close()
+
+    def requeue_failed(self, job_type: str | None = None) -> int:
+        """Reset `failed` jobs back to `pending`, ignoring the requeue_count
+        cap. Manual recovery path backing `callmem requeue-failed`.
+
+        Returns the number of rows reset.
+        """
+        conn = self.db.connect()
+        try:
+            if job_type is not None:
+                cur = conn.execute(
+                    "UPDATE jobs SET status = 'pending', attempts = 0, "
+                    "next_attempt_at = NULL "
+                    "WHERE status = 'failed' AND type = ?",
+                    (job_type,),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE jobs SET status = 'pending', attempts = 0, "
+                    "next_attempt_at = NULL "
+                    "WHERE status = 'failed'"
+                )
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
+    def auto_requeue_failed(
+        self,
+        job_type: str,
+        project_id: str,
+        limit: int = 50,
+        max_requeue_count: int = 3,
+    ) -> int:
+        """Auto-resurrect `failed` jobs of `job_type` belonging to `project_id`.
+
+        Called when a same-type job just completed successfully — proof the
+        backend is healthy again. Requeues oldest-first, up to `limit` jobs,
+        skipping any whose requeue_count already hit `max_requeue_count`
+        (this is what bounds the retry loop; `requeue_failed` above has no
+        such cap). A job's project is resolved either from a `project_id`
+        key in its own payload (e.g. generate_summary jobs) or, failing
+        that, via its `session_id` payload key joined against `sessions`
+        (e.g. extract_entities jobs).
+
+        Returns the number of rows requeued.
+        """
+        conn = self.db.connect()
+        try:
+            cur = conn.execute(
+                "UPDATE jobs SET status = 'pending', attempts = 0, "
+                "next_attempt_at = NULL, requeue_count = requeue_count + 1 "
+                "WHERE id IN ("
+                "  SELECT j.id FROM jobs j "
+                "  LEFT JOIN sessions s "
+                "    ON s.id = json_extract(j.payload, '$.session_id') "
+                "  WHERE j.status = 'failed' AND j.type = ? "
+                "  AND j.requeue_count < ? "
+                "  AND (json_extract(j.payload, '$.project_id') = ? "
+                "       OR s.project_id = ?) "
+                "  ORDER BY j.created_at ASC LIMIT ?"
+                ")",
+                (job_type, max_requeue_count, project_id, project_id, limit),
+            )
+            conn.commit()
+            return cur.rowcount
         finally:
             conn.close()
 

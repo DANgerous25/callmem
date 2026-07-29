@@ -2091,6 +2091,10 @@ def briefing(project: Path, write_file: bool, hook_format: str | None) -> None:
     default=True,
     help="Skip manually modified entities (default: preserve).",
 )
+@click.option(
+    "--yes", "-y", is_flag=True,
+    help="Skip the confirmation prompt (for non-interactive/automated use).",
+)
 def re_extract(
     project: Path,
     session_id: str | None,
@@ -2099,6 +2103,7 @@ def re_extract(
     dry_run: bool,
     force: bool,
     no_preserve_edits: bool,
+    yes: bool,
 ) -> None:
     """Re-extract entities from existing events using the current model."""
     import time
@@ -2175,7 +2180,7 @@ def re_extract(
         click.echo("Pinned and edited entities will be preserved.")
     click.echo()
 
-    proceed = click.confirm("Proceed?", default=False)
+    proceed = yes or click.confirm("Proceed?", default=False)
     if not proceed:
         click.echo("Cancelled.")
         return
@@ -2216,6 +2221,31 @@ def re_extract(
     click.echo(f"  Entities created:  {result['entities_created']}")
     click.echo(f"  Entities archived: {result['entities_archived']}")
     click.echo(f"  Time:              {elapsed_str}")
+
+
+@main.command("requeue-failed")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--type", "job_type", default=None, help="Only requeue jobs of this type.")
+def requeue_failed(project: Path, job_type: str | None) -> None:
+    """Reset `failed` jobs back to `pending` for another attempt.
+
+    Recovery path for jobs that exhausted their retries during a backend
+    outage. Ignores the auto-resurrection requeue cap.
+    """
+    from callmem.core.database import Database
+    from callmem.core.queue import JobQueue
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}")
+        click.echo("Run 'callmem init' first.")
+        return
+
+    db = Database(db_path)
+    db.initialize()
+    queue = JobQueue(db)
+    count = queue.requeue_failed(job_type)
+    click.echo(f"Requeued {count} failed job(s).")
 
 
 # ── Watch command ────────────────────────────────────────────────────

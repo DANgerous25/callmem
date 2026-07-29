@@ -105,6 +105,8 @@ class WorkerRunner:
             self.queue.complete(job.id)
             logger.info("Job %s completed", job.id[:8])
             self._publish_queue_status()
+            if job.type in ("extract_entities", "generate_summary"):
+                self._auto_resurrect_failed(job)
             if job.type == "extract_entities":
                 self._extractions_since_summary += 1
                 if self._extractions_since_summary >= 5:
@@ -184,6 +186,31 @@ class WorkerRunner:
             logger.info("Updated SESSION_SUMMARY.md")
         except Exception as exc:
             logger.warning("Failed to write SESSION_SUMMARY.md: %s", exc)
+
+    def _auto_resurrect_failed(self, job: Any) -> None:
+        """Requeue failed same-type jobs for this project.
+
+        Event-driven recovery: ``job`` (extract_entities or generate_summary)
+        just completed successfully, which is proof the backend is healthy
+        again — so any jobs of the same type that previously exhausted
+        their retries for the same project get another chance. Bounded by
+        JobQueue.auto_requeue_failed's limit and requeue_count cap so a
+        flapping backend can't loop forever; no polling or health checks.
+        """
+        project_id = self._resolve_project_id(job)
+        if not project_id:
+            return
+        try:
+            requeued = self.queue.auto_requeue_failed(job.type, project_id)
+            if requeued:
+                logger.info(
+                    "Auto-resurrected %d failed '%s' job(s) for project %s",
+                    requeued, job.type, project_id[:8],
+                )
+        except Exception as exc:
+            logger.warning(
+                "Auto-resurrection failed for job %s: %s", job.id[:8], exc,
+            )
 
     def _enqueue_staleness_check(self, job: Any) -> None:
         """Queue a staleness check after extraction if we can infer the project."""
