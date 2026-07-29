@@ -50,6 +50,8 @@ class Entity(BaseModel):
     extracted_by: str | None = None
     eval_score: float | None = None
     eval_feedback: str | None = None
+    cited_count: int = 0
+    last_cited_at: str | None = None
 
     def to_row(self) -> dict[str, Any]:
         return {
@@ -79,6 +81,8 @@ class Entity(BaseModel):
             "extracted_by": self.extracted_by,
             "eval_score": self.eval_score,
             "eval_feedback": self.eval_feedback,
+            "cited_count": self.cited_count,
+            "last_cited_at": self.last_cited_at,
         }
 
     @classmethod

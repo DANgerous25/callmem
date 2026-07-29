@@ -738,7 +738,7 @@ class TestMigrations:
     """Verify new migrations applied correctly."""
 
     def test_schema_version_14(self, memory_db: Database) -> None:
-        assert memory_db.get_schema_version() == 17
+        assert memory_db.get_schema_version() == 19
 
     def test_tasks_table_exists(self, memory_db: Database) -> None:
         tables = memory_db.list_tables()

@@ -9,6 +9,7 @@ from callmem.core.queue import JobQueue
 from callmem.core.repository import Repository
 from callmem.models.config import Config
 from callmem.models.entities import Entity
+from callmem.models.events import Event
 from callmem.models.projects import Project
 from callmem.models.sessions import Session
 
@@ -99,8 +100,8 @@ def _insert_entity(memory_db: Database, entity: Entity) -> None:
             "(id, project_id, source_event_id, type, title, content, "
             "key_points, synopsis, "
             "status, priority, pinned, created_at, updated_at, "
-            "resolved_at, metadata, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "resolved_at, metadata, archived_at, cited_count, last_cited_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row["id"], row["project_id"], row["source_event_id"],
                 row["type"], row["title"], row["content"],
@@ -108,6 +109,7 @@ def _insert_entity(memory_db: Database, entity: Entity) -> None:
                 row["status"], row["priority"], row["pinned"],
                 row["created_at"], row["updated_at"],
                 row["resolved_at"], row["metadata"], row["archived_at"],
+                row["cited_count"], row["last_cited_at"],
             ),
         )
         conn.commit()
@@ -449,3 +451,173 @@ class TestParseDbTimestamp:
 
         parsed = _parse_db_timestamp("2026-07-29T11:53:39Z")
         assert parsed == datetime(2026, 7, 29, 11, 53, 39, tzinfo=UTC)
+
+
+class TestImportanceRankedSelection:
+    """`_fetch_all_entities` ranks by an importance score, not pure
+    recency: pinned boost + type weight + recency decay + citation boost
+    (log-scaled cited_count, recency-decayed). See BriefingScoringConfig.
+    """
+
+    def _days_ago(self, days: int) -> str:
+        from datetime import datetime, timedelta
+
+        from callmem.compat import UTC
+
+        return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+    def test_old_cited_decision_beats_fresh_churn_change(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_decision = Entity(
+            project_id=project_id, type="decision",
+            title="Old but frequently cited decision",
+            content="Chose the event-sourced architecture",
+            created_at=self._days_ago(60),
+            cited_count=6,
+            last_cited_at=self._days_ago(1),
+        )
+        _insert_entity(memory_db, old_decision)
+
+        fresh_change = Entity(
+            project_id=project_id, type="change",
+            title="Renamed a variable",
+            content="Minor rename, no functional impact",
+            created_at=self._days_ago(0),
+        )
+        _insert_entity(memory_db, fresh_change)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids_in_order = [e["id"] for e in entities]
+        assert (
+            ids_in_order.index(old_decision.id)
+            < ids_in_order.index(fresh_change.id)
+        )
+
+    def test_uncited_old_entity_decays_below_fresh_uncited_entity(
+        self, memory_db: Database,
+    ) -> None:
+        """3c: entities never cited, older than N days, and not
+        pinned/todo-open must rank measurably lower than a fresh entity of
+        the same type — the recency-decay term, isolated from every other
+        score component."""
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_fact = Entity(
+            project_id=project_id, type="fact",
+            title="Old, never-cited, unpinned fact",
+            content="Some fact nobody references anymore",
+            created_at=self._days_ago(90),
+        )
+        _insert_entity(memory_db, old_fact)
+
+        fresh_fact = Entity(
+            project_id=project_id, type="fact",
+            title="Fresh, never-cited, unpinned fact",
+            content="Same type, just created today",
+            created_at=self._days_ago(0),
+        )
+        _insert_entity(memory_db, fresh_fact)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids_in_order = [e["id"] for e in entities]
+        assert (
+            ids_in_order.index(fresh_fact.id)
+            < ids_in_order.index(old_fact.id)
+        )
+
+    def test_type_weight_tier_ordering(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+        now = self._days_ago(0)
+
+        tiers = [
+            ("decision", "Tier 1 decision"),
+            ("bugfix", "Tier 2 bugfix"),
+            ("todo", "Tier 3 todo"),
+            ("change", "Tier 4 change"),
+        ]
+        created = []
+        for etype, title in tiers:
+            e = Entity(
+                project_id=project_id, type=etype, title=title,
+                content="body", created_at=now,
+            )
+            _insert_entity(memory_db, e)
+            created.append(e)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids_in_order = [e["id"] for e in entities]
+        ranks = [ids_in_order.index(e.id) for e in created]
+        assert ranks == sorted(ranks)
+
+    def test_fresh_session_entities_always_present_despite_low_score(
+        self, memory_db: Database,
+    ) -> None:
+        """Entities from the most recent session are a floor: the
+        max_entities budget trim must never drop them, even when their
+        score would otherwise put them last."""
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_session = Session(
+            project_id=project_id, started_at=self._days_ago(30),
+        )
+        repo.insert_session(old_session)
+        new_session = Session(
+            project_id=project_id, started_at=self._days_ago(0),
+        )
+        repo.insert_session(new_session)
+
+        old_event = Event(
+            session_id=old_session.id, project_id=project_id,
+            type="note", content="old note",
+        )
+        repo.insert_event(old_event)
+        new_event = Event(
+            session_id=new_session.id, project_id=project_id,
+            type="note", content="new note",
+        )
+        repo.insert_event(new_event)
+
+        # High-scoring pinned decisions from the OLD session fill up a
+        # deliberately tiny budget ahead of the low-value fresh entity.
+        filler_ids = []
+        for i in range(3):
+            filler = Entity(
+                project_id=project_id, type="decision",
+                title=f"Pinned filler decision {i}",
+                content="Important pinned decision",
+                pinned=True,
+                source_event_id=old_event.id,
+            )
+            _insert_entity(memory_db, filler)
+            filler_ids.append(filler.id)
+
+        # Low-value entity (uncited churn, unpinned) but from the MOST
+        # RECENT session — must survive the trim regardless of its score.
+        fresh_low_value = Entity(
+            project_id=project_id, type="change",
+            title="Trivial fresh-session churn",
+            content="A minor change with no other signal",
+            source_event_id=new_event.id,
+        )
+        _insert_entity(memory_db, fresh_low_value)
+
+        config = Config()
+        config.briefing.scoring.max_entities = 3
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert fresh_low_value.id in ids
+        for fid in filler_ids:
+            assert fid in ids
+        assert len(entities) == 4

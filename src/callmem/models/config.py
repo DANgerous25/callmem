@@ -36,6 +36,36 @@ class OpenAICompatConfig(BaseModel):
     timeout: int = 120
 
 
+class BriefingScoringConfig(BaseModel):
+    """Weights for importance-ranked entity selection in the briefing.
+
+    score = pinned_boost (if pinned)
+          + type_weights[entity.type]
+          + recency_weight * 0.5 ** (age_days / recency_half_life_days)
+          + citation_weight * log1p(cited_count)
+                * 0.5 ** (citation_age_days / citation_half_life_days)
+
+    Entities from the most recent session are always included in the
+    briefing regardless of score (see
+    BriefingGenerator._most_recent_session_entity_ids) — this is a floor,
+    not part of the score itself. ``max_entities`` caps how many
+    score-ranked entities are kept beyond that floor; when the cap bites,
+    the lowest-scored entities are dropped whole rather than truncated.
+    """
+    pinned_boost: float = 8.0
+    type_weights: dict[str, float] = Field(default_factory=lambda: {
+        "decision": 3.0, "discovery": 3.0, "failure": 3.0, "fact": 3.0,
+        "bugfix": 2.0, "feature": 2.0, "research": 2.0,
+        "todo": 1.0,
+        "change": 0.0,
+    })
+    recency_weight: float = 4.0
+    recency_half_life_days: float = 14.0
+    citation_weight: float = 4.0
+    citation_half_life_days: float = 30.0
+    max_entities: int = 100
+
+
 class BriefingConfig(BaseModel):
     max_tokens: int = 2000
     focus: str | None = None
@@ -45,6 +75,7 @@ class BriefingConfig(BaseModel):
     max_per_type: int = 20
     include_last_session: bool = True
     default_view: str = "key_points"
+    scoring: BriefingScoringConfig = Field(default_factory=BriefingScoringConfig)
 
 
 class ExtractionConfig(BaseModel):

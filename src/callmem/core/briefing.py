@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -113,6 +114,23 @@ def _parse_db_timestamp(ts: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed
+
+
+def _age_days(ts: str | None, now: datetime) -> float:
+    """Age of a timestamp in days, or 0.0 for missing/unparseable values.
+
+    Zero is the safe default here (treats unknown age as "just happened"
+    rather than penalizing it) — matches the pre-existing convention that
+    briefing code degrades gracefully on messy live data rather than
+    crashing (see module docstring for _parse_db_timestamp).
+    """
+    if not ts:
+        return 0.0
+    try:
+        dt = _parse_db_timestamp(ts)
+    except ValueError:
+        return 0.0
+    return max((now - dt).total_seconds() / 86400, 0.0)
 
 
 def _short_id(full_id: str | None) -> str:
@@ -767,20 +785,75 @@ class BriefingGenerator:
             f"Run `callmem doctor` to diagnose."
         )
 
+    def _score_entity(self, entity: dict[str, Any], now: datetime) -> float:
+        """Importance score for briefing selection/ordering.
+
+        score = pinned boost + type weight + recency decay + citation
+        boost (log-scaled cited_count, decayed by recency of last
+        citation). Weights come from BriefingScoringConfig — see its
+        docstring for the exact formula and defaults.
+        """
+        cfg = self.config.briefing.scoring
+        score = 0.0
+        if entity.get("pinned"):
+            score += cfg.pinned_boost
+        score += cfg.type_weights.get(entity.get("type") or "", 0.0)
+
+        age_days = _age_days(entity.get("created_at"), now)
+        score += cfg.recency_weight * (
+            0.5 ** (age_days / cfg.recency_half_life_days)
+        )
+
+        cited_count = entity.get("cited_count") or 0
+        if cited_count > 0:
+            last_cited = entity.get("last_cited_at") or entity.get("created_at")
+            citation_age_days = _age_days(last_cited, now)
+            citation_recency = 0.5 ** (
+                citation_age_days / cfg.citation_half_life_days
+            )
+            score += cfg.citation_weight * math.log1p(cited_count) * citation_recency
+
+        return score
+
+    def _most_recent_session_entity_ids(self, project_id: str) -> set[str]:
+        """IDs of non-stale entities extracted from the most recent session.
+
+        These are an always-include floor for briefing selection — a
+        fresh session's work must never be dropped by the importance-score
+        budget trim, however low its score.
+        """
+        conn = self.repo.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE project_id = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return set()
+        session_entities = self._fetch_entities_for_session(row["id"])
+        return {e["id"] for e in session_entities if e.get("id")}
+
     def _fetch_all_entities(
         self, project_id: str, focus: str | None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Return (entities, suppressed_stale_count).
 
-        Stale entities are excluded from the briefing by default. The
-        caller surfaces the suppressed count as a footer so the agent
-        knows memory was curated, not missing.
+        Entities are ranked by importance score (see _score_entity), not
+        pure recency, and capped at scoring.max_entities — the lowest
+        scored entities are dropped whole when the cap bites, never
+        blind-truncated mid-render. Entities from the most recent session
+        are always included regardless of score (see
+        _most_recent_session_entity_ids). Stale entities are excluded from
+        the briefing by default; the caller surfaces the suppressed count
+        as a footer so the agent knows memory was curated, not missing.
         """
         conn = self.repo.db.connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM entities WHERE project_id = ? "
-                "ORDER BY pinned DESC, created_at DESC LIMIT 200",
+                "SELECT * FROM entities WHERE project_id = ?",
                 (project_id,),
             ).fetchall()
             results = [dict(r) for r in rows]
@@ -795,8 +868,20 @@ class BriefingGenerator:
             ]
 
         stale_count = sum(1 for r in results if r.get("stale"))
-        results = [r for r in results if not r.get("stale")][:100]
-        return results, stale_count
+        results = [r for r in results if not r.get("stale")]
+
+        now = datetime.now(UTC)
+        ranked = sorted(
+            results, key=lambda e: self._score_entity(e, now), reverse=True,
+        )
+
+        max_entities = self.config.briefing.scoring.max_entities
+        top_ids = {e["id"] for e in ranked[:max_entities]}
+        floor_ids = self._most_recent_session_entity_ids(project_id)
+        selected_ids = top_ids | (floor_ids & {e["id"] for e in ranked})
+        selected = [e for e in ranked if e["id"] in selected_ids]
+
+        return selected, stale_count
 
     def _fetch_sessions_with_entities(
         self, project_id: str

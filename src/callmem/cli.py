@@ -3021,7 +3021,11 @@ def usage(
     """
     import json as _json
 
-    from callmem.core.usage import collect_session_usage, summarise
+    from callmem.core.usage import (
+        backfill_citation_counts,
+        collect_session_usage,
+        summarise,
+    )
 
     projects = _resolve_callmem_projects(all_projects, project)
     payload: dict[str, Any] = {"since": since, "projects": []}
@@ -3036,6 +3040,10 @@ def usage(
             raise SystemExit(1) from exc
         summary = summarise(proot.name, usages)
         payload["projects"].append({"summary": summary, "sessions": usages})
+        # Piggyback per-entity citation persistence on this same scan —
+        # feeds the briefing's importance-ranked selection (cited_count /
+        # last_cited_at) without a second pass over the event history.
+        backfill_citation_counts(db_path)
 
     if json_out:
         # dataclasses → dict via __dict__

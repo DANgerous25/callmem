@@ -997,6 +997,34 @@ class Repository:
         finally:
             conn.close()
 
+    def set_citation_counts(
+        self, citations: dict[str, tuple[int, str]],
+    ) -> int:
+        """Persist per-entity citation counts (absolute, not deltas).
+
+        ``citations`` maps entity_id -> (cited_count, last_cited_at). Callers
+        recompute the full tally from a fresh scan of response events each
+        time (see usage.compute_entity_citations), so setting absolute
+        values keeps repeated backfills idempotent. Returns the number of
+        entity rows updated.
+        """
+        if not citations:
+            return 0
+        conn = self.db.connect()
+        try:
+            cursor = conn.executemany(
+                "UPDATE entities SET cited_count = ?, last_cited_at = ? "
+                "WHERE id = ?",
+                [
+                    (count, last_cited_at, entity_id)
+                    for entity_id, (count, last_cited_at) in citations.items()
+                ],
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
     def set_pinned(self, entity_id: str, pinned: bool) -> dict[str, Any]:
         from callmem.models.entities import Entity
 
