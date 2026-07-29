@@ -446,6 +446,66 @@ class TestAutoResurrection:
         assert processed is True
         assert queue.get_job(failed_id).status == "failed"  # type: ignore[union-attr]
 
+    def test_resurrection_fault_does_not_reclassify_completed_job(
+        self, memory_db: Database
+    ) -> None:
+        """A fault while resolving the project for auto-resurrection (e.g.
+        a locked/busy database) must be swallowed by the hook's own
+        try/except, not propagate up into process_one's outer handler and
+        mark the already-completed job as failed.
+
+        Uses a generate_summary job (not extract_entities) so the only
+        call to _resolve_project_id in this completion path is the one
+        inside _auto_resurrect_failed — extract_entities completions also
+        call it a second time from _enqueue_staleness_check, whose
+        identical pre-existing gap is out of scope for this fix.
+        """
+        engine, ollama = _make_engine(memory_db)
+        session = engine.start_session()
+        event = engine.ingest_one("note", "some content")
+        assert event is not None
+
+        queue = JobQueue(memory_db)
+        extraction_job = queue.dequeue("extract_entities")
+        assert extraction_job is not None
+        queue.complete(extraction_job.id)
+
+        summary_job_id = queue.enqueue(
+            "generate_summary",
+            {
+                "level": "chunk",
+                "project_id": engine.project_id,
+                "session_id": session.id,
+                "event_ids": [event.id],
+            },
+        )
+
+        runner = WorkerRunner(memory_db, ollama, engine.config)
+        with patch.object(
+            ollama, "_generate", return_value="Summary of the session."
+        ):
+            with patch.object(
+                runner, "_resolve_project_id",
+                side_effect=RuntimeError("database is locked"),
+            ):
+                processed = runner.process_one()
+
+        assert processed is True
+
+        conn = memory_db.connect()
+        try:
+            job_row = conn.execute(
+                "SELECT status FROM jobs WHERE id = ?", (summary_job_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        assert job_row["status"] == "completed", (
+            "a fault while resolving the project for auto-resurrection "
+            "must not reclassify the job that already completed "
+            "successfully"
+        )
+
 
 class TestWorkerThread:
     def test_start_and_stop(self, memory_db: Database) -> None:

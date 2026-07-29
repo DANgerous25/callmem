@@ -196,11 +196,17 @@ class WorkerRunner:
         their retries for the same project get another chance. Bounded by
         JobQueue.auto_requeue_failed's limit and requeue_count cap so a
         flapping backend can't loop forever; no polling or health checks.
+
+        The whole thing — including resolving the project — is inside one
+        try/except: ``job`` already completed successfully, so any fault
+        here (including a fault in ``_resolve_project_id`` itself) must
+        only be logged, never propagate up to ``process_one``'s outer
+        try/except and reclassify the already-completed job as failed.
         """
-        project_id = self._resolve_project_id(job)
-        if not project_id:
-            return
         try:
+            project_id = self._resolve_project_id(job)
+            if not project_id:
+                return
             requeued = self.queue.auto_requeue_failed(job.type, project_id)
             if requeued:
                 logger.info(
