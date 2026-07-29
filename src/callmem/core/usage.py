@@ -58,15 +58,32 @@ _WRITE_TOOLS = (
 _CITATION_RE = re.compile(r"#[A-Z0-9]{8}\b")
 
 
-def _load_entity_id_map(db: sqlite3.Connection) -> dict[str, str]:
+def _load_entity_id_map(
+    db: sqlite3.Connection, project_id: str | None = None,
+) -> dict[str, str]:
     """Map each entity's citable short ID (last 8 chars) to its full ULID.
 
     Stored entity IDs are full ULIDs; the briefing surfaces the last 8
     characters as the citable form, so that's what we match against. The
     full ID is what per-entity citation persistence needs to update the
     right row.
+
+    Scoped to ``project_id`` when given. The session-end hot path
+    (``compute_session_citations``) always passes it — an unscoped
+    ``SELECT id FROM entities`` is an O(every entity in every project
+    sharing this db file) scan on every session end, and it also risks a
+    citation in one project's session getting attributed to a different
+    project's entity that happens to share the same 8-char short-ID
+    suffix. The CLI's full-history backfill (``compute_entity_citations``)
+    has no project_id in hand and keeps the unscoped scan — a one-off,
+    operator-invoked pass, not a per-session cost.
     """
-    rows = db.execute("SELECT id FROM entities").fetchall()
+    if project_id is not None:
+        rows = db.execute(
+            "SELECT id FROM entities WHERE project_id = ?", (project_id,),
+        ).fetchall()
+    else:
+        rows = db.execute("SELECT id FROM entities").fetchall()
     return {row[0][-8:]: row[0] for row in rows if row[0]}
 
 
@@ -212,7 +229,10 @@ def collect_session_usage(
 
 
 def _tally_citations(
-    conn: sqlite3.Connection, where_extra: str = "", params: tuple[Any, ...] = (),
+    conn: sqlite3.Connection,
+    where_extra: str = "",
+    params: tuple[Any, ...] = (),
+    project_id: str | None = None,
 ) -> dict[str, tuple[int, str]]:
     """Scan response events (optionally narrowed by ``where_extra``) and
     tally citations per entity.
@@ -222,8 +242,10 @@ def _tally_citations(
     exact same detection logic. Returns ``{entity_id: (cited_count,
     last_cited_at)}`` — entities not cited within the scanned rows are
     simply absent; callers should treat a missing entry as ``(0, None)``.
+    ``project_id`` scopes the entity short-ID lookup (see
+    _load_entity_id_map) — pass it whenever the caller has one.
     """
-    entity_id_map = _load_entity_id_map(conn)
+    entity_id_map = _load_entity_id_map(conn, project_id)
     rows = conn.execute(
         f"SELECT content, timestamp FROM events WHERE type = 'response'{where_extra}",
         params,
@@ -268,10 +290,24 @@ def compute_session_citations(
     Takes a ``Database`` (not a bare path) so it works correctly against
     both file-backed and shared-cache in-memory databases, matching how
     the rest of the engine/repository access the DB.
+
+    The entity short-ID lookup is scoped to the session's own project
+    (resolved from the sessions row) — without that, a hot-path session
+    end would do an unscoped scan of every entity in every project
+    sharing this db file, and a citation could get attributed to the
+    wrong project's entity if two share a short-ID suffix.
     """
     conn = db.connect()
     try:
-        return _tally_citations(conn, " AND session_id = ?", (session_id,))
+        session_row = conn.execute(
+            "SELECT project_id FROM sessions WHERE id = ?", (session_id,),
+        ).fetchone()
+        if session_row is None:
+            return {}
+        return _tally_citations(
+            conn, " AND session_id = ?", (session_id,),
+            project_id=session_row["project_id"],
+        )
     finally:
         conn.close()
 

@@ -5,7 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from callmem.core.repository import Repository
-from callmem.core.usage import backfill_citation_counts, compute_entity_citations
+from callmem.core.usage import (
+    backfill_citation_counts,
+    compute_entity_citations,
+    compute_session_citations,
+)
 from callmem.models.entities import Entity
 from callmem.models.events import Event
 from callmem.models.projects import Project
@@ -153,3 +157,53 @@ class TestBackfillCitationCounts:
         assert stored is not None
         assert stored["cited_count"] == 0
         assert stored["last_cited_at"] is None
+
+
+class TestComputeSessionCitationsProjectScoping:
+    """Session-scoped citation persistence runs on every session end, so
+    it must not do an unscoped whole-database entity scan — that's an
+    O(every entity in every project sharing this db file) cost on a hot
+    path, and it risks a citation in one project's session getting
+    attributed to a different project's entity that happens to share the
+    same 8-char short-ID suffix."""
+
+    def test_cross_project_short_id_collision_does_not_leak(
+        self, tmp_db: Database,
+    ) -> None:
+        repo = Repository(tmp_db)
+        project_a = Project(name="project-a")
+        repo.create_project(project_a)
+        project_b = Project(name="project-b")
+        repo.create_project(project_b)
+
+        session_a = Session(project_id=project_a.id)
+        repo.insert_session(session_a)
+
+        # Both entities share the same 8-char short-ID suffix (the part
+        # actually matched against a citation) but belong to different
+        # projects — a deliberately engineered collision.
+        entity_a = Entity(
+            id="AAAAAAAAAAAAAAAAAAAA11111111",
+            project_id=project_a.id, type="decision",
+            title="Project A decision", content="belongs to project A",
+        )
+        repo.create_entity(entity_a)
+        entity_b = Entity(
+            id="BBBBBBBBBBBBBBBBBBBB11111111",
+            project_id=project_b.id, type="decision",
+            title="Project B decision", content="belongs to project B",
+        )
+        repo.create_entity(entity_b)
+
+        repo.insert_event(_response_event(
+            session_a.id, project_a.id,
+            "Per #11111111, going with project A's approach.",
+        ))
+
+        citations = compute_session_citations(tmp_db, session_a.id)
+
+        assert entity_a.id in citations
+        assert entity_b.id not in citations
+
+    def test_unknown_session_id_returns_empty(self, tmp_db: Database) -> None:
+        assert compute_session_citations(tmp_db, "nonexistent-session") == {}
