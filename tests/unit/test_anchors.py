@@ -100,6 +100,48 @@ class TestValidateAnchor:
         assert result is None
         assert calls == []
 
+    def test_symlink_inside_root_pointing_outside_is_unvalidated(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        """A symlink can lexically sit inside the root (is_within_root
+        passes on the symlink's own path) while its target resolves
+        outside it — the resolved outside target must never be stat'd."""
+        from pathlib import Path
+
+        outside_dir = tmp_path.parent / f"{tmp_path.name}_outside"
+        outside_dir.mkdir()
+        outside_target = outside_dir / "secret.py"
+        outside_target.write_text("secret = 1\n")
+
+        link = tmp_path / "link.py"
+        link.symlink_to(outside_target)
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        result = validate_anchor("link.py", str(tmp_path))
+
+        assert result is None
+        assert not any("secret.py" in c for c in calls)
+
+    def test_symlink_inside_root_pointing_inside_root_still_validates(
+        self, tmp_path,
+    ) -> None:
+        """A symlink whose resolved target is also inside the root is a
+        legitimate anchor and should validate normally."""
+        real_file = tmp_path / "real.py"
+        real_file.write_text("x = 1\n")
+        link = tmp_path / "link.py"
+        link.symlink_to(real_file)
+
+        assert validate_anchor("link.py", str(tmp_path)) is True
+
     def test_stat_oserror_is_unvalidated_not_raised(
         self, tmp_path, monkeypatch,
     ) -> None:

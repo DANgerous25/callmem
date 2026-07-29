@@ -9,12 +9,18 @@ time (``validate_anchor``) so a citation degrades gracefully — an
 annotation, not a crash — when the code it points at moves or is
 deleted.
 
-Security: ``validate_anchor`` must never touch the filesystem for a
-path that resolves outside the project root. ``is_within_root`` does
-the containment check using purely lexical path normalization
-(``os.path.normpath``/``os.path.commonpath``) — no ``stat``, no
-symlink resolution — so the boundary check itself can never leak
-information about paths outside the root.
+Security: ``validate_anchor`` must never call ``exists()``/stat a path
+that resolves outside the project root. This is a two-stage check:
+``is_within_root`` first does a purely lexical containment check
+(``os.path.normpath``/``os.path.commonpath`` — no filesystem access at
+all) to reject obvious traversal cheaply. But a path that is lexically
+inside the root can still be a symlink pointing outside it (e.g.
+``.venv/bin/python3``, a ``node_modules`` symlink, or a hostile
+symlink), so ``validate_anchor`` then resolves the candidate
+(``os.path.realpath``, which *does* follow symlinks) and re-runs the
+containment check against the resolved root before ever calling
+``exists()``. Only a path that is contained both lexically and after
+symlink resolution is stat'd.
 """
 
 from __future__ import annotations
@@ -93,9 +99,10 @@ def validate_anchor(file_path: str, project_root: str | None) -> bool | None:
 
     Returns ``None`` (unvalidated, not "invalid") when: no project root
     is known, the path is empty, the path resolves outside the project
-    root (security boundary — never stat outside the root), or the stat
-    call itself raises ``OSError`` (permissions, race, etc.). A stat
-    error must never surface as an exception or as a false "missing".
+    root — lexically (``is_within_root``) or, after following symlinks,
+    physically (see module docstring) — or the stat call itself raises
+    ``OSError`` (permissions, race, etc.). A stat error must never
+    surface as an exception or as a false "missing".
     """
     if not project_root or not file_path:
         return None
@@ -105,7 +112,21 @@ def validate_anchor(file_path: str, project_root: str | None) -> bool | None:
         file_path if os.path.isabs(file_path)
         else os.path.join(project_root, file_path)
     )
+
+    # Lexical containment isn't enough: `candidate` can be (or pass
+    # through) a symlink that lives inside the root but points outside
+    # it. Resolve it and re-check containment against the resolved
+    # root BEFORE calling exists() — a path that escapes the root only
+    # after symlink resolution must never be stat'd.
     try:
-        return Path(candidate).exists()
+        resolved_candidate = os.path.realpath(candidate)
+        resolved_root = os.path.realpath(project_root)
+    except OSError:
+        return None
+    if not is_within_root(resolved_candidate, resolved_root):
+        return None
+
+    try:
+        return Path(resolved_candidate).exists()
     except OSError:
         return None

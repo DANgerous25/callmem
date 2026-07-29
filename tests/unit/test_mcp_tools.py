@@ -537,6 +537,42 @@ class TestGetEntitiesAnchorValidity:
         data = _parse_result(result)
         assert data["entities"][0]["files"][0]["valid"] is None
 
+    def test_shared_file_validated_once_across_multiple_entities(
+        self, memory_db: Database, tmp_path, monkeypatch,
+    ) -> None:
+        """N entities citing the same file should only stat it once — the
+        validation cache in _anchor_validity_for is shared across the
+        whole batch, not recomputed per entity."""
+        from pathlib import Path
+
+        engine = _make_engine(memory_db)
+        self._set_project_root(memory_db, engine, tmp_path)
+        (tmp_path / "shared.py").write_text("x = 1\n")
+
+        entity_ids = [
+            self._seed_entity_with_file(memory_db, engine, "shared.py")
+            for _ in range(4)
+        ]
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        result = handle_get_entities(engine, {"ids": entity_ids})
+        data = _parse_result(result)
+
+        assert data["count"] == 4
+        for entity in data["entities"]:
+            assert entity["files"][0]["valid"] is True
+
+        shared_calls = [c for c in calls if c.endswith("shared.py")]
+        assert len(shared_calls) == 1
+
     def test_entity_without_files_has_empty_files_list(
         self, memory_db: Database,
     ) -> None:
