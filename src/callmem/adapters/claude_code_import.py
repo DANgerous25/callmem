@@ -285,7 +285,12 @@ def _map_record(
             metadata: dict[str, Any] = {}
             if tool_use_id:
                 metadata["tool_use_id"] = tool_use_id
-                tool_name = (tool_names or {}).get(tool_use_id)
+                # Pop rather than peek: once a tool_use_id's result has
+                # been consumed the entry is no longer needed, so this
+                # also bounds the cache's size for long-running callers.
+                tool_name = (
+                    tool_names.pop(tool_use_id, None) if tool_names is not None else None
+                )
                 if tool_name:
                     metadata["tool_name"] = tool_name
             tool_results.append(EventInput(

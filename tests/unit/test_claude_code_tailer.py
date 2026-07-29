@@ -32,6 +32,18 @@ def _make_engine(project: Path) -> MemoryEngine:
     return MemoryEngine(db, config)
 
 
+def _make_engine_with_skip_tools(project: Path, skip_tools: list[str]) -> MemoryEngine:
+    from callmem.models.config import Config
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["init", "--project", str(project)])
+    assert result.exit_code == 0
+    config = Config(ingestion={"skip_tools": skip_tools})
+    db = Database(project / ".callmem" / "memory.db")
+    db.initialize()
+    return MemoryEngine(db, config)
+
+
 def _append_records(path: Path, records: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -227,6 +239,75 @@ class TestToolResultIngestion:
         meta = json.loads(rows[2][2])
         assert meta["tool_use_id"] == "toolu_1"
         assert meta["tool_name"] == "Bash"
+
+
+class TestToolNamePersistenceAcrossRestart:
+    def test_tool_name_survives_restart_so_skip_tools_still_applies(
+        self, tmp_path: Path,
+    ) -> None:
+        """A crash/redeploy between a tool_use and its tool_result must
+        not lose the tool_use_id -> tool_name resolution — otherwise
+        skip_tools silently fails open for that result (see review
+        finding: offsets are persisted every tick but the in-memory-only
+        tool name cache previously was not).
+        """
+        project = tmp_path / "proj"
+        project.mkdir()
+        roots = tmp_path / "claude-projects"
+        transcript = claude_project_dir(project, roots) / "aaa.jsonl"
+        _append_records(transcript, [
+            {"type": "user", "message": {"content": "run a skipped tool"},
+             "timestamp": "2026-04-19T10:00:00Z"},
+            {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "toolu_skip", "name": "Bash",
+                 "input": {"command": "rm -rf /tmp/x"}}]},
+             "timestamp": "2026-04-19T10:00:01Z"},
+        ])
+        engine = _make_engine_with_skip_tools(project, skip_tools=["Bash"])
+
+        adapter1 = ClaudeCodeAdapter(
+            engine, project_path=project, claude_projects_dir=roots,
+        )
+        adapter1._tick()
+        assert adapter1._tool_names.get("aaa", {}).get("toolu_skip") == "Bash"
+        # Simulate the process dying here — no explicit shutdown/save
+        # beyond what _tick() already persisted opportunistically.
+        del adapter1
+
+        # Fresh process, same state dir.
+        adapter2 = ClaudeCodeAdapter(
+            engine, project_path=project, claude_projects_dir=roots,
+        )
+        assert adapter2._tool_names.get("aaa", {}).get("toolu_skip") == "Bash"
+
+        _append_records(transcript, [
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "toolu_skip",
+                 "content": "rm: permission denied"}]},
+             "timestamp": "2026-04-19T10:00:02Z"},
+        ])
+        adapter2._tick()
+
+        db_path = project / ".callmem" / "memory.db"
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            types = [r[0] for r in conn.execute(
+                "SELECT type FROM events ORDER BY timestamp"
+            ).fetchall()]
+        finally:
+            conn.close()
+
+        # Both the tool_call and its result are skipped — the result's
+        # tool name resolved via the *persisted* map, not an empty cache.
+        assert types == ["prompt"]
+        assert "toolu_skip" not in adapter2._tool_names.get("aaa", {})
+
+        # And the pruned state is itself persisted, so a third restart
+        # doesn't resurrect a stale entry.
+        adapter3 = ClaudeCodeAdapter(
+            engine, project_path=project, claude_projects_dir=roots,
+        )
+        assert "toolu_skip" not in adapter3._tool_names.get("aaa", {})
 
 
 class TestSessionLifecycle:

@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_IDLE_TIMEOUT = 300.0  # 5 minutes
 OFFSETS_FILE = Path(".callmem") / "claude_code_offsets.json"
+TOOL_NAMES_FILE = Path(".callmem") / "claude_code_tool_names.json"
 
 
 class ClaudeCodeAdapter:
@@ -71,8 +72,12 @@ class ClaudeCodeAdapter:
         # source_id -> (session_id, last_activity_monotonic, title_so_far)
         self._active: dict[str, tuple[str, float, str | None]] = {}
         # source_id -> {tool_use_id: tool_name}, for resolving tool_result
-        # metadata against the tool_use block that preceded it.
-        self._tool_names: dict[str, dict[str, str]] = {}
+        # metadata against the tool_use block that preceded it. Persisted
+        # alongside the offsets so a restart between a tool_use and its
+        # still-pending tool_result doesn't lose the resolution (which
+        # would silently defeat skip_tools for that result).
+        self._tool_names_path = project_path / TOOL_NAMES_FILE
+        self._tool_names: dict[str, dict[str, str]] = self._load_tool_names()
         self._stop_event = threading.Event()
 
     # ── Public API ────────────────────────────────────────────────
@@ -94,6 +99,7 @@ class ClaudeCodeAdapter:
         for source_id in list(self._active):
             self._close_session(source_id, reason="adapter-stop")
         self._save_offsets()
+        self._save_tool_names()
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -116,6 +122,32 @@ class ClaudeCodeAdapter:
         except OSError as exc:
             logger.warning("Cannot persist CC offsets: %s", exc)
 
+    # ── Tool name cache ─────────────────────────────────────────────
+
+    def _load_tool_names(self) -> dict[str, dict[str, str]]:
+        if not self._tool_names_path.exists():
+            return {}
+        try:
+            data = json.loads(self._tool_names_path.read_text())
+            if not isinstance(data, dict):
+                return {}
+            result: dict[str, dict[str, str]] = {}
+            for source_id, mapping in data.items():
+                if isinstance(mapping, dict):
+                    result[source_id] = {
+                        k: v for k, v in mapping.items() if isinstance(v, str)
+                    }
+            return result
+        except (json.JSONDecodeError, OSError, ValueError):
+            return {}
+
+    def _save_tool_names(self) -> None:
+        try:
+            self._tool_names_path.parent.mkdir(parents=True, exist_ok=True)
+            self._tool_names_path.write_text(json.dumps(self._tool_names, indent=2))
+        except OSError as exc:
+            logger.warning("Cannot persist CC tool names: %s", exc)
+
     # ── Tick ──────────────────────────────────────────────────────
 
     def _tick(self) -> None:
@@ -134,8 +166,9 @@ class ClaudeCodeAdapter:
             if now - last_activity > self.idle_timeout:
                 self._close_session(source_id, reason="idle")
 
-        # Save offsets opportunistically.
+        # Save offsets and the tool-name cache opportunistically.
         self._save_offsets()
+        self._save_tool_names()
 
     def _process_file(self, jsonl_path: Path, source_id: str) -> None:
         try:

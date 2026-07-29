@@ -745,8 +745,13 @@ class MemoryEngine:
         other event types (prompt, response, etc.) are always ingested.
         A ``tool_result``'s tool name comes from its ``tool_name``
         metadata (set by the mapper when it can resolve the originating
-        ``tool_use`` block); without it, only ``skip_patterns`` can
-        still match its content.
+        ``tool_use`` block); without it, ``skip_tools`` can't match and
+        the result is ingested (``skip_patterns`` only applies to
+        ``tool_call`` content, whose ``name(args)`` shape is what those
+        globs are written against). The live Claude Code tailer persists
+        this tool_use-id-to-name resolution across process restarts so a
+        crash or redeploy between a tool_use and its still-pending result
+        doesn't silently defeat skip_tools for that result.
         """
         if inp.type not in ("tool_call", "tool_result"):
             return False
