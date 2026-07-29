@@ -7,7 +7,9 @@ Every method takes model objects and returns model objects.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import sqlite3
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +23,8 @@ from callmem.models.tasks import Task
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 # Splits a word on any run of characters that aren't alphanumeric or
@@ -156,6 +160,51 @@ class Repository:
             return [dict(r) for r in rows]
         finally:
             conn.close()
+
+    def update_project_root_path(self, project_id: str, root_path: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE projects SET root_path = ? WHERE id = ?",
+                (root_path, project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def resolve_project_root(self, project_id: str) -> str | None:
+        """Return the effective root_path for a project, self-healing a
+        NULL root_path (legacy rows created before root_path was
+        populated at project-creation time) by deriving it from the
+        database's own file path and persisting it back onto the row.
+
+        Best-effort: if the persistence write fails, the derived root is
+        still returned — anchor validation for this call must not be
+        blocked by a write error — but the row stays unhealed and is
+        retried on the next call.
+        """
+        project = self.get_project(project_id)
+        if project is None:
+            return None
+        if project.root_path:
+            return project.root_path
+
+        derived = self.db.infer_project_root()
+        if derived is None:
+            return None
+        derived_str = str(derived)
+
+        try:
+            self.update_project_root_path(project_id, derived_str)
+        except sqlite3.Error:
+            logger.error(
+                "Failed to self-heal root_path for project %s "
+                "(derived=%s); anchor validation will use the derived "
+                "value for this call, but the row remains unhealed",
+                project_id, derived_str, exc_info=True,
+            )
+
+        return derived_str
 
     # ── Project overview ─────────────────────────────────────────────
 

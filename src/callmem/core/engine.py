@@ -120,7 +120,11 @@ class MemoryEngine:
             self._project_id = existing.id
             return self._project_id
 
-        project = Project(name=project_name)
+        root = self.db.infer_project_root()
+        project = Project(
+            name=project_name,
+            root_path=str(root) if root is not None else None,
+        )
         self.repo.create_project(project)
         self._project_id = project.id
         return self._project_id
@@ -433,8 +437,7 @@ class MemoryEngine:
 
         from callmem.core.anchors import validate_anchor
 
-        project = self.repo.get_project(self.project_id)
-        project_root = project.root_path if project else None
+        project_root = self.repo.resolve_project_root(self.project_id)
 
         validity_cache: dict[str, bool | None] = {}
         out: dict[str, list[dict[str, Any]]] = {}

@@ -745,6 +745,82 @@ class TestOpenItemsFloor:
         assert resolved.id not in {e["id"] for e in entities}
 
 
+class TestArchivedEntitiesExcluded:
+    """Archived entities (archived_at set — e.g. NOOP-archived duplicates
+    from consolidation, or originals archived by re-extraction) must never
+    surface in the briefing, even when every other score signal is
+    maximal. Covers both _fetch_all_entities (the ranked/scored path) and
+    _fetch_entities_for_session (the most-recent-session floor)."""
+
+    def test_archived_entity_excluded_from_ranked_selection(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        archived = Entity(
+            project_id=project_id, type="decision",
+            title="Archived duplicate decision",
+            content="Should never surface",
+            pinned=True,
+            created_at=_days_ago(0),
+            cited_count=50,
+            last_cited_at=_days_ago(0),
+            archived_at=_days_ago(0),
+        )
+        _insert_entity(memory_db, archived)
+
+        survivor = Entity(
+            project_id=project_id, type="fact",
+            title="Ordinary survivor fact",
+            content="A perfectly normal entity",
+            created_at=_days_ago(0),
+        )
+        _insert_entity(memory_db, survivor)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert archived.id not in ids
+        assert survivor.id in ids
+
+    def test_archived_entity_excluded_from_session_floor(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        session = Session(project_id=project_id, started_at=_days_ago(0))
+        repo.insert_session(session)
+        event = Event(
+            session_id=session.id, project_id=project_id,
+            type="note", content="latest session note",
+        )
+        repo.insert_event(event)
+
+        archived = Entity(
+            project_id=project_id, type="decision",
+            title="Archived entity from latest session",
+            content="Superseded original, archived by re-extraction",
+            pinned=True,
+            source_event_id=event.id,
+            created_at=_days_ago(0),
+            cited_count=50,
+            last_cited_at=_days_ago(0),
+            archived_at=_days_ago(0),
+        )
+        _insert_entity(memory_db, archived)
+
+        gen = BriefingGenerator(repo, Config())
+
+        session_entities = gen._fetch_entities_for_session(session.id)
+        assert archived.id not in {e["id"] for e in session_entities}
+
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        assert archived.id not in {e["id"] for e in entities}
+
+
 def _seed_project_with_root(memory_db: Database, root_path) -> str:
     repo = Repository(memory_db)
     project = Project(name="test-project", root_path=str(root_path))
@@ -911,3 +987,34 @@ class TestStaleAnchorAnnotation:
 
         widget_calls = [c for c in calls if c.endswith("widget.py")]
         assert len(widget_calls) == 1
+
+    def test_null_root_path_self_heals_and_validates_real_file(
+        self, tmp_path,
+    ) -> None:
+        """A legacy project row with NULL root_path (predating root_path
+        being populated at creation) must self-heal from the database's
+        own path the first time an anchor is read, and validation must
+        actually run afterwards rather than staying permanently dead."""
+        from callmem.core.database import Database
+
+        db = Database(tmp_path / ".callmem" / "memory.db")
+        db.initialize()
+        repo = Repository(db)
+        project = Project(name="test-project")  # root_path NULL
+        repo.create_project(project)
+
+        (tmp_path / "widget.py").write_text("x = 1\n")
+        todo = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(db, todo)
+        _insert_entity_file(db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project.id, project_name="test")
+
+        assert "file gone" not in briefing.content
+        healed = repo.get_project(project.id)
+        assert healed is not None
+        assert healed.root_path == str(tmp_path)

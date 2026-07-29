@@ -216,8 +216,6 @@ Notes:
   runs in Python over a recency-prefiltered candidate set instead
   (~40ms for the 500-candidate default on a 10k-entity corpus).
 
-Note: For v2, consider using `sqlite-vec` extension for native vector operations, or keep vectors in a separate FAISS/hnswlib index with SQLite as the metadata store.
-
 ### `consolidation_log` (v21)
 
 Per-run metrics for LLM-routed consolidation (see `core/consolidation.py`),

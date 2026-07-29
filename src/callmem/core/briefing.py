@@ -880,8 +880,7 @@ class BriefingGenerator:
         if not files_by_entity:
             return {}
 
-        project = self.repo.get_project(project_id)
-        project_root = project.root_path if project else None
+        project_root = self.repo.resolve_project_root(project_id)
 
         from callmem.core.anchors import validate_anchor
 
@@ -964,7 +963,8 @@ class BriefingGenerator:
         conn = self.repo.db.connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM entities WHERE project_id = ?",
+                "SELECT * FROM entities "
+                "WHERE project_id = ? AND archived_at IS NULL",
                 (project_id,),
             ).fetchall()
             results = [dict(r) for r in rows]
@@ -1120,6 +1120,7 @@ class BriefingGenerator:
                 "SELECT e.* FROM entities e "
                 "JOIN events ev ON ev.id = e.source_event_id "
                 "WHERE ev.session_id = ? AND e.stale = 0 "
+                "AND e.archived_at IS NULL "
                 "ORDER BY e.pinned DESC, e.created_at DESC",
                 (session_id,),
             ).fetchall()

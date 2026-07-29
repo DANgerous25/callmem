@@ -628,6 +628,66 @@ class TestProjectAutoCreation:
         assert project is not None
         assert project.name == "my-app"
 
+    def test_project_gets_root_path_from_db_path(self, tmp_path) -> None:
+        """The db always lives at <project_root>/.callmem/memory.db, so a
+        freshly created project must have root_path populated from it —
+        without this, anchor validation is dead in production (NULL
+        root_path always short-circuits validate_anchor to None)."""
+        from callmem.core.database import Database
+        from callmem.core.repository import Repository
+
+        db = Database(tmp_path / ".callmem" / "memory.db")
+        db.initialize()
+        engine = MemoryEngine(db, Config())
+
+        repo = Repository(db)
+        project = repo.get_project(engine.project_id)
+        assert project is not None
+        assert project.root_path == str(tmp_path)
+
+
+class TestAnchorRootSelfHeal:
+    """Legacy projects created before root_path was populated at creation
+    time (NULL root_path in the DB) must self-heal the first time an
+    anchor is validated, rather than leaving validate_anchor permanently
+    dead for that project."""
+
+    def test_null_root_path_self_heals_and_validation_runs(
+        self, tmp_path,
+    ) -> None:
+        from callmem.core.database import Database
+        from callmem.core.repository import Repository
+        from callmem.models.entities import Entity
+
+        db = Database(tmp_path / ".callmem" / "memory.db")
+        db.initialize()
+        engine = MemoryEngine(db, Config())
+        repo = Repository(db)
+
+        # Simulate a legacy project row: root_path never populated.
+        conn = db.connect()
+        conn.execute(
+            "UPDATE projects SET root_path = NULL WHERE id = ?",
+            (engine.project_id,),
+        )
+        conn.commit()
+        conn.close()
+        assert repo.get_project(engine.project_id).root_path is None
+
+        (tmp_path / "widget.py").write_text("x = 1\n")
+        entity = Entity(
+            project_id=engine.project_id, type="todo",
+            title="Fix widget", content="See widget.py",
+        )
+        repo.create_entity(entity)
+        repo.insert_entity_file_anchors(entity.id, [("widget.py", None)])
+
+        anchors_by_id = engine._anchor_validity_for([entity.id])
+
+        assert anchors_by_id[entity.id][0]["valid"] is True
+        healed = repo.get_project(engine.project_id)
+        assert healed.root_path == str(tmp_path)
+
 
 class TestGetBriefing:
     def test_briefing_payload_includes_pipeline_health(

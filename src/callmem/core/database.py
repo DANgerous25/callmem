@@ -37,6 +37,19 @@ class Database:
         if not self._is_memory:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def infer_project_root(self) -> Path | None:
+        """Best-effort project root derived from this database's own path.
+
+        The db always lives at ``<project_root>/.callmem/memory.db`` (see
+        the class docstring and every project-init code path in cli.py),
+        so the root is two directories up. Returns None for the
+        in-memory database (used in tests), where no real project
+        directory exists to derive.
+        """
+        if self._is_memory:
+            return None
+        return self.db_path.parent.parent
+
     def connect(self) -> sqlite3.Connection:
         """Create a new connection with recommended pragmas."""
         if self._is_memory:
