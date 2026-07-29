@@ -218,6 +218,30 @@ Notes:
 
 Note: For v2, consider using `sqlite-vec` extension for native vector operations, or keep vectors in a separate FAISS/hnswlib index with SQLite as the metadata store.
 
+### `consolidation_log` (v21)
+
+Per-run metrics for LLM-routed consolidation (see `core/consolidation.py`),
+mirroring `compaction_log`'s shape. One row per extraction-batch
+consolidation pass.
+
+```sql
+CREATE TABLE consolidation_log (
+    id           TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL REFERENCES projects(id),
+    run_at       TEXT NOT NULL,
+    added        INTEGER DEFAULT 0,
+    updated      INTEGER DEFAULT 0,
+    noop         INTEGER DEFAULT 0,
+    judge_failed INTEGER DEFAULT 0,  -- 1 when the judge output was malformed/absent (fail-open)
+    metadata     TEXT
+);
+CREATE INDEX idx_consolidation_project ON consolidation_log(project_id, run_at DESC);
+```
+
+Consolidation adds no columns to `entities` — verdicts are applied through
+the existing `stale` / `superseded_by` / `staleness_reason` (v7) and
+`archived_at` (v1) columns, so nothing is ever deleted.
+
 ## FTS5 strategy
 
 Two FTS5 virtual tables provide full-text search across events and entities.

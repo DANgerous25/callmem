@@ -66,6 +66,21 @@ min_similarity = 0.45
 query_prefix = "search_query: "
 document_prefix = "search_document: "
 
+# ── Consolidation ─────────────────────────────────────────
+# At extraction-batch completion, each newly-extracted entity is checked
+# against its most similar existing entities (vector search when embeddings
+# are available, full-text otherwise). If the best match clears `threshold`,
+# one batched LLM call judges ADD (distinct, keep both) / UPDATE (new entity
+# refines an old one — old marked stale+superseded) / NOOP (duplicate — new
+# entity archived). Fail-open: a malformed or absent judge response keeps
+# everything as ADD. Nothing is ever deleted.
+[consolidation]
+enabled = true
+# Same 0..1 similarity scale as [embeddings].min_similarity
+threshold = 0.55
+# Top-K similar existing entities considered per new entity
+top_k = 5
+
 # ── Web UI ───────────────────────────────────────────────
 [ui]
 # Port to serve the web interface on

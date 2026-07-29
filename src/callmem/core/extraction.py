@@ -192,8 +192,29 @@ class EntityExtractor:
         if entities:
             self._auto_resolve(project_id, entities)
             self._enqueue_embeddings(project_id, entities)
+            self._consolidate(project_id, entities)
 
         return entities
+
+    def _consolidate(self, project_id: str, entities: list[Entity]) -> None:
+        """Run LLM-routed consolidation against similar existing entities.
+
+        Never raises: the entities are already persisted, so a
+        consolidation fault must not fail an otherwise-successful
+        extraction job (same discipline as ``_enqueue_embeddings``). Worst
+        case, this batch's entities simply stay as-is until the next
+        extraction run gets a chance to consolidate them.
+        """
+        if self.config is None or not self.config.consolidation.enabled:
+            return
+        try:
+            from callmem.core.consolidation import EntityConsolidator
+
+            EntityConsolidator(self.db, self.ollama, self.config).consolidate(
+                project_id, entities,
+            )
+        except Exception as exc:
+            logger.warning("Consolidation failed for batch: %s", exc)
 
     def _enqueue_embeddings(
         self, project_id: str, entities: list[Entity]

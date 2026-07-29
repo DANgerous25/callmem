@@ -130,6 +130,13 @@ min_similarity = 0.45              # cosine floor for a vector hit
 query_prefix = "search_query: "    # nomic task prefixes; "" for other models
 document_prefix = "search_document: "
 
+[consolidation]
+# LLM-routed ADD/UPDATE/NOOP judgment at extraction-batch completion.
+# Fail-open: malformed/absent judge output keeps everything as ADD.
+enabled = true
+threshold = 0.55                   # same 0..1 scale as [embeddings].min_similarity
+top_k = 5                          # similar existing entities considered per new entity
+
 [ui]
 host = "127.0.0.1"
 port = 9090

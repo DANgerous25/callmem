@@ -948,6 +948,72 @@ class Repository:
         finally:
             conn.close()
 
+    def archive_entity(self, entity_id: str) -> bool:
+        """Archive a single entity (non-destructive: sets archived_at only).
+
+        Used by consolidation's NOOP verdict to retire a duplicate new
+        entity while leaving its row -- and provenance -- intact.
+        Returns True if a row was modified.
+        """
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities SET archived_at = datetime('now') "
+                "WHERE id = ? AND archived_at IS NULL",
+                (entity_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def touch_entity(self, entity_id: str) -> bool:
+        """Bump an entity's updated_at without changing anything else.
+
+        Used by consolidation's NOOP verdict so the surviving entity
+        surfaces as current instead of looking untouched since its
+        original extraction. Returns True if a row was modified.
+        """
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities SET updated_at = datetime('now') WHERE id = ?",
+                (entity_id,),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def log_consolidation_run(
+        self,
+        project_id: str,
+        added: int,
+        updated: int,
+        noop: int,
+        judge_failed: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one consolidation pass's counts (mirrors compaction_log)."""
+        from ulid import ULID
+
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO consolidation_log "
+                "(id, project_id, run_at, added, updated, noop, "
+                "judge_failed, metadata) VALUES (?, ?, datetime('now'), "
+                "?, ?, ?, ?, ?)",
+                (
+                    str(ULID()), project_id, added, updated, noop,
+                    1 if judge_failed else 0,
+                    json.dumps(metadata) if metadata else None,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def list_stale_entities(
         self, project_id: str, limit: int = 200,
     ) -> list[dict[str, Any]]:

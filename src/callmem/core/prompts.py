@@ -108,6 +108,34 @@ Respond in this exact JSON format:
 If a category has no items, use an empty array. Do not include explanatory text outside the JSON."""
 
 
+CONSOLIDATION_PROMPT = """You are auditing newly-extracted project memory entries against similar existing entries to prevent duplication.
+
+For EACH new entry below, decide exactly ONE verdict:
+- "ADD"    - genuinely distinct from every listed candidate; keep both entries.
+- "UPDATE" - refines, extends, or replaces ONE listed candidate with an
+             updated version of the same decision/fact/todo/etc. The new
+             entry is kept; the named candidate becomes stale.
+- "NOOP"   - duplicates ONE listed candidate with no new information. The
+             new entry is discarded; the named candidate is kept.
+
+Be conservative: prefer ADD unless a candidate clearly covers the same
+concept. When the verdict is UPDATE or NOOP you MUST name which candidate
+by its id from the list shown for that entry -- never invent an id.
+
+New entries and their most similar existing candidates:
+{entries_block}
+
+Respond with ONLY a JSON array, exactly one object per new entry listed
+above, in this exact shape:
+[
+  {{"new_id": "<new entry id>", "verdict": "ADD" | "UPDATE" | "NOOP",
+    "existing_id": "<candidate id, required for UPDATE/NOOP, else null>",
+    "reason": "<one short sentence>"}}
+]
+
+Do not include explanatory text outside the JSON array."""
+
+
 CHUNK_SUMMARY_PROMPT = """Summarize this batch of coding session events into a concise paragraph.
 Focus on: what was worked on, what was accomplished, any problems encountered.
 

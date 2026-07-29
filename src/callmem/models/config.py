@@ -93,6 +93,30 @@ class EmbeddingsConfig(BaseModel):
     document_prefix: str = "search_document: "
 
 
+class ConsolidationConfig(BaseModel):
+    """LLM-routed consolidation of newly-extracted entities, run once per
+    extraction batch (see ``callmem.core.consolidation.EntityConsolidator``).
+
+    For each entity just created, the ``top_k`` most similar existing
+    non-archived entities are looked up (vector search when embeddings are
+    available, FTS text-similarity fallback otherwise -- same degradation
+    discipline as the hybrid search in ``retrieval.py``). Entities whose
+    best match clears ``threshold`` are sent to ONE batched LLM judgment
+    call per extraction batch; everything else is left alone (ADD).
+
+    ``threshold`` lives on the same 0..1 similarity scale as
+    ``EmbeddingsConfig.min_similarity``.
+
+    Fail-open by design: an unparseable or absent judge response keeps
+    every entity in the batch as ADD rather than risk destroying data on
+    a bad LLM day.
+    """
+
+    enabled: bool = True
+    threshold: float = 0.55
+    top_k: int = 5
+
+
 class BriefingConfig(BaseModel):
     max_tokens: int = 2000
     focus: str | None = None
@@ -178,6 +202,7 @@ class Config(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     embeddings: EmbeddingsConfig = Field(default_factory=EmbeddingsConfig)
+    consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
     briefing: BriefingConfig = Field(default_factory=BriefingConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
