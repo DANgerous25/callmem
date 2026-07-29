@@ -499,36 +499,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "mem_model_stats",
-        "description": (
-            "Query aggregated model performance stats. Filter by model "
-            "name and/or task type."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "model_name": {"type": "string", "description": "Filter by model name"},
-                "task_type": {"type": "string", "description": "Filter by task type"},
-            },
-        },
-    },
-    {
-        "name": "mem_model_compare",
-        "description": "Compare two or more models on a task type.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["model_names"],
-            "properties": {
-                "model_names": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Model names to compare",
-                },
-                "task_type": {"type": "string", "description": "Task type to compare on"},
-            },
-        },
-    },
-    {
         "name": "mem_eval",
         "description": (
             "Record an evaluation for an event or entity. "
@@ -602,94 +572,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "Level of detail: brief (key_points), "
                         "standard (synopsis), full (complete)"
                     ),
-                },
-            },
-        },
-    },
-    {
-        "name": "mem_model_list",
-        "description": (
-            "List known models with filters (provider, capability, "
-            "max_price, geo_region, quality_tier, gateway)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "provider": {"type": "string"},
-                "quality_tier": {
-                    "type": "string",
-                    "enum": ["frontier", "strong", "standard", "budget", "legacy"],
-                },
-                "max_price": {"type": "number", "description": "Max USD per 1M input tokens"},
-                "require_tools": {"type": "boolean", "default": False},
-                "require_vision": {"type": "boolean", "default": False},
-                "geo_region": {"type": "string", "description": "ISO region code"},
-                "gateway": {"type": "string", "description": "Filter by gateway name"},
-                "limit": {"type": "integer", "default": 100},
-            },
-        },
-    },
-    {
-        "name": "mem_model_info",
-        "description": "Get full info for a specific model.",
-        "inputSchema": {
-            "type": "object",
-            "required": ["model_name"],
-            "properties": {
-                "model_name": {
-                    "type": "string",
-                    "description": "Model name (e.g. 'anthropic/claude-sonnet-4')",
-                },
-            },
-        },
-    },
-    {
-        "name": "mem_model_recommend",
-        "description": (
-            "Given a task_type and optional constraints, return ranked "
-            "model recommendations combining static benchmarks + observed "
-            "performance + geo-availability."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "required": ["task_type"],
-            "properties": {
-                "task_type": {
-                    "type": "string",
-                    "description": "coding, reasoning, summarization, etc.",
-                },
-                "geo_region": {"type": "string", "description": "User's ISO region code"},
-                "max_cost": {"type": "number", "description": "Max USD per 1M input tokens"},
-                "min_context": {"type": "integer", "description": "Minimum context window size"},
-                "require_tools": {"type": "boolean", "default": False},
-                "require_gateway": {"type": "string", "description": "Required gateway name"},
-            },
-        },
-    },
-    {
-        "name": "mem_model_geo_check",
-        "description": (
-            "Given a model and user's region, return availability "
-            "and which gateway(s) can serve it."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "required": ["model_name", "region"],
-            "properties": {
-                "model_name": {"type": "string"},
-                "region": {"type": "string", "description": "ISO region code (e.g. 'US', 'EU')"},
-            },
-        },
-    },
-    {
-        "name": "mem_model_refresh",
-        "description": "Trigger a re-sync and research update for a specific model or all models.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "model_name": {
-                    "type": "string",
-                    "description": "Specific model to refresh (all if omitted)",
                 },
             },
         },
@@ -785,7 +667,7 @@ _WRITE_TOOLS: frozenset[str] = frozenset({
     "mem_session_start", "mem_session_end", "mem_ingest", "mem_pin",
     "mem_mark_stale", "mem_mark_current", "mem_task_create", "mem_task_update",
     "mem_compress_context", "mem_set_overview", "mem_rewind_create",
-    "mem_rewind_restore", "mem_vault_review", "mem_model_refresh",
+    "mem_rewind_restore", "mem_vault_review",
 })
 
 
@@ -1138,28 +1020,6 @@ def handle_task_tree(engine: MemoryEngine, args: dict[str, Any]) -> list[TextCon
     return _make_result({"tree": tree, "count": len(tree)})
 
 
-# ── Model stats handlers (A2) ───────────────────────────────────────
-
-
-def handle_model_stats(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    stats = engine.query_model_stats(
-        model_name=args.get("model_name"),
-        task_type=args.get("task_type"),
-    )
-    return _make_result({"stats": stats, "count": len(stats)})
-
-
-def handle_model_compare(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    model_names = args.get("model_names", [])
-    if not model_names:
-        return _make_error("model_names is required")
-    comparison = engine.compare_models(
-        model_names=model_names,
-        task_type=args.get("task_type"),
-    )
-    return _make_result({"comparison": comparison})
-
-
 # ── Eval handlers (A3) ──────────────────────────────────────────────
 
 
@@ -1218,62 +1078,6 @@ def handle_compile_context(engine: MemoryEngine, args: dict[str, Any]) -> list[T
         include_files=args.get("include_files"),
         detail_level=args.get("detail_level", "standard"),
     )
-    return _make_result(result)
-
-
-# ── Model registry handlers (A5) ────────────────────────────────────
-
-
-def handle_model_list(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    models = engine.list_models(
-        provider=args.get("provider"),
-        quality_tier=args.get("quality_tier"),
-        max_price=args.get("max_price"),
-        require_tools=bool(args.get("require_tools", False)),
-        require_vision=bool(args.get("require_vision", False)),
-        geo_region=args.get("geo_region"),
-        gateway=args.get("gateway"),
-        limit=args.get("limit", 100),
-    )
-    return _make_result({"models": models, "count": len(models)})
-
-
-def handle_model_info(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    model_name = args.get("model_name", "")
-    if not model_name:
-        return _make_error("model_name is required")
-    info = engine.get_model_info(model_name)
-    if info is None:
-        return _make_error(f"Model not found: {model_name}")
-    return _make_result(info)
-
-
-def handle_model_recommend(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    task_type = args.get("task_type", "")
-    if not task_type:
-        return _make_error("task_type is required")
-    recommendations = engine.recommend_model(
-        task_type=task_type,
-        geo_region=args.get("geo_region"),
-        max_cost=args.get("max_cost"),
-        min_context=args.get("min_context"),
-        require_tools=bool(args.get("require_tools", False)),
-        require_gateway=args.get("require_gateway"),
-    )
-    return _make_result({"recommendations": recommendations})
-
-
-def handle_model_geo_check(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    model_name = args.get("model_name", "")
-    region = args.get("region", "")
-    if not model_name or not region:
-        return _make_error("model_name and region are required")
-    result = engine.check_model_geo(model_name, region)
-    return _make_result(result)
-
-
-def handle_model_refresh(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
-    result = engine.refresh_model(args.get("model_name"))
     return _make_result(result)
 
 
@@ -1349,16 +1153,9 @@ _HANDLERS: dict[str, Any] = {
     "mem_task_update": handle_task_update,
     "mem_task_list": handle_task_list,
     "mem_task_tree": handle_task_tree,
-    "mem_model_stats": handle_model_stats,
-    "mem_model_compare": handle_model_compare,
     "mem_eval": handle_eval,
     "mem_eval_summary": handle_eval_summary,
     "mem_compile_context": handle_compile_context,
-    "mem_model_list": handle_model_list,
-    "mem_model_info": handle_model_info,
-    "mem_model_recommend": handle_model_recommend,
-    "mem_model_geo_check": handle_model_geo_check,
-    "mem_model_refresh": handle_model_refresh,
     "mem_rewind_create": handle_rewind_create,
     "mem_rewind_list": handle_rewind_list,
     "mem_rewind_restore": handle_rewind_restore,

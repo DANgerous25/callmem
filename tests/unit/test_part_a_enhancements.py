@@ -680,11 +680,8 @@ class TestMCPToolHandlers:
         expected = [
             "mem_task_create", "mem_task_update", "mem_task_list",
             "mem_task_tree",
-            "mem_model_stats", "mem_model_compare",
             "mem_eval", "mem_eval_summary",
             "mem_compile_context",
-            "mem_model_list", "mem_model_info", "mem_model_recommend",
-            "mem_model_geo_check", "mem_model_refresh",
             "mem_rewind_create", "mem_rewind_list",
             "mem_rewind_restore", "mem_rewind_diff",
         ]
@@ -698,11 +695,8 @@ class TestMCPToolHandlers:
         expected = [
             "mem_task_create", "mem_task_update", "mem_task_list",
             "mem_task_tree",
-            "mem_model_stats", "mem_model_compare",
             "mem_eval", "mem_eval_summary",
             "mem_compile_context",
-            "mem_model_list", "mem_model_info", "mem_model_recommend",
-            "mem_model_geo_check", "mem_model_refresh",
             "mem_rewind_create", "mem_rewind_list",
             "mem_rewind_restore", "mem_rewind_diff",
         ]

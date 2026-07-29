@@ -27,6 +27,24 @@ class TestMCPToolsList:
             assert "mem_pin" in tool_names
 
     @pytest.mark.anyio
+    async def test_model_registry_tools_excluded(self, mcp_server: object) -> None:
+        """Verify that dead model registry tools are not in the MCP surface."""
+        from mcp.shared.memory import create_connected_server_and_client_session
+
+        dead_tools = {
+            "mem_model_list", "mem_model_info", "mem_model_recommend",
+            "mem_model_compare", "mem_model_stats",
+            "mem_model_geo_check", "mem_model_refresh"
+        }
+        async with create_connected_server_and_client_session(mcp_server) as client:
+            result = await client.list_tools()
+            tool_names = set(t.name for t in result.tools)
+            assert not dead_tools & tool_names, (
+                f"Dead model registry tools found in MCP surface: "
+                f"{dead_tools & tool_names}"
+            )
+
+    @pytest.mark.anyio
     async def test_tool_descriptions(self, mcp_server: object) -> None:
         from mcp.shared.memory import create_connected_server_and_client_session
 
