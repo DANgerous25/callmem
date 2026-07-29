@@ -418,3 +418,268 @@ class TestCompressContext:
         assert data["compression_events"] == 1
         assert "compressed" in data["marker"].lower()
         assert data["message_range"] == "messages 1-30"
+
+
+class TestGetEntitiesAnchorValidity:
+    """5c: mem_get_entities includes anchor-validity for entities whose
+    citations point at files in the project's working tree."""
+
+    def _set_project_root(
+        self, memory_db: Database, engine: MemoryEngine, root_path: object,
+    ) -> None:
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE projects SET root_path = ? WHERE id = ?",
+                (str(root_path), engine.project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _seed_entity_with_file(
+        self,
+        memory_db: Database,
+        engine: MemoryEngine,
+        file_path: str,
+        line_number: int | None = None,
+    ) -> str:
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=engine.project_id,
+            type="decision",
+            title="Touches a file",
+            content=f"see {file_path}",
+        )
+        conn = memory_db.connect()
+        try:
+            row = entity.to_row()
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"],
+                    row["resolved_at"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO entity_files "
+                "(entity_id, file_path, relation, line_number) "
+                "VALUES (?, ?, 'related', ?)",
+                (entity.id, file_path, line_number),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return entity.id
+
+    def test_deleted_file_marked_invalid(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        self._set_project_root(memory_db, engine, tmp_path)
+        gone_id = self._seed_entity_with_file(memory_db, engine, "gone.py")
+
+        result = handle_get_entities(engine, {"ids": [gone_id]})
+        data = _parse_result(result)
+        files = data["entities"][0]["files"]
+        assert files[0]["file_path"] == "gone.py"
+        assert files[0]["valid"] is False
+
+    def test_present_file_marked_valid(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        self._set_project_root(memory_db, engine, tmp_path)
+        (tmp_path / "kept.py").write_text("x = 1\n")
+        kept_id = self._seed_entity_with_file(memory_db, engine, "kept.py")
+
+        result = handle_get_entities(engine, {"ids": [kept_id]})
+        data = _parse_result(result)
+        files = data["entities"][0]["files"]
+        assert files[0]["valid"] is True
+
+    def test_moved_file_still_reports_old_path_as_invalid(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        """Simulates a file that existed at extraction time but has since
+        moved: the entity_files row still has the old path, and that old
+        path no longer exists on disk."""
+        engine = _make_engine(memory_db)
+        self._set_project_root(memory_db, engine, tmp_path)
+        old_id = self._seed_entity_with_file(
+            memory_db, engine, "old_location/widget.py", line_number=12,
+        )
+        (tmp_path / "new_location").mkdir()
+        (tmp_path / "new_location" / "widget.py").write_text("x = 1\n")
+
+        result = handle_get_entities(engine, {"ids": [old_id]})
+        data = _parse_result(result)
+        files = data["entities"][0]["files"]
+        assert files[0]["file_path"] == "old_location/widget.py"
+        assert files[0]["valid"] is False
+
+    def test_no_project_root_is_unvalidated(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        entity_id = self._seed_entity_with_file(memory_db, engine, "foo.py")
+
+        result = handle_get_entities(engine, {"ids": [entity_id]})
+        data = _parse_result(result)
+        assert data["entities"][0]["files"][0]["valid"] is None
+
+    def test_shared_file_validated_once_across_multiple_entities(
+        self, memory_db: Database, tmp_path, monkeypatch,
+    ) -> None:
+        """N entities citing the same file should only stat it once — the
+        validation cache in _anchor_validity_for is shared across the
+        whole batch, not recomputed per entity."""
+        from pathlib import Path
+
+        engine = _make_engine(memory_db)
+        self._set_project_root(memory_db, engine, tmp_path)
+        (tmp_path / "shared.py").write_text("x = 1\n")
+
+        entity_ids = [
+            self._seed_entity_with_file(memory_db, engine, "shared.py")
+            for _ in range(4)
+        ]
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        result = handle_get_entities(engine, {"ids": entity_ids})
+        data = _parse_result(result)
+
+        assert data["count"] == 4
+        for entity in data["entities"]:
+            assert entity["files"][0]["valid"] is True
+
+        shared_calls = [c for c in calls if c.endswith("shared.py")]
+        assert len(shared_calls) == 1
+
+    def test_entity_without_files_has_empty_files_list(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=engine.project_id, type="decision",
+            title="No files here", content="just a decision",
+        )
+        conn = memory_db.connect()
+        try:
+            row = entity.to_row()
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"],
+                    row["resolved_at"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = handle_get_entities(engine, {"ids": [entity.id]})
+        data = _parse_result(result)
+        assert data["entities"][0]["files"] == []
+
+
+class TestSearchAnchorValidity:
+    """5c: mem_search results include anchor-validity when the matched
+    entity has file citations."""
+
+    def test_search_result_includes_anchors_for_deleted_file(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE projects SET root_path = ? WHERE id = ?",
+                (str(tmp_path), engine.project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=engine.project_id,
+            type="bugfix",
+            title="Fix widget bug",
+            content="widget.py needed a fix",
+        )
+        conn = memory_db.connect()
+        try:
+            row = entity.to_row()
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, type, title, content, "
+                "key_points, synopsis, status, priority, pinned, "
+                "created_at, updated_at, resolved_at, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["type"], row["title"], row["content"],
+                    row["key_points"], row["synopsis"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"],
+                    row["resolved_at"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.execute(
+                "INSERT INTO entity_files "
+                "(entity_id, file_path, relation, line_number) "
+                "VALUES (?, 'widget.py', 'related', NULL)",
+                (entity.id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = handle_search(engine, {"query": "widget"})
+        data = _parse_result(result)
+        matched = [r for r in data["results"] if r["id"] == entity.id]
+        assert len(matched) == 1
+        assert matched[0]["anchors"][0]["file_path"] == "widget.py"
+        assert matched[0]["anchors"][0]["valid"] is False
+
+    def test_search_result_without_files_has_no_anchors_key(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        handle_session_start(engine, {})
+        handle_ingest(engine, {
+            "events": [{"type": "decision", "content": "Use Redis for caching"}],
+        })
+        result = handle_search(engine, {"query": "Redis caching"})
+        data = _parse_result(result)
+        assert len(data["results"]) >= 1
+        assert "anchors" not in data["results"][0]

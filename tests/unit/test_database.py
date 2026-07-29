@@ -39,6 +39,20 @@ def test_schema_version_set(tmp_path: Path) -> None:
     assert version == 22
 
 
+def test_migration_numbers_have_no_gaps() -> None:
+    """A gap would pin upgraded DBs past the missing number forever.
+
+    get_schema_version() is MAX(version) and migrate() applies only
+    version > current, so a migration file merged later with a lower
+    number than one already applied would silently never run.
+    """
+    numbers = sorted(
+        int(p.name.split("_", 1)[0])
+        for p in Database.MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql")
+    )
+    assert numbers == list(range(1, len(numbers) + 1))
+
+
 def test_wal_mode_enabled(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
@@ -165,6 +179,39 @@ def test_migration_017_on_populated_database(tmp_path: Path) -> None:
         candidate_ids={"legacy-entity"},
     )
     assert archived == 1
+
+
+def test_migration_019_on_populated_database(tmp_path: Path) -> None:
+    """An entity row inserted before the citation-persistence migration
+    must survive with cited_count = 0 and last_cited_at = NULL — the same
+    as "never cited", so scoring behaves no worse than before the column
+    existed."""
+    import sqlite3
+
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db.initialize()
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO projects (id, name, created_at, updated_at) "
+        "VALUES ('proj-1', 'legacy-project', datetime('now'), datetime('now'))"
+    )
+    conn.execute(
+        "INSERT INTO entities (id, project_id, source_event_id, type, title, "
+        "content, created_at, updated_at) VALUES ('legacy-entity', 'proj-1', "
+        "'event-1', 'todo', 'Legacy todo', 'Pre-migration content', "
+        "datetime('now'), datetime('now'))"
+    )
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT cited_count, last_cited_at FROM entities WHERE id = ?",
+        ("legacy-entity",),
+    ).fetchone()
+    conn.close()
+    assert row[0] == 0
+    assert row[1] is None
 
 
 def test_in_memory_database() -> None:

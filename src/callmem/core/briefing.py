@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +55,13 @@ LEGEND_ORDER = [
     "feature", "bugfix", "discovery", "decision",
     "todo", "failure", "research", "change", "fact",
 ]
+
+# Priority rank used only to decide which open items survive the
+# open-items floor cap (_open_items_floor_ids) — higher drops last.
+_OPEN_ITEM_PRIORITY_RANK: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
+
+# Statuses that mean an item is no longer "open" for floor purposes.
+_CLOSED_STATUSES = ("done", "cancelled", "resolved")
 
 # Box-drawing characters for visual structure
 _BOX_H = "\u2500"  # ─
@@ -115,6 +123,23 @@ def _parse_db_timestamp(ts: str) -> datetime:
     return parsed
 
 
+def _age_days(ts: str | None, now: datetime) -> float:
+    """Age of a timestamp in days, or 0.0 for missing/unparseable values.
+
+    Zero is the safe default here (treats unknown age as "just happened"
+    rather than penalizing it) — matches the pre-existing convention that
+    briefing code degrades gracefully on messy live data rather than
+    crashing (see module docstring for _parse_db_timestamp).
+    """
+    if not ts:
+        return 0.0
+    try:
+        dt = _parse_db_timestamp(ts)
+    except ValueError:
+        return 0.0
+    return max((now - dt).total_seconds() / 86400, 0.0)
+
+
 def _short_id(full_id: str | None) -> str:
     """Return a short, display-friendly ID suffix.
 
@@ -126,6 +151,19 @@ def _short_id(full_id: str | None) -> str:
     if not full_id:
         return ""
     return full_id[-8:]
+
+
+# Phase-1 scope: a missing anchor only annotates the entity line — it
+# never auto-stales the entity itself.
+_STALE_ANCHOR_MARKER = "⚠ file gone:"
+
+
+def _stale_anchor_suffix(
+    entity_id: str | None, annotations: dict[str, str],
+) -> str:
+    """Return the ` (⚠ file gone: path)` suffix for an entity line, or ''."""
+    note = annotations.get(entity_id or "")
+    return f"  ({note})" if note else ""
 
 
 def _session_hook(session: dict[str, Any], max_chars: int = 70) -> str:
@@ -261,6 +299,14 @@ class BriefingGenerator:
         work_investment = self._compute_work_investment(project_id)
         self._suppressed_stale_count = suppressed_stale
 
+        # Anchor validation is bounded to exactly the entities being
+        # surfaced in this briefing, and computed once — cached — so the
+        # two-pass render below (provisional, then final) doesn't stat
+        # the same files twice.
+        anchor_annotations = self._compute_stale_anchor_annotations(
+            project_id, all_entities,
+        )
+
         # Project overview — fetched once, rendered at the top of the
         # briefing but excluded from the token budget (it is independently
         # capped at _OVERVIEW_MAX_TOKENS).
@@ -308,9 +354,12 @@ class BriefingGenerator:
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, 0.0, overview_block,
+            anchor_annotations=anchor_annotations,
         ))
         suggested_next_str = "\n".join(
-            self._build_suggested_next_parts(all_entities, w)
+            self._build_suggested_next_parts(
+                all_entities, w, anchor_annotations=anchor_annotations,
+            )
         )
         # Render the provisional footer using `budget` as a placeholder for
         # briefing_tokens so it hits the same layout branch as the final
@@ -346,6 +395,7 @@ class BriefingGenerator:
             project_name, all_entities, sessions,
             last_session, observations_loaded, read_tokens,
             work_investment, savings_pct, overview_block,
+            anchor_annotations=anchor_annotations,
         ))
         footer = "\n".join(self._build_footer_parts(
             work_investment, observations_loaded, briefing_tokens, w,
@@ -417,9 +467,11 @@ class BriefingGenerator:
         work_investment: int,
         savings_pct: float,
         overview_block: str = "",
+        anchor_annotations: dict[str, str] | None = None,
     ) -> list[str]:
         parts: list[str] = []
         w = 58  # box width
+        annotations = anchor_annotations or {}
 
         now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
 
@@ -512,13 +564,15 @@ class BriefingGenerator:
             for e in failures:
                 eid = _short_id(e.get("id"))
                 title = e.get("title") or e.get("content", "")[:60]
-                parts.append(f"  #{eid}  \u274c  {title}")
+                note = _stale_anchor_suffix(e.get("id"), annotations)
+                parts.append(f"  #{eid}  \u274c  {title}{note}")
             for e in todos:
                 eid = _short_id(e.get("id"))
                 title = e.get("title") or e.get("content", "")[:60]
                 priority = e.get("priority", "")
                 flag = f" [{priority}]" if priority else ""
-                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}")
+                note = _stale_anchor_suffix(e.get("id"), annotations)
+                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}{note}")
             parts.append("")
 
         # ── Observations by date ──
@@ -537,7 +591,8 @@ class BriefingGenerator:
                     eid = _short_id(e.get("id"))
                     emoji = CATEGORY_EMOJI.get(e.get("type", ""), "")
                     title = e.get("title") or ""
-                    parts.append(f"    #{eid}  {emoji}  {title}")
+                    note = _stale_anchor_suffix(e.get("id"), annotations)
+                    parts.append(f"    #{eid}  {emoji}  {title}{note}")
                 parts.append("")
 
         # Body ends here; the caller appends Suggested next + footer
@@ -548,7 +603,9 @@ class BriefingGenerator:
         self,
         entities: list[dict[str, Any]],
         w: int,
+        anchor_annotations: dict[str, str] | None = None,
     ) -> list[str]:
+        annotations = anchor_annotations or {}
         failures = [
             e for e in entities
             if e.get("type") == "failure"
@@ -572,12 +629,13 @@ class BriefingGenerator:
         for e in candidates:
             eid = _short_id(e.get("id"))
             title = e.get("title") or e.get("content", "")[:60]
+            note = _stale_anchor_suffix(e.get("id"), annotations)
             if e.get("type") == "failure":
-                parts.append(f"  #{eid}  ❌  {title}")
+                parts.append(f"  #{eid}  ❌  {title}{note}")
             else:
                 priority = e.get("priority", "")
                 flag = f" [{priority}]" if priority else ""
-                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}")
+                parts.append(f"  #{eid}  \U0001f4cb  {title}{flag}{note}")
         parts.append("")
         return parts
 
@@ -767,20 +825,146 @@ class BriefingGenerator:
             f"Run `callmem doctor` to diagnose."
         )
 
+    def _score_entity(self, entity: dict[str, Any], now: datetime) -> float:
+        """Importance score for briefing selection/ordering.
+
+        score = pinned boost + type weight + recency decay + citation
+        boost (log-scaled cited_count, decayed by recency of last
+        citation). Weights come from BriefingScoringConfig — see its
+        docstring for the exact formula and defaults.
+        """
+        cfg = self.config.briefing.scoring
+        score = 0.0
+        if entity.get("pinned"):
+            score += cfg.pinned_boost
+        score += cfg.type_weights.get(entity.get("type") or "", 0.0)
+
+        age_days = _age_days(entity.get("created_at"), now)
+        score += cfg.recency_weight * (
+            0.5 ** (age_days / cfg.recency_half_life_days)
+        )
+
+        cited_count = entity.get("cited_count") or 0
+        if cited_count > 0:
+            last_cited = entity.get("last_cited_at") or entity.get("created_at")
+            citation_age_days = _age_days(last_cited, now)
+            citation_recency = 0.5 ** (
+                citation_age_days / cfg.citation_half_life_days
+            )
+            score += cfg.citation_weight * math.log1p(cited_count) * citation_recency
+
+        return score
+
+    def _compute_stale_anchor_annotations(
+        self, project_id: str, entities: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Validate code anchors for exactly the entities in this briefing.
+
+        Bounded work: only entities already selected for surfacing are
+        checked (never a scan of the whole entity_files table), and
+        every file path involved is validated at most once per call —
+        callers that render the briefing body twice (provisional +
+        final pass) share this one result.
+
+        Returns entity_id -> annotation text (e.g. "⚠ file gone: path")
+        for entities that reference at least one missing file. This is
+        annotation-only (phase-1 scope) — it never marks the entity
+        stale. A file whose anchor is unvalidated (no project root
+        known, or it resolves outside the project root) is treated as
+        "can't tell", not "missing", and produces no annotation.
+        """
+        entity_ids = [e["id"] for e in entities if e.get("id")]
+        if not entity_ids:
+            return {}
+        files_by_entity = self.repo.get_files_for_entities(entity_ids)
+        if not files_by_entity:
+            return {}
+
+        project = self.repo.get_project(project_id)
+        project_root = project.root_path if project else None
+
+        from callmem.core.anchors import validate_anchor
+
+        validity_cache: dict[str, bool | None] = {}
+        annotations: dict[str, str] = {}
+        for entity_id, files in files_by_entity.items():
+            for f in files:
+                path = f["file_path"]
+                if path not in validity_cache:
+                    validity_cache[path] = validate_anchor(path, project_root)
+                if validity_cache[path] is False:
+                    annotations[entity_id] = f"{_STALE_ANCHOR_MARKER} {path}"
+                    break
+        return annotations
+
+    def _most_recent_session_entity_ids(self, project_id: str) -> set[str]:
+        """IDs of non-stale entities extracted from the most recent session.
+
+        These are an always-include floor for briefing selection — a
+        fresh session's work must never be dropped by the importance-score
+        budget trim, however low its score.
+        """
+        conn = self.repo.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT id FROM sessions WHERE project_id = ? "
+                "ORDER BY started_at DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return set()
+        session_entities = self._fetch_entities_for_session(row["id"])
+        return {e["id"] for e in session_entities if e.get("id")}
+
+    def _open_items_floor_ids(self, entities: list[dict[str, Any]]) -> set[str]:
+        """IDs of open todo/failure entities, up to scoring.open_items_floor_cap.
+
+        A second always-include floor alongside
+        _most_recent_session_entity_ids: an old, unpinned, uncited open
+        TODO or failure must not silently vanish from the briefing just
+        because it loses on score to a flood of fresher/noisier entities.
+        "Open" means status not in done/cancelled/resolved — matches the
+        Action Items / Suggested next sections' own filter minus the
+        'resolved'-only check those use, deliberately a bit stricter here
+        so the floor doesn't protect items already fading out. Beyond the
+        cap, lowest-priority open items are dropped first.
+        """
+        cap = self.config.briefing.scoring.open_items_floor_cap
+        if cap <= 0:
+            return set()
+        open_items = [
+            e for e in entities
+            if e.get("type") in ("todo", "failure")
+            and e.get("status") not in _CLOSED_STATUSES
+        ]
+        open_items.sort(
+            key=lambda e: _OPEN_ITEM_PRIORITY_RANK.get(e.get("priority") or "", 0),
+            reverse=True,
+        )
+        return {e["id"] for e in open_items[:cap]}
+
     def _fetch_all_entities(
         self, project_id: str, focus: str | None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Return (entities, suppressed_stale_count).
 
-        Stale entities are excluded from the briefing by default. The
-        caller surfaces the suppressed count as a footer so the agent
-        knows memory was curated, not missing.
+        Entities are ranked by importance score (see _score_entity), not
+        pure recency, and capped at scoring.max_entities — the lowest
+        scored entities are dropped whole when the cap bites, never
+        blind-truncated mid-render. Two floors sit outside the score and
+        are always included regardless of it: entities from the most
+        recent session (_most_recent_session_entity_ids) and open
+        todo/failure items up to a cap (_open_items_floor_ids). Stale
+        entities are excluded from the briefing by default; the caller
+        surfaces the suppressed count as a footer so the agent knows
+        memory was curated, not missing.
         """
         conn = self.repo.db.connect()
         try:
             rows = conn.execute(
-                "SELECT * FROM entities WHERE project_id = ? "
-                "ORDER BY pinned DESC, created_at DESC LIMIT 200",
+                "SELECT * FROM entities WHERE project_id = ?",
                 (project_id,),
             ).fetchall()
             results = [dict(r) for r in rows]
@@ -795,8 +979,24 @@ class BriefingGenerator:
             ]
 
         stale_count = sum(1 for r in results if r.get("stale"))
-        results = [r for r in results if not r.get("stale")][:100]
-        return results, stale_count
+        results = [r for r in results if not r.get("stale")]
+
+        now = datetime.now(UTC)
+        ranked = sorted(
+            results, key=lambda e: self._score_entity(e, now), reverse=True,
+        )
+        ranked_ids = {e["id"] for e in ranked}
+
+        max_entities = self.config.briefing.scoring.max_entities
+        top_ids = {e["id"] for e in ranked[:max_entities]}
+        session_floor_ids = self._most_recent_session_entity_ids(project_id)
+        open_floor_ids = self._open_items_floor_ids(ranked)
+        selected_ids = top_ids | (
+            (session_floor_ids | open_floor_ids) & ranked_ids
+        )
+        selected = [e for e in ranked if e["id"] in selected_ids]
+
+        return selected, stale_count
 
     def _fetch_sessions_with_entities(
         self, project_id: str

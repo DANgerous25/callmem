@@ -168,6 +168,8 @@ class MemoryEngine:
             session.summary = note
         self.repo.update_session(session)
 
+        self._persist_session_citations(session.id)
+
         self._publish("session_ended", {
             "id": session.id,
             "ended_at": session.ended_at,
@@ -191,6 +193,30 @@ class MemoryEngine:
             )
 
         return session
+
+    def _persist_session_citations(self, session_id: str) -> None:
+        """Scan the just-ended session's own transcript for entity
+        citations and persist them incrementally.
+
+        This is the automatic side of citation feedback — the CLI's
+        ``callmem usage`` still does a full-history backfill, but without
+        this hook cited_count stays 0 forever on any project where nobody
+        runs that command, permanently deadening the briefing's
+        citation-boost term. Scoped to one session's response events (not
+        a full rescan) so it stays cheap on every session end. A fault
+        here must never fail session end itself — memory usage feedback
+        is best-effort, ending the session is not.
+        """
+        from callmem.core.usage import compute_session_citations
+
+        try:
+            citations = compute_session_citations(self.db, session_id)
+            if citations:
+                self.repo.increment_citation_counts(citations)
+        except Exception:  # noqa: BLE001 — must never fail session end
+            logger.exception(
+                "Citation persistence failed for session %s", session_id[:8],
+            )
 
     def get_active_session(self) -> Session | None:
         """Return the current active session, if any."""
@@ -364,8 +390,10 @@ class MemoryEngine:
             limit=limit,
             include_stale=include_stale,
         )
-        return [
-            {
+        anchors_by_id = self._anchor_validity_for([r.id for r in results])
+        out = []
+        for r in results:
+            d = {
                 "id": r.id,
                 "source_type": r.source_type,
                 "type": r.type,
@@ -382,8 +410,48 @@ class MemoryEngine:
                 "pinned": r.pinned,
                 "stale": r.stale,
             }
-            for r in results
-        ], mode
+            anchors = anchors_by_id.get(r.id)
+            if anchors:
+                d["anchors"] = anchors
+            out.append(d)
+        return out, mode
+
+    def _anchor_validity_for(
+        self, entity_ids: list[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Batch-compute code anchor validity for exactly these entity ids.
+
+        Bounded to whatever the caller is about to surface (search or
+        get_entities results) — never scans the full entity_files table.
+        Anchors outside the project root, or when no root is known, are
+        never stat'd (see anchors.validate_anchor) and come back with
+        valid=None rather than being silently dropped.
+        """
+        files_by_entity = self.repo.get_files_for_entities(entity_ids)
+        if not files_by_entity:
+            return {}
+
+        from callmem.core.anchors import validate_anchor
+
+        project = self.repo.get_project(self.project_id)
+        project_root = project.root_path if project else None
+
+        validity_cache: dict[str, bool | None] = {}
+        out: dict[str, list[dict[str, Any]]] = {}
+        for entity_id, files in files_by_entity.items():
+            annotated = []
+            for f in files:
+                path = f["file_path"]
+                if path not in validity_cache:
+                    validity_cache[path] = validate_anchor(path, project_root)
+                annotated.append({
+                    "file_path": path,
+                    "line_number": f.get("line_number"),
+                    "relation": f.get("relation"),
+                    "valid": validity_cache[path],
+                })
+            out[entity_id] = annotated
+        return out
 
     def set_overview(self, content: str) -> dict[str, Any]:
         """Set the project overview (upsert). Returns the stored row."""

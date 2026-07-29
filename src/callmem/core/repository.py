@@ -1078,6 +1078,69 @@ class Repository:
         finally:
             conn.close()
 
+    def set_citation_counts(
+        self, citations: dict[str, tuple[int, str]],
+    ) -> int:
+        """Persist per-entity citation counts (absolute, not deltas).
+
+        ``citations`` maps entity_id -> (cited_count, last_cited_at). Callers
+        recompute the full tally from a fresh scan of response events each
+        time (see usage.compute_entity_citations), so setting absolute
+        values keeps repeated backfills idempotent. Returns the number of
+        entity rows updated.
+        """
+        if not citations:
+            return 0
+        conn = self.db.connect()
+        try:
+            cursor = conn.executemany(
+                "UPDATE entities SET cited_count = ?, last_cited_at = ? "
+                "WHERE id = ?",
+                [
+                    (count, last_cited_at, entity_id)
+                    for entity_id, (count, last_cited_at) in citations.items()
+                ],
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def increment_citation_counts(
+        self, citations: dict[str, tuple[int, str]],
+    ) -> int:
+        """Add session-scoped citation counts onto existing per-entity totals.
+
+        Unlike ``set_citation_counts`` (which overwrites with an absolute
+        value from a full-history rescan), this increments — used by the
+        session-end hook, which only sees that one session's citations and
+        must not clobber counts accumulated from earlier sessions.
+        ``last_cited_at`` only ever advances forward (kept as-is if it's
+        already newer than this session's timestamp). Returns the number
+        of entity rows updated.
+        """
+        if not citations:
+            return 0
+        conn = self.db.connect()
+        try:
+            cursor = conn.executemany(
+                "UPDATE entities SET "
+                "cited_count = cited_count + ?, "
+                "last_cited_at = CASE "
+                "  WHEN last_cited_at IS NULL OR ? > last_cited_at THEN ? "
+                "  ELSE last_cited_at "
+                "END "
+                "WHERE id = ?",
+                [
+                    (count, last_cited_at, last_cited_at, entity_id)
+                    for entity_id, (count, last_cited_at) in citations.items()
+                ],
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
     def set_pinned(self, entity_id: str, pinned: bool) -> dict[str, Any]:
         from callmem.models.entities import Entity
 
@@ -1241,11 +1304,65 @@ class Repository:
         conn = self.db.connect()
         try:
             rows = conn.execute(
-                "SELECT file_path, relation FROM entity_files "
+                "SELECT file_path, relation, line_number FROM entity_files "
                 "WHERE entity_id = ?",
                 (entity_id,),
             ).fetchall()
             return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def get_files_for_entities(
+        self, entity_ids: list[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Batch-fetch entity_files rows for multiple entities in one query.
+
+        Used to validate citation anchors for exactly the entities a
+        caller is about to surface (briefing render, mem_get_entities,
+        mem_search) — bounded work, never a scan of the whole table.
+        """
+        if not entity_ids:
+            return {}
+        conn = self.db.connect()
+        try:
+            placeholders = ",".join("?" for _ in entity_ids)
+            rows = conn.execute(
+                "SELECT entity_id, file_path, relation, line_number "
+                f"FROM entity_files WHERE entity_id IN ({placeholders})",
+                entity_ids,
+            ).fetchall()
+            result: dict[str, list[dict[str, Any]]] = {}
+            for r in rows:
+                result.setdefault(r["entity_id"], []).append({
+                    "file_path": r["file_path"],
+                    "relation": r["relation"],
+                    "line_number": r["line_number"],
+                })
+            return result
+        finally:
+            conn.close()
+
+    def insert_entity_file_anchors(
+        self, entity_id: str, anchors: list[tuple[str, int | None]]
+    ) -> None:
+        """Persist deterministically-parsed file:line anchors.
+
+        Extends the existing entity_files table (INSERT OR IGNORE, keyed
+        on (entity_id, file_path)) rather than a separate table — a path
+        already present via the LLM-derived file list, or an earlier
+        anchor, is left untouched.
+        """
+        if not anchors:
+            return
+        conn = self.db.connect()
+        try:
+            conn.executemany(
+                "INSERT OR IGNORE INTO entity_files "
+                "(entity_id, file_path, relation, line_number) "
+                "VALUES (?, ?, 'related', ?)",
+                [(entity_id, path, line) for path, line in anchors if path],
+            )
+            conn.commit()
         finally:
             conn.close()
 

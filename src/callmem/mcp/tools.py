@@ -856,7 +856,7 @@ def handle_get_entities(
     engine: MemoryEngine, args: dict[str, Any]
 ) -> list[TextContent]:
     ids = args.get("ids", [])
-    results = []
+    rows = []
     for raw_eid in ids:
         eid = (raw_eid or "").lstrip("#").strip()
         if not eid:
@@ -865,13 +865,21 @@ def handle_get_entities(
         if row is None and len(eid) < 26:
             row = engine.repo.get_entity_by_short_id(eid)
         if row:
-            from callmem.models.entities import Entity
-            entity = Entity.from_row(row)
-            full_id = row["id"]
-            files = engine.repo.get_files_for_entity(full_id)
-            d = entity.to_row()
-            d["files"] = files
-            results.append(d)
+            rows.append(row)
+
+    # Anchor validity is batch-computed once for the whole request —
+    # bounded to exactly the entities returned here, never a scan of
+    # the full entity_files table.
+    anchors_by_id = engine._anchor_validity_for([r["id"] for r in rows])
+
+    results = []
+    for row in rows:
+        from callmem.models.entities import Entity
+        entity = Entity.from_row(row)
+        full_id = row["id"]
+        d = entity.to_row()
+        d["files"] = anchors_by_id.get(full_id, [])
+        results.append(d)
 
     return _make_result({"entities": results, "count": len(results)})
 

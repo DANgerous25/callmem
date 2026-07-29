@@ -9,6 +9,7 @@ from callmem.core.queue import JobQueue
 from callmem.core.repository import Repository
 from callmem.models.config import Config
 from callmem.models.entities import Entity
+from callmem.models.events import Event
 from callmem.models.projects import Project
 from callmem.models.sessions import Session
 
@@ -99,8 +100,8 @@ def _insert_entity(memory_db: Database, entity: Entity) -> None:
             "(id, project_id, source_event_id, type, title, content, "
             "key_points, synopsis, "
             "status, priority, pinned, created_at, updated_at, "
-            "resolved_at, metadata, archived_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "resolved_at, metadata, archived_at, cited_count, last_cited_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row["id"], row["project_id"], row["source_event_id"],
                 row["type"], row["title"], row["content"],
@@ -108,6 +109,7 @@ def _insert_entity(memory_db: Database, entity: Entity) -> None:
                 row["status"], row["priority"], row["pinned"],
                 row["created_at"], row["updated_at"],
                 row["resolved_at"], row["metadata"], row["archived_at"],
+                row["cited_count"], row["last_cited_at"],
             ),
         )
         conn.commit()
@@ -449,3 +451,463 @@ class TestParseDbTimestamp:
 
         parsed = _parse_db_timestamp("2026-07-29T11:53:39Z")
         assert parsed == datetime(2026, 7, 29, 11, 53, 39, tzinfo=UTC)
+
+
+def _days_ago(days: int) -> str:
+    from datetime import datetime, timedelta
+
+    from callmem.compat import UTC
+
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
+
+
+class TestImportanceRankedSelection:
+    """`_fetch_all_entities` ranks by an importance score, not pure
+    recency: pinned boost + type weight + recency decay + citation boost
+    (log-scaled cited_count, recency-decayed). See BriefingScoringConfig.
+    """
+
+    def _days_ago(self, days: int) -> str:
+        return _days_ago(days)
+
+    def test_old_cited_decision_beats_fresh_churn_change(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_decision = Entity(
+            project_id=project_id, type="decision",
+            title="Old but frequently cited decision",
+            content="Chose the event-sourced architecture",
+            created_at=self._days_ago(60),
+            cited_count=6,
+            last_cited_at=self._days_ago(1),
+        )
+        _insert_entity(memory_db, old_decision)
+
+        fresh_change = Entity(
+            project_id=project_id, type="change",
+            title="Renamed a variable",
+            content="Minor rename, no functional impact",
+            created_at=self._days_ago(0),
+        )
+        _insert_entity(memory_db, fresh_change)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids_in_order = [e["id"] for e in entities]
+        assert (
+            ids_in_order.index(old_decision.id)
+            < ids_in_order.index(fresh_change.id)
+        )
+
+    def test_uncited_old_entity_decays_below_fresh_uncited_entity(
+        self, memory_db: Database,
+    ) -> None:
+        """3c: entities never cited, older than N days, and not
+        pinned/todo-open must rank measurably lower than a fresh entity of
+        the same type — the recency-decay term, isolated from every other
+        score component."""
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_fact = Entity(
+            project_id=project_id, type="fact",
+            title="Old, never-cited, unpinned fact",
+            content="Some fact nobody references anymore",
+            created_at=self._days_ago(90),
+        )
+        _insert_entity(memory_db, old_fact)
+
+        fresh_fact = Entity(
+            project_id=project_id, type="fact",
+            title="Fresh, never-cited, unpinned fact",
+            content="Same type, just created today",
+            created_at=self._days_ago(0),
+        )
+        _insert_entity(memory_db, fresh_fact)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids_in_order = [e["id"] for e in entities]
+        assert (
+            ids_in_order.index(fresh_fact.id)
+            < ids_in_order.index(old_fact.id)
+        )
+
+    def test_type_weight_tier_ordering(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+        now = self._days_ago(0)
+
+        tiers = [
+            ("decision", "Tier 1 decision"),
+            ("bugfix", "Tier 2 bugfix"),
+            ("todo", "Tier 3 todo"),
+            ("change", "Tier 4 change"),
+        ]
+        created = []
+        for etype, title in tiers:
+            e = Entity(
+                project_id=project_id, type=etype, title=title,
+                content="body", created_at=now,
+            )
+            _insert_entity(memory_db, e)
+            created.append(e)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids_in_order = [e["id"] for e in entities]
+        ranks = [ids_in_order.index(e.id) for e in created]
+        assert ranks == sorted(ranks)
+
+    def test_fresh_session_entities_always_present_despite_low_score(
+        self, memory_db: Database,
+    ) -> None:
+        """Entities from the most recent session are a floor: the
+        max_entities budget trim must never drop them, even when their
+        score would otherwise put them last."""
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_session = Session(
+            project_id=project_id, started_at=self._days_ago(30),
+        )
+        repo.insert_session(old_session)
+        new_session = Session(
+            project_id=project_id, started_at=self._days_ago(0),
+        )
+        repo.insert_session(new_session)
+
+        old_event = Event(
+            session_id=old_session.id, project_id=project_id,
+            type="note", content="old note",
+        )
+        repo.insert_event(old_event)
+        new_event = Event(
+            session_id=new_session.id, project_id=project_id,
+            type="note", content="new note",
+        )
+        repo.insert_event(new_event)
+
+        # High-scoring pinned decisions from the OLD session fill up a
+        # deliberately tiny budget ahead of the low-value fresh entity.
+        filler_ids = []
+        for i in range(3):
+            filler = Entity(
+                project_id=project_id, type="decision",
+                title=f"Pinned filler decision {i}",
+                content="Important pinned decision",
+                pinned=True,
+                source_event_id=old_event.id,
+            )
+            _insert_entity(memory_db, filler)
+            filler_ids.append(filler.id)
+
+        # Low-value entity (uncited churn, unpinned) but from the MOST
+        # RECENT session — must survive the trim regardless of its score.
+        fresh_low_value = Entity(
+            project_id=project_id, type="change",
+            title="Trivial fresh-session churn",
+            content="A minor change with no other signal",
+            source_event_id=new_event.id,
+        )
+        _insert_entity(memory_db, fresh_low_value)
+
+        config = Config()
+        config.briefing.scoring.max_entities = 3
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert fresh_low_value.id in ids
+        for fid in filler_ids:
+            assert fid in ids
+        assert len(entities) == 4
+
+
+class TestOpenItemsFloor:
+    """Open todo/failure entities are a second always-include floor: an
+    old, unpinned, uncited open TODO must not silently vanish from the
+    briefing just because it loses on score to a flood of fresher/noisier
+    entities. See BriefingGenerator._open_items_floor_ids."""
+
+    def test_old_open_todo_survives_against_fresher_competition(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        old_todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Old open todo nobody prioritized",
+            content="Still needs doing",
+            created_at=_days_ago(100),
+        )
+        _insert_entity(memory_db, old_todo)
+
+        # 200 fresh, pinned, high-scoring decisions crowd out everything
+        # that competes purely on score — max_entities defaults to 100,
+        # so without the open-items floor the old todo would be dropped.
+        for i in range(200):
+            filler = Entity(
+                project_id=project_id, type="decision",
+                title=f"Fresh pinned decision {i}",
+                content="High-value pinned decision",
+                pinned=True,
+            )
+            _insert_entity(memory_db, filler)
+
+        gen = BriefingGenerator(repo, Config())
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert old_todo.id in ids
+
+    def test_open_items_floor_cap_drops_lowest_priority_beyond_cap(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        # 25 old, unpinned, uncited open todos — more than the default
+        # floor cap (20): 5 high-priority, 20 unprioritized.
+        high_ids = set()
+        unprioritized_ids = set()
+        for i in range(25):
+            priority = "high" if i < 5 else None
+            todo = Entity(
+                project_id=project_id, type="todo", status="open",
+                title=f"Old open todo {i}",
+                content="Needs doing",
+                created_at=_days_ago(100),
+                priority=priority,
+            )
+            _insert_entity(memory_db, todo)
+            if priority == "high":
+                high_ids.add(todo.id)
+            else:
+                unprioritized_ids.add(todo.id)
+
+        config = Config()
+        # Force every entity through the floor only, so the returned set
+        # is exactly what the open-items floor (cap=20 default) allows.
+        config.briefing.scoring.max_entities = 0
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+        ids = {e["id"] for e in entities}
+
+        assert len(ids) == 20
+        assert high_ids <= ids
+        assert len(unprioritized_ids & ids) == 15
+
+    def test_open_items_floor_cap_is_configurable(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        for i in range(10):
+            todo = Entity(
+                project_id=project_id, type="todo", status="open",
+                title=f"Old open todo {i}", content="Needs doing",
+                created_at=_days_ago(100),
+            )
+            _insert_entity(memory_db, todo)
+
+        config = Config()
+        config.briefing.scoring.max_entities = 0
+        config.briefing.scoring.open_items_floor_cap = 3
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+
+        assert len(entities) == 3
+
+    def test_resolved_todo_does_not_occupy_floor_slot(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        resolved = Entity(
+            project_id=project_id, type="todo", status="resolved",
+            title="Already resolved", content="Done",
+            created_at=_days_ago(100),
+        )
+        _insert_entity(memory_db, resolved)
+
+        config = Config()
+        config.briefing.scoring.max_entities = 0
+        gen = BriefingGenerator(repo, config)
+        entities, _ = gen._fetch_all_entities(project_id, focus=None)
+
+        assert resolved.id not in {e["id"] for e in entities}
+
+
+def _seed_project_with_root(memory_db: Database, root_path) -> str:
+    repo = Repository(memory_db)
+    project = Project(name="test-project", root_path=str(root_path))
+    repo.create_project(project)
+    return project.id
+
+
+def _insert_entity_file(
+    memory_db: Database,
+    entity_id: str,
+    file_path: str,
+    line_number: int | None = None,
+) -> None:
+    conn = memory_db.connect()
+    try:
+        conn.execute(
+            "INSERT INTO entity_files "
+            "(entity_id, file_path, relation, line_number) "
+            "VALUES (?, ?, 'related', ?)",
+            (entity_id, file_path, line_number),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestStaleAnchorAnnotation:
+    """5b: briefing render validates code anchors for entities being
+    surfaced and annotates missing files inline (annotation only —
+    phase-1 scope never auto-stales the entity)."""
+
+    def test_missing_file_gets_annotated_in_briefing(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert "⚠ file gone: widget.py" in briefing.content
+
+    def test_existing_file_is_not_annotated(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        (tmp_path / "widget.py").write_text("x = 1\n")
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert "file gone" not in briefing.content
+
+    def test_missing_file_does_not_mark_entity_stale(
+        self, memory_db: Database, tmp_path,
+    ) -> None:
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        gen.generate(project_id, project_name="test")
+
+        stored = repo.get_entity(todo.id)
+        assert stored is not None
+        assert not stored.get("stale")
+
+    def test_no_project_root_skips_validation_without_crashing(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_project(memory_db)  # no root_path set
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert "file gone" not in briefing.content
+
+    def test_path_outside_root_is_never_statted(
+        self, memory_db: Database, tmp_path, monkeypatch,
+    ) -> None:
+        """Security: an anchor that resolves outside the project root
+        must never reach the filesystem, even indirectly via a full
+        briefing render."""
+        from pathlib import Path
+
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Suspicious anchor", content="unrelated",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "../../etc/passwd")
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        assert not any("passwd" in c for c in calls)
+        assert "file gone" not in briefing.content
+
+    def test_anchor_validation_cached_across_two_pass_render(
+        self, memory_db: Database, tmp_path, monkeypatch,
+    ) -> None:
+        """generate() renders the body twice (a provisional pass to
+        measure the token budget, then the final pass) — anchor
+        validation must be computed once and reused, not stat the same
+        file twice."""
+        from pathlib import Path
+
+        project_id = _seed_project_with_root(memory_db, tmp_path)
+        repo = Repository(memory_db)
+        todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Fix the widget", content="See widget.py",
+        )
+        _insert_entity(memory_db, todo)
+        _insert_entity_file(memory_db, todo.id, "widget.py")
+
+        calls: list[str] = []
+        real_exists = Path.exists
+
+        def counting_exists(self: Path) -> bool:
+            calls.append(str(self))
+            return real_exists(self)
+
+        monkeypatch.setattr(Path, "exists", counting_exists)
+
+        gen = BriefingGenerator(repo, Config())
+        gen.generate(project_id, project_name="test")
+
+        widget_calls = [c for c in calls if c.endswith("widget.py")]
+        assert len(widget_calls) == 1
