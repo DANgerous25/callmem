@@ -116,14 +116,19 @@ mode = "auto"                      # "auto" or "passphrase"
 # passphrase read from CALLMEM_VAULT_PASSPHRASE env var when mode = "passphrase"
 
 [embeddings]
-# v2 configuration — ignored in v1
-enabled = false
-backend = "local"                  # "local" (sentence-transformers) or "api" (openai)
-model = "all-MiniLM-L6-v2"        # For local backend
-api_endpoint = ""                  # For API backend
-api_key_env = "EMBEDDING_API_KEY"  # Env var containing API key
-dimensions = 384
+# Hybrid search: fuses full-text (bm25) and semantic (cosine) rankings.
+# Falls back to full-text only when no backend or no stored vectors.
+enabled = true
+backend = "ollama"                 # "ollama", "openai_compat", or "none"
+model = "nomic-embed-text"         # ollama: `ollama pull nomic-embed-text`
+endpoint = ""                      # blank = use [ollama]/[openai_compat] endpoint
+timeout = 60                       # ingest/backfill budget, seconds
+query_timeout = 3.0                # interactive search budget, seconds
 batch_size = 32
+candidate_limit = 500              # vectors scored per query (500 ≈ 40ms)
+min_similarity = 0.45              # cosine floor for a vector hit
+query_prefix = "search_query: "    # nomic task prefixes; "" for other models
+document_prefix = "search_document: "
 
 [ui]
 host = "127.0.0.1"

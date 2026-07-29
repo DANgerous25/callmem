@@ -38,6 +38,30 @@ class ReExtractor:
         self.ollama = ollama
         self.config = config
 
+    def _enqueue_embeddings(
+        self, project_id: str, entity_ids: list[str],
+    ) -> None:
+        """Queue embedding work for re-extracted entities.
+
+        Never raises: the entities are already persisted, so a queueing
+        fault must not abort a re-extraction run mid-way. The worst case is
+        those entities stay FTS-only until `callmem embed --backfill`.
+        """
+        if not entity_ids:
+            return
+        try:
+            from callmem.core.embeddings import enqueue_embeddings
+            from callmem.core.queue import JobQueue
+
+            enqueue_embeddings(
+                JobQueue(self.db), self.config, entity_ids, project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to enqueue embeddings for re-extracted entities: %s",
+                exc,
+            )
+
     def count_events(
         self,
         project_id: str,
@@ -165,7 +189,7 @@ class ReExtractor:
         get swept up by the batch's own archive-by-source-event step.
         """
         if extractor is None:
-            extractor = EntityExtractor(self.db, self.ollama)
+            extractor = EntityExtractor(self.db, self.ollama, config=self.config)
 
         events_text = extractor._format_events(events)
         # Re-extraction operates on historical events with no notion of a
@@ -301,7 +325,7 @@ class ReExtractor:
         # those batches succeeds would silently lose the events covered
         # by a later batch that then fails.
         succeeded_event_ids: set[str] = set()
-        extractor = EntityExtractor(self.db, self.ollama)
+        extractor = EntityExtractor(self.db, self.ollama, config=self.config)
 
         for batch_idx, batch in enumerate(batches):
             event_ids = [e["id"] for e in batch]
@@ -339,6 +363,13 @@ class ReExtractor:
                 extractor._insert_entity(entity)
                 if files:
                     extractor._insert_entity_files(entity.id, files)
+            # Re-extraction persists entities itself rather than going
+            # through EntityExtractor.process_job, so it must queue the
+            # embedding work itself too — otherwise a re-extracted project
+            # silently loses every vector it had.
+            self._enqueue_embeddings(
+                project_id, [e.id for e, _files in new_entities],
+            )
             entities_created += len(new_entities)
             events_processed += len(batch)
 

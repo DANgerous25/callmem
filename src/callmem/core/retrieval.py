@@ -6,13 +6,18 @@ to find relevant memories.
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from callmem.compat import UTC
-from callmem.core.embeddings import create_embedder, rank_by_similarity
+from callmem.core.embeddings import (
+    create_embedder,
+    embedding_model_key,
+    rank_by_similarity,
+)
 
 if TYPE_CHECKING:
     from callmem.core.embeddings import Embedder
@@ -33,6 +38,26 @@ RRF_K = 60
 #: than the gap between adjacent normalised RRF scores, so recency only
 #: ever breaks ties rather than reordering genuinely different ranks.
 RRF_RECENCY_TIEBREAK = 0.001
+
+logger = logging.getLogger(__name__)
+
+#: Degradation reasons already logged. Search runs on every agent turn, so
+#: an unconditional warning would bury the log; but silent degradation is
+#: exactly what makes "embeddings quietly stopped working" undebuggable.
+#: One loud line per reason per process is the compromise.
+_logged_degradations: set[str] = set()
+
+
+def reset_degradation_log() -> None:
+    """Forget which degradation reasons have been logged (tests)."""
+    _logged_degradations.clear()
+
+
+def _log_once(key: str, message: str, *args: Any) -> None:
+    if key in _logged_degradations:
+        return
+    _logged_degradations.add(key)
+    logger.warning(message, *args)
 
 
 @dataclass
@@ -331,15 +356,42 @@ class RetrievalEngine:
 
         # Asymmetric task prefix: queries and documents are embedded
         # differently by design (see EmbeddingsConfig).
-        vectors = embedder.embed([settings.query_prefix + query])
+        #
+        # query_timeout, not the ingest timeout: this call sits in the
+        # interactive search path, and a hung backend must cost a search a
+        # few seconds, not the full ingest budget.
+        vectors = embedder.embed(
+            [settings.query_prefix + query], timeout=settings.query_timeout,
+        )
         if not vectors or not vectors[0]:
+            _log_once(
+                "query_embed_failed",
+                "Query embedding failed or timed out (>%ss) — serving this "
+                "search from FTS only. Further occurrences are not logged.",
+                settings.query_timeout,
+            )
             return []
         query_vector = vectors[0]
 
+        model_key = embedding_model_key(self.config)
         candidates = self.repo.load_embedding_candidates(
-            project_id, embedder.model, types=types,
+            project_id, model_key, types=types,
             include_stale=include_stale, limit=settings.candidate_limit,
         )
+        if not candidates:
+            # This project HAS vectors (has_embeddings passed) but none for
+            # the active model key — almost always a model or prefix change
+            # that left the stored corpus behind. Silent FTS-only results
+            # would look like the feature simply doing nothing.
+            _log_once(
+                f"no_candidates:{model_key}",
+                "Project has embeddings but none for the active key %r — "
+                "search is FTS-only until `callmem embed --backfill` "
+                "re-embeds under the new model/prefix.",
+                model_key,
+            )
+            return []
+
         scored = rank_by_similarity(
             query_vector, candidates, settings.min_similarity,
         )

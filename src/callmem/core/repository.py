@@ -1992,6 +1992,30 @@ class Repository:
         finally:
             conn.close()
 
+    def count_entities_missing_embeddings(
+        self, project_id: str, model: str,
+    ) -> int:
+        """How many live entities lack an embedding for ``model``.
+
+        The counting counterpart to ``list_entities_missing_embeddings``:
+        callers that only want a number (status output, backfill progress)
+        must not materialise every row to len() it, which both wastes
+        memory and silently under-reports past whatever LIMIT was passed.
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) as c FROM entities e "
+                "LEFT JOIN embeddings em "
+                "  ON em.entity_id = e.id AND em.model = ? "
+                "WHERE e.project_id = ? AND e.archived_at IS NULL "
+                "AND em.entity_id IS NULL",
+                (model, project_id),
+            ).fetchone()
+            return int(row["c"])
+        finally:
+            conn.close()
+
     def load_embedding_candidates(
         self,
         project_id: str,

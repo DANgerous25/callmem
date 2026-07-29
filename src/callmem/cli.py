@@ -1443,7 +1443,11 @@ def embed_cmd(
     """Show embedding coverage, or backfill missing entity embeddings."""
     from callmem.core.config import load_config
     from callmem.core.database import Database
-    from callmem.core.embeddings import EntityEmbedder, create_embedder
+    from callmem.core.embeddings import (
+        EntityEmbedder,
+        create_embedder,
+        embedding_model_key,
+    )
     from callmem.core.engine import MemoryEngine
 
     db_path = project / ".callmem" / "memory.db"
@@ -1458,15 +1462,18 @@ def embed_cmd(
 
     embedder = create_embedder(config)
     worker = EntityEmbedder(db, config, embedder=embedder)
-    model = embedder.model if embedder is not None else None
+    model_key = embedding_model_key(config) if embedder is not None else ""
 
     embedded = engine.repo.count_embeddings(engine.project_id)
-    missing = len(engine.repo.list_entities_missing_embeddings(
-        engine.project_id, model or "", limit=1_000_000,
-    ))
+    missing = engine.repo.count_entities_missing_embeddings(
+        engine.project_id, model_key,
+    )
 
     click.echo(f"callmem embed — {project.resolve()}")
-    click.echo(f"  Backend:  {config.embeddings.backend} ({model or 'disabled'})")
+    click.echo(
+        f"  Backend:  {config.embeddings.backend} "
+        f"({config.embeddings.model if embedder is not None else 'disabled'})"
+    )
     click.echo(f"  Embedded: {embedded}")
     click.echo(f"  Missing:  {missing}")
 
@@ -1490,11 +1497,31 @@ def embed_cmd(
             abort=True,
         )
 
-    result = worker.backfill(
-        engine.project_id, batch_size=batch_size, limit=limit,
-    )
+    try:
+        result = worker.backfill(
+            engine.project_id, batch_size=batch_size, limit=limit,
+        )
+    except RuntimeError as exc:
+        # Backend went away mid-run. Everything embedded so far is
+        # committed, so this is a resume situation, not a failure state —
+        # say so instead of dumping a traceback at the user.
+        click.echo()
+        click.echo(f"Embedding backend failed: {exc}", err=True)
+        click.echo(
+            "Nothing was lost — re-run `callmem embed --backfill` once the "
+            "backend is reachable and it resumes where it stopped.",
+            err=True,
+        )
+        raise SystemExit(1) from exc
+
     click.echo()
     click.echo(f"Embedded {result['embedded']} entity(ies).")
+    if result.get("stalled"):
+        click.echo(
+            "Stopped early: the backend accepted the text but returned no "
+            "usable vectors. Check the embedding model is correct.",
+            err=True,
+        )
     if result["remaining"]:
         click.echo(
             f"{result['remaining']} remaining — re-run to continue "

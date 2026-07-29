@@ -43,12 +43,16 @@ class StubEmbedder:
         self.model = model
         self.dim = len(next(iter(mapping.values()))) if mapping else 3
         self.calls: list[list[str]] = []
+        self.timeouts: list[float | None] = []
 
     def is_available(self) -> bool:
         return True
 
-    def embed(self, texts: list[str]) -> list[list[float]] | None:
+    def embed(
+        self, texts: list[str], timeout: float | None = None,
+    ) -> list[list[float]] | None:
         self.calls.append(list(texts))
+        self.timeouts.append(timeout)
         out: list[list[float]] = []
         for t in texts:
             for key, vec in self.mapping.items():
@@ -58,6 +62,46 @@ class StubEmbedder:
             else:
                 out.append([0.0] * self.dim)
         return out
+
+
+def _backend_up() -> Any:
+    """Pretend the embedding backend answered its availability probe."""
+    return patch(
+        "callmem.core.embeddings.embedding_backend_available", return_value=True,
+    )
+
+
+def _backend_down() -> Any:
+    return patch(
+        "callmem.core.embeddings.embedding_backend_available", return_value=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _clear_embedding_caches() -> Any:
+    """Availability and log-once state are process-wide — isolate tests."""
+    from callmem.core.embeddings import reset_availability_cache
+    from callmem.core.retrieval import reset_degradation_log
+
+    reset_availability_cache()
+    reset_degradation_log()
+    yield
+    reset_availability_cache()
+    reset_degradation_log()
+
+
+STUB_MODEL = "stub-embed"
+#: What embedding_model_key() yields for _stub_config() below.
+STUB_KEY = "stub-embed|"
+
+
+def _stub_config(**overrides: Any) -> Config:
+    """Config whose embedding identity matches StubEmbedder's."""
+    embeddings: dict[str, Any] = {
+        "model": STUB_MODEL, "document_prefix": "", "query_prefix": "",
+    }
+    embeddings.update(overrides)
+    return Config(embeddings=embeddings)
 
 
 def _insert_entity(db: Database, entity: Entity) -> None:
@@ -536,7 +580,7 @@ class TestCreateEmbedder:
 class TestEntityEmbedder:
     def test_enqueue_creates_job(self, memory_db: Database) -> None:
         project_id = _seed_project(memory_db)
-        worker = EntityEmbedder(memory_db, Config(), embedder=StubEmbedder({}))
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=StubEmbedder({}))
         job_id = worker.enqueue(["a", "b"], project_id)
 
         queue = JobQueue(memory_db)
@@ -556,7 +600,7 @@ class TestEntityEmbedder:
         _insert_entity(memory_db, entity)
 
         stub = StubEmbedder({"rrf": [1.0, 0.0, 0.0]})
-        worker = EntityEmbedder(memory_db, Config(), embedder=stub)
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=stub)
         job_id = worker.enqueue([entity.id], project_id)
         queue = JobQueue(memory_db)
         job = queue.dequeue(EMBED_JOB_TYPE)
@@ -566,7 +610,7 @@ class TestEntityEmbedder:
 
         row = repo.get_embedding(entity.id)
         assert row is not None
-        assert row["model"] == "stub-embed"
+        assert row["model"] == STUB_KEY
         assert row["dim"] == 3
         assert unpack_vector(row["vector"]) == pytest.approx([1.0, 0.0, 0.0])
 
@@ -582,7 +626,7 @@ class TestEntityEmbedder:
         stub = StubEmbedder({"rrf": [1.0, 0.0, 0.0]})
         worker = EntityEmbedder(
             memory_db,
-            Config(embeddings={"document_prefix": "search_document: "}),
+            _stub_config(document_prefix="search_document: "),
             embedder=stub,
         )
         worker.enqueue([entity.id], project_id)
@@ -599,8 +643,8 @@ class TestEntityEmbedder:
         _insert_entity(memory_db, entity)
 
         failing = StubEmbedder({})
-        failing.embed = lambda texts: None  # type: ignore[assignment]
-        worker = EntityEmbedder(memory_db, Config(), embedder=failing)
+        failing.embed = lambda texts, timeout=None: None  # type: ignore[assignment]
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=failing)
         worker.enqueue([entity.id], project_id)
         job = JobQueue(memory_db).dequeue(EMBED_JOB_TYPE)
 
@@ -616,7 +660,7 @@ class TestEntityEmbedder:
         _insert_entity(memory_db, entity)
 
         worker = EntityEmbedder(
-            memory_db, Config(embeddings={"enabled": False}), embedder=None,
+            memory_db, _stub_config(enabled=False), embedder=None,
         )
         worker.enqueue([entity.id], project_id)
         job = JobQueue(memory_db).dequeue(EMBED_JOB_TYPE)
@@ -632,11 +676,11 @@ class TestEntityEmbedder:
         entity = Entity(project_id=project_id, type="fact", title="rrf", content="c")
         _insert_entity(memory_db, entity)
         repo.upsert_embedding(
-            entity.id, "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            entity.id, STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
 
         stub = StubEmbedder({"rrf": [0.0, 1.0, 0.0]})
-        worker = EntityEmbedder(memory_db, Config(), embedder=stub)
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=stub)
         worker.enqueue([entity.id], project_id)
         job = JobQueue(memory_db).dequeue(EMBED_JOB_TYPE)
 
@@ -646,7 +690,7 @@ class TestEntityEmbedder:
     def test_process_pending_drains_queue(self, memory_db: Database) -> None:
         project_id = _seed_project(memory_db)
         stub = StubEmbedder({"t": [1.0, 0.0, 0.0]})
-        worker = EntityEmbedder(memory_db, Config(), embedder=stub)
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=stub)
         ids: list[str] = []
         for i in range(3):
             e = Entity(project_id=project_id, type="fact", title=f"t{i}", content="c")
@@ -663,7 +707,7 @@ class TestEntityEmbedder:
     def test_backfill_is_batched_and_resumable(self, memory_db: Database) -> None:
         project_id = _seed_project(memory_db)
         stub = StubEmbedder({"t": [1.0, 0.0, 0.0]})
-        worker = EntityEmbedder(memory_db, Config(), embedder=stub)
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=stub)
         for i in range(5):
             _insert_entity(memory_db, Entity(
                 project_id=project_id, type="fact", title=f"t{i}", content="c",
@@ -688,7 +732,7 @@ class TestEntityEmbedder:
     ) -> None:
         project_id = _seed_project(memory_db)
         worker = EntityEmbedder(
-            memory_db, Config(embeddings={"enabled": False}), embedder=None,
+            memory_db, _stub_config(enabled=False), embedder=None,
         )
         result = worker.backfill(project_id)
         assert result["embedded"] == 0
@@ -734,7 +778,7 @@ class TestWorkerRunnerIntegration:
 
         runner = WorkerRunner(memory_db, OllamaClient(), Config())
         failing = StubEmbedder({})
-        failing.embed = lambda texts: None  # type: ignore[assignment]
+        failing.embed = lambda texts, timeout=None: None  # type: ignore[assignment]
         runner._handlers[EMBED_JOB_TYPE].embedder = failing
 
         queue = JobQueue(memory_db)
@@ -777,7 +821,7 @@ class TestWorkerRunnerIntegration:
         repo.insert_event(event)
 
         ollama = OllamaClient()
-        extractor = EntityExtractor(memory_db, ollama, config=Config())
+        extractor = EntityExtractor(memory_db, ollama, config=_stub_config())
         job_id = extractor.enqueue_extraction([event.id], session.id)[0]
         job = JobQueue(memory_db).dequeue("extract_entities")
         assert job.id == job_id
@@ -786,12 +830,48 @@ class TestWorkerRunnerIntegration:
             '{"decisions": [{"title": "Use RRF", "content": "fuse rankings"}],'
             ' "todos": [], "facts": [], "failures": [], "discoveries": []}'
         )
-        with patch.object(ollama, "_generate", return_value=response):
+        with patch.object(ollama, "_generate", return_value=response), _backend_up():
             entities = extractor.process_job(job)
 
         assert len(entities) == 1
         pending = JobQueue(memory_db).get_pending_count(EMBED_JOB_TYPE)
         assert pending == 1
+
+    def test_extraction_does_not_enqueue_when_backend_unavailable(
+        self, memory_db: Database,
+    ) -> None:
+        """Fleet safety: no embed jobs queued where no model is pulled."""
+        from callmem.core.extraction import EntityExtractor
+        from callmem.core.ollama import OllamaClient
+        from callmem.models.events import Event
+        from callmem.models.sessions import Session
+
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        event = Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="we chose RRF",
+        )
+        repo.insert_event(event)
+
+        ollama = OllamaClient()
+        extractor = EntityExtractor(memory_db, ollama, config=_stub_config())
+        extractor.enqueue_extraction([event.id], session.id)
+        job = JobQueue(memory_db).dequeue("extract_entities")
+
+        response = (
+            '{"decisions": [{"title": "Use RRF", "content": "fuse rankings"}],'
+            ' "todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        with patch.object(ollama, "_generate", return_value=response), \
+                _backend_down():
+            entities = extractor.process_job(job)
+
+        assert len(entities) == 1
+        assert JobQueue(memory_db).get_pending_count(EMBED_JOB_TYPE) == 0
 
     def test_extraction_does_not_enqueue_when_disabled(
         self, memory_db: Database,
@@ -860,7 +940,7 @@ class TestHybridRetrieval:
         from callmem.core.retrieval import RetrievalEngine
 
         project_id, ids = _seed_hybrid(memory_db)
-        engine = RetrievalEngine(Repository(memory_db), Config())
+        engine = RetrievalEngine(Repository(memory_db), _stub_config())
         results, mode = engine.search_with_mode(project_id, "pagination")
 
         assert mode == "fts"
@@ -875,8 +955,8 @@ class TestHybridRetrieval:
         project_id, _ids = _seed_hybrid(memory_db)
         repo = Repository(memory_db)
 
-        off = RetrievalEngine(repo, Config(embeddings={"enabled": False}))
-        on = RetrievalEngine(repo, Config(embeddings={"enabled": True}))
+        off = RetrievalEngine(repo, _stub_config(enabled=False))
+        on = RetrievalEngine(repo, _stub_config(enabled=True))
 
         # Pin recency so the only thing that could differ between the two
         # runs is the code path itself, not the wall clock between calls.
@@ -896,12 +976,12 @@ class TestHybridRetrieval:
         repo = Repository(memory_db)
         # Embeddings exist, but the query embedding call fails.
         repo.upsert_embedding(
-            ids["semantic"], "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            ids["semantic"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
         dead = StubEmbedder({})
-        dead.embed = lambda texts: None  # type: ignore[assignment]
+        dead.embed = lambda texts, timeout=None: None  # type: ignore[assignment]
 
-        engine = RetrievalEngine(repo, Config(), embedder=dead)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=dead)
         results, mode = engine.search_with_mode(project_id, "pagination")
 
         assert mode == "fts"
@@ -915,17 +995,17 @@ class TestHybridRetrieval:
         project_id, ids = _seed_hybrid(memory_db)
         repo = Repository(memory_db)
         repo.upsert_embedding(
-            ids["lexical"], "stub-embed", 3, pack_vector([0.9, 0.1, 0.0]),
+            ids["lexical"], STUB_KEY, 3, pack_vector([0.9, 0.1, 0.0]),
         )
         repo.upsert_embedding(
-            ids["semantic"], "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            ids["semantic"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
         repo.upsert_embedding(
-            ids["noise"], "stub-embed", 3, pack_vector([0.0, 0.0, 1.0]),
+            ids["noise"], STUB_KEY, 3, pack_vector([0.0, 0.0, 1.0]),
         )
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
 
-        engine = RetrievalEngine(repo, Config(), embedder=stub)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=stub)
         results, mode = engine.search_with_mode(project_id, "pagination")
 
         assert mode == "hybrid"
@@ -944,14 +1024,14 @@ class TestHybridRetrieval:
         repo = Repository(memory_db)
         # lexical is an FTS hit AND the top vector hit -> must rank first.
         repo.upsert_embedding(
-            ids["lexical"], "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            ids["lexical"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
         repo.upsert_embedding(
-            ids["semantic"], "stub-embed", 3, pack_vector([0.95, 0.05, 0.0]),
+            ids["semantic"], STUB_KEY, 3, pack_vector([0.95, 0.05, 0.0]),
         )
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
 
-        engine = RetrievalEngine(repo, Config(), embedder=stub)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=stub)
         results, mode = engine.search_with_mode(project_id, "pagination")
 
         assert mode == "hybrid"
@@ -963,12 +1043,12 @@ class TestHybridRetrieval:
         project_id, ids = _seed_hybrid(memory_db)
         repo = Repository(memory_db)
         repo.upsert_embedding(
-            ids["semantic"], "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            ids["semantic"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
 
         engine = RetrievalEngine(
-            repo, Config(embeddings={"query_prefix": "search_query: "}),
+            repo, _stub_config(query_prefix="search_query: "),
             embedder=stub,
         )
         engine.search_with_mode(project_id, "pagination")
@@ -982,11 +1062,11 @@ class TestHybridRetrieval:
         repo = Repository(memory_db)
         for key in ("lexical", "semantic", "noise"):
             repo.upsert_embedding(
-                ids[key], "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+                ids[key], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
             )
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
 
-        engine = RetrievalEngine(repo, Config(), embedder=stub)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=stub)
         results, _mode = engine.search_with_mode(
             project_id, "pagination", types=["discovery"],
         )
@@ -1001,12 +1081,12 @@ class TestHybridRetrieval:
         project_id, ids = _seed_hybrid(memory_db)
         repo = Repository(memory_db)
         repo.upsert_embedding(
-            ids["semantic"], "stub-embed", 5,
+            ids["semantic"], STUB_KEY, 5,
             pack_vector([1.0, 0.0, 0.0, 0.0, 0.0]),
         )
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
 
-        engine = RetrievalEngine(repo, Config(), embedder=stub)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=stub)
         results, _mode = engine.search_with_mode(project_id, "pagination")
         assert [r.id for r in results] == [ids["lexical"]]
 
@@ -1016,11 +1096,11 @@ class TestHybridRetrieval:
         project_id, ids = _seed_hybrid(memory_db)
         repo = Repository(memory_db)
         repo.upsert_embedding(
-            ids["semantic"], "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            ids["semantic"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
 
-        engine = RetrievalEngine(repo, Config(), embedder=stub)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=stub)
         _results, mode = engine.search_with_mode(project_id, "")
         assert mode == "fts"
 
@@ -1041,14 +1121,14 @@ class TestSearchMode:
         from callmem.core.engine import MemoryEngine
         from callmem.mcp.tools import handle_search
 
-        engine = MemoryEngine(memory_db, Config())
+        engine = MemoryEngine(memory_db, _stub_config())
         entity = Entity(
             project_id=engine.project_id, type="decision",
             title="pagination cursor", content="cursor pagination",
         )
         _insert_entity(memory_db, entity)
         engine.repo.upsert_embedding(
-            entity.id, "stub-embed", 3, pack_vector([1.0, 0.0, 0.0]),
+            entity.id, STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
         )
 
         stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
@@ -1059,6 +1139,456 @@ class TestSearchMode:
 
         assert payload["mode"] == "hybrid"
         assert payload["results"]
+
+
+# ── Fix round 1 ──────────────────────────────────────────────────────
+
+
+class TestModelKeyInvalidation:
+    """Fix 3: document_prefix is part of the stored vector's identity."""
+
+    def test_key_folds_model_and_document_prefix(self) -> None:
+        from callmem.core.embeddings import embedding_model_key
+
+        config = Config(embeddings={
+            "model": "m", "document_prefix": "doc: ", "query_prefix": "q: ",
+        })
+        assert embedding_model_key(config) == "m|doc: "
+
+    def test_query_prefix_does_not_change_key(self) -> None:
+        from callmem.core.embeddings import embedding_model_key
+
+        base = {"model": "m", "document_prefix": "doc: "}
+        a = embedding_model_key(Config(embeddings={**base, "query_prefix": "x"}))
+        b = embedding_model_key(Config(embeddings={**base, "query_prefix": "y"}))
+        assert a == b
+
+    def test_prefix_change_makes_entities_backfillable(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_project(memory_db)
+        repo = Repository(memory_db)
+        entity = Entity(project_id=project_id, type="fact", title="t", content="c")
+        _insert_entity(memory_db, entity)
+
+        old = EntityEmbedder(
+            memory_db, _stub_config(document_prefix="old: "),
+            embedder=StubEmbedder({"t": [1.0, 0.0, 0.0]}),
+        )
+        assert old.backfill(project_id)["embedded"] == 1
+        assert repo.count_entities_missing_embeddings(project_id, old.model_key) == 0
+
+        new = EntityEmbedder(
+            memory_db, _stub_config(document_prefix="new: "),
+            embedder=StubEmbedder({"t": [0.0, 1.0, 0.0]}),
+        )
+        assert new.model_key != old.model_key
+        assert repo.count_entities_missing_embeddings(project_id, new.model_key) == 1
+        assert new.backfill(project_id)["embedded"] == 1
+
+    def test_stale_prefix_vectors_are_not_searched(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.core.retrieval import RetrievalEngine
+
+        project_id, ids = _seed_hybrid(memory_db)
+        repo = Repository(memory_db)
+        # Vector stored under a prefix the engine is no longer configured for.
+        repo.upsert_embedding(
+            ids["semantic"], "stub-embed|old: ", 3, pack_vector([1.0, 0.0, 0.0]),
+        )
+        engine = RetrievalEngine(
+            repo, _stub_config(document_prefix="new: "),
+            embedder=StubEmbedder({"pagination": [1.0, 0.0, 0.0]}),
+        )
+        results, mode = engine.search_with_mode(project_id, "pagination")
+
+        assert mode == "fts"
+        assert [r.id for r in results] == [ids["lexical"]]
+
+    def test_zero_candidates_is_logged_once(
+        self, memory_db: Database, caplog: Any,
+    ) -> None:
+        from callmem.core.retrieval import RetrievalEngine
+
+        project_id, ids = _seed_hybrid(memory_db)
+        repo = Repository(memory_db)
+        repo.upsert_embedding(
+            ids["semantic"], "stub-embed|old: ", 3, pack_vector([1.0, 0.0, 0.0]),
+        )
+        engine = RetrievalEngine(
+            repo, _stub_config(document_prefix="new: "),
+            embedder=StubEmbedder({"pagination": [1.0, 0.0, 0.0]}),
+        )
+        with caplog.at_level("WARNING"):
+            engine.search_with_mode(project_id, "pagination")
+            engine.search_with_mode(project_id, "pagination")
+
+        hits = [r for r in caplog.records if "none for the active key" in r.message]
+        assert len(hits) == 1
+
+
+class TestQueryTimeout:
+    """Fix 5: the search path must not inherit the 60s ingest budget."""
+
+    def test_query_uses_query_timeout(self, memory_db: Database) -> None:
+        from callmem.core.retrieval import RetrievalEngine
+
+        project_id, ids = _seed_hybrid(memory_db)
+        repo = Repository(memory_db)
+        repo.upsert_embedding(
+            ids["semantic"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
+        )
+        stub = StubEmbedder({"pagination": [1.0, 0.0, 0.0]})
+        engine = RetrievalEngine(
+            repo, _stub_config(timeout=60, query_timeout=2.5), embedder=stub,
+        )
+        engine.search_with_mode(project_id, "pagination")
+
+        assert stub.timeouts == [2.5]
+
+    def test_ingest_path_keeps_full_timeout(self, memory_db: Database) -> None:
+        project_id = _seed_project(memory_db)
+        entity = Entity(project_id=project_id, type="fact", title="t", content="c")
+        _insert_entity(memory_db, entity)
+
+        stub = StubEmbedder({"t": [1.0, 0.0, 0.0]})
+        worker = EntityEmbedder(
+            memory_db, _stub_config(timeout=60, query_timeout=2.5), embedder=stub,
+        )
+        worker.enqueue([entity.id], project_id)
+        worker.process_job(JobQueue(memory_db).dequeue(EMBED_JOB_TYPE))
+
+        # None = "use the backend's own (ingest) timeout".
+        assert stub.timeouts == [None]
+
+    def test_timeout_falls_back_to_fts_and_logs_once(
+        self, memory_db: Database, caplog: Any,
+    ) -> None:
+        import httpx
+
+        from callmem.core.retrieval import RetrievalEngine
+
+        project_id, ids = _seed_hybrid(memory_db)
+        repo = Repository(memory_db)
+        repo.upsert_embedding(
+            ids["semantic"], STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]),
+        )
+        hung = OllamaEmbedder(model=STUB_MODEL)
+        engine = RetrievalEngine(repo, _stub_config(), embedder=hung)
+
+        with caplog.at_level("WARNING"), patch(
+            "httpx.post", side_effect=httpx.ReadTimeout("hung"),
+        ):
+            first, mode = engine.search_with_mode(project_id, "pagination")
+            engine.search_with_mode(project_id, "pagination")
+
+        assert mode == "fts"
+        assert [r.id for r in first] == [ids["lexical"]]
+        hits = [r for r in caplog.records if "timed out" in r.message]
+        assert len(hits) == 1
+
+    def test_ollama_embed_passes_timeout_through(self) -> None:
+        embedder = OllamaEmbedder()
+        resp = MagicMock()
+        resp.json.return_value = {"embeddings": [[1.0, 0.0]]}
+        resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=resp) as post:
+            embedder.embed(["a"], timeout=1.5)
+        assert post.call_args.kwargs["timeout"] == 1.5
+
+    def test_openai_compat_embed_passes_timeout_through(self) -> None:
+        embedder = OpenAICompatEmbedder(api_key="k")
+        resp = MagicMock()
+        resp.json.return_value = {"data": [{"index": 0, "embedding": [1.0, 0.0]}]}
+        resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=resp) as post:
+            embedder.embed(["a"], timeout=1.5)
+        assert post.call_args.kwargs["timeout"] == 1.5
+
+
+class TestEmptyVectorRejection:
+    """Fix 2: an empty inner vector must be a backend failure, not a skip."""
+
+    def test_ollama_rejects_empty_vector(self) -> None:
+        resp = MagicMock()
+        resp.json.return_value = {"embeddings": [[]]}
+        resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=resp):
+            assert OllamaEmbedder().embed(["a"]) is None
+
+    def test_ollama_rejects_mixed_dimensions(self) -> None:
+        resp = MagicMock()
+        resp.json.return_value = {"embeddings": [[1.0, 0.0], [1.0, 0.0, 0.0]]}
+        resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=resp):
+            assert OllamaEmbedder().embed(["a", "b"]) is None
+
+    def test_ollama_rejects_non_numeric_vector(self) -> None:
+        resp = MagicMock()
+        resp.json.return_value = {"embeddings": [["oops"]]}
+        resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=resp):
+            assert OllamaEmbedder().embed(["a"]) is None
+
+    def test_openai_compat_rejects_empty_vector(self) -> None:
+        resp = MagicMock()
+        resp.json.return_value = {"data": [{"index": 0, "embedding": []}]}
+        resp.raise_for_status.return_value = None
+        with patch("httpx.post", return_value=resp):
+            assert OpenAICompatEmbedder(api_key="k").embed(["a"]) is None
+
+    def test_backfill_stops_instead_of_looping_forever(
+        self, memory_db: Database,
+    ) -> None:
+        """The regression this fix exists for: a 0-write pass must not repeat."""
+        project_id = _seed_project(memory_db)
+        for i in range(3):
+            _insert_entity(memory_db, Entity(
+                project_id=project_id, type="fact", title=f"t{i}", content="c",
+            ))
+
+        stub = StubEmbedder({"t": [1.0, 0.0, 0.0]})
+        # A backend that returns the right count of empty vectors: writes
+        # nothing, leaves every row still "missing".
+        stub.embed = (  # type: ignore[assignment]
+            lambda texts, timeout=None: [[] for _ in texts]
+        )
+        worker = EntityEmbedder(memory_db, _stub_config(), embedder=stub)
+
+        result = worker.backfill(project_id, batch_size=1)
+
+        assert result["embedded"] == 0
+        assert result["stalled"] is True
+        assert result["remaining"] == 3
+
+
+class TestAvailabilityGate:
+    """Fix 7: don't queue embed jobs against a backend that isn't there."""
+
+    def test_enqueue_skipped_when_unavailable(self, memory_db: Database) -> None:
+        from callmem.core.embeddings import enqueue_embeddings
+
+        project_id = _seed_project(memory_db)
+        with _backend_down():
+            job_id = enqueue_embeddings(
+                JobQueue(memory_db), _stub_config(), ["e1"], project_id,
+            )
+        assert job_id is None
+        assert JobQueue(memory_db).get_pending_count(EMBED_JOB_TYPE) == 0
+
+    def test_enqueue_proceeds_when_available(self, memory_db: Database) -> None:
+        from callmem.core.embeddings import enqueue_embeddings
+
+        project_id = _seed_project(memory_db)
+        with _backend_up():
+            job_id = enqueue_embeddings(
+                JobQueue(memory_db), _stub_config(), ["e1"], project_id,
+            )
+        assert job_id is not None
+        assert JobQueue(memory_db).get_pending_count(EMBED_JOB_TYPE) == 1
+
+    def test_enqueue_skipped_when_disabled(self, memory_db: Database) -> None:
+        from callmem.core.embeddings import enqueue_embeddings
+
+        project_id = _seed_project(memory_db)
+        with _backend_up():
+            job_id = enqueue_embeddings(
+                JobQueue(memory_db), _stub_config(enabled=False),
+                ["e1"], project_id,
+            )
+        assert job_id is None
+
+    def test_probe_is_cached_across_calls(self) -> None:
+        from callmem.core.embeddings import embedding_backend_available
+
+        config = _stub_config()
+        with patch.object(
+            OllamaEmbedder, "is_available", return_value=False,
+        ) as probe:
+            assert embedding_backend_available(config) is False
+            assert embedding_backend_available(config) is False
+        assert probe.call_count == 1
+
+    def test_negative_probe_rechecked_after_interval(self) -> None:
+        from callmem.core import embeddings as emb
+
+        config = _stub_config()
+        with patch.object(
+            OllamaEmbedder, "is_available", return_value=False,
+        ) as probe:
+            assert emb.embedding_backend_available(config) is False
+            # Age the cached negative past its recheck window.
+            key = next(iter(emb._availability))
+            available, checked_at = emb._availability[key]
+            emb._availability[key] = (
+                available, checked_at - emb.AVAILABILITY_RECHECK_SECONDS - 1,
+            )
+            assert emb.embedding_backend_available(config) is False
+        assert probe.call_count == 2
+
+    def test_unavailable_backend_logs_loudly(self, caplog: Any) -> None:
+        from callmem.core.embeddings import embedding_backend_available
+
+        with caplog.at_level("WARNING"), patch.object(
+            OllamaEmbedder, "is_available", return_value=False,
+        ):
+            embedding_backend_available(_stub_config())
+
+        assert any(
+            "Embedding backend unavailable" in r.message for r in caplog.records
+        )
+
+
+class TestDirectEntityCreationCoverage:
+    """Fix 1: every entity-creation path must reach the embedding queue."""
+
+    def test_typed_event_entity_is_enqueued(self, memory_db: Database) -> None:
+        from callmem.core.engine import MemoryEngine
+
+        engine = MemoryEngine(memory_db, _stub_config())
+        engine.start_session()
+        with _backend_up():
+            engine.ingest_one("decision", "We will use cursor pagination")
+
+        entities = engine.repo.get_entities(engine.project_id)
+        assert len(entities) == 1
+
+        queue = JobQueue(memory_db)
+        assert queue.get_pending_count(EMBED_JOB_TYPE) == 1
+        job = queue.dequeue(EMBED_JOB_TYPE)
+        assert job.payload["entity_ids"] == [entities[0]["id"]]
+        assert job.payload["project_id"] == engine.project_id
+
+    def test_typed_event_respects_availability_gate(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.core.engine import MemoryEngine
+
+        engine = MemoryEngine(memory_db, _stub_config())
+        engine.start_session()
+        with _backend_down():
+            engine.ingest_one("decision", "We will use cursor pagination")
+
+        assert len(engine.repo.get_entities(engine.project_id)) == 1
+        assert JobQueue(memory_db).get_pending_count(EMBED_JOB_TYPE) == 0
+
+    def test_reextraction_enqueues_embeddings(self, memory_db: Database) -> None:
+        from callmem.core.ollama import OllamaClient
+        from callmem.core.reextraction import ReExtractor
+        from callmem.models.events import Event
+        from callmem.models.sessions import Session
+
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        event = Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="we chose RRF for fusion",
+        )
+        repo.insert_event(event)
+
+        ollama = OllamaClient()
+        reex = ReExtractor(memory_db, ollama, _stub_config())
+        response = (
+            '{"decisions": [{"title": "Use RRF", "content": "fuse rankings"}],'
+            ' "todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        with patch.object(ollama, "_generate", return_value=response), _backend_up():
+            result = reex.run(project.id)
+
+        assert result["entities_created"] == 1
+        queue = JobQueue(memory_db)
+        assert queue.get_pending_count(EMBED_JOB_TYPE) == 1
+        job = queue.dequeue(EMBED_JOB_TYPE)
+        assert job.payload["project_id"] == project.id
+        assert len(job.payload["entity_ids"]) == 1
+
+    def test_reextraction_respects_availability_gate(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.core.ollama import OllamaClient
+        from callmem.core.reextraction import ReExtractor
+        from callmem.models.events import Event
+        from callmem.models.sessions import Session
+
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        repo.insert_event(Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="we chose RRF for fusion",
+        ))
+
+        ollama = OllamaClient()
+        reex = ReExtractor(memory_db, ollama, _stub_config())
+        response = (
+            '{"decisions": [{"title": "Use RRF", "content": "fuse rankings"}],'
+            ' "todos": [], "facts": [], "failures": [], "discoveries": []}'
+        )
+        with patch.object(ollama, "_generate", return_value=response), \
+                _backend_down():
+            reex.run(project.id)
+
+        assert JobQueue(memory_db).get_pending_count(EMBED_JOB_TYPE) == 0
+
+
+class TestMissingEmbeddingCount:
+    """Fix 6: counting must not materialise rows or cap at a LIMIT."""
+
+    def test_count_matches_reality_past_10k(self, memory_db: Database) -> None:
+        project_id = _seed_project(memory_db)
+        repo = Repository(memory_db)
+        conn = memory_db.connect()
+        try:
+            rows = []
+            for i in range(10_500):
+                e = Entity(
+                    project_id=project_id, type="fact",
+                    title=f"t{i}", content="c",
+                )
+                r = e.to_row()
+                rows.append((
+                    r["id"], r["project_id"], r["type"], r["title"],
+                    r["content"], r["created_at"], r["updated_at"],
+                ))
+            conn.executemany(
+                "INSERT INTO entities (id, project_id, type, title, content, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert repo.count_entities_missing_embeddings(project_id, STUB_KEY) == 10_500
+
+    def test_count_excludes_archived_and_embedded(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_project(memory_db)
+        repo = Repository(memory_db)
+        live = Entity(project_id=project_id, type="fact", title="a", content="c")
+        done = Entity(project_id=project_id, type="fact", title="b", content="c")
+        arch = Entity(project_id=project_id, type="fact", title="c", content="c")
+        for e in (live, done, arch):
+            _insert_entity(memory_db, e)
+        repo.upsert_embedding(done.id, STUB_KEY, 3, pack_vector([1.0, 0.0, 0.0]))
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE entities SET archived_at = datetime('now') WHERE id = ?",
+                (arch.id,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert repo.count_entities_missing_embeddings(project_id, STUB_KEY) == 1
 
 
 def _tool_payload(content: Any) -> dict[str, Any]:
@@ -1101,7 +1631,7 @@ class TestVectorSearchPerformance:
                 vec = [random.gauss(0, 1) for _ in range(dim)]
                 norm = math.sqrt(sum(x * x for x in vec)) or 1.0
                 embed_rows.append((
-                    row["id"], "perf-model", dim,
+                    row["id"], "perf-model|", dim,
                     pack_vector([x / norm for x in vec]),
                 ))
             conn.executemany(
@@ -1131,10 +1661,12 @@ class TestVectorSearchPerformance:
             def is_available(self) -> bool:
                 return True
 
-            def embed(self, texts: list[str]) -> list[list[float]]:
+            def embed(
+                self, texts: list[str], timeout: float | None = None,
+            ) -> list[list[float]]:
                 return [list(query_vec) for _ in texts]
 
-        config = Config(embeddings={"model": "perf-model", "min_similarity": -1.0})
+        config = _stub_config(model="perf-model", min_similarity=-1.0)
         engine = RetrievalEngine(repo, config, embedder=_PerfEmbedder())
 
         start = time.perf_counter()

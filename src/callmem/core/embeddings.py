@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import struct
+import time
 from abc import ABC, abstractmethod
 from operator import mul
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,12 @@ EMBED_JOB_TYPE = "embed_entities"
 #: Cap on the text handed to the embedding model per entity. Embedding
 #: models truncate anyway; doing it here keeps request bodies bounded.
 MAX_EMBED_CHARS = 2000
+
+#: How long a negative availability probe is trusted before re-checking.
+#: Bounds the damage of enabled-by-default config on a machine that never
+#: pulled an embedding model, without permanently giving up on a backend
+#: that comes up later.
+AVAILABILITY_RECHECK_SECONDS = 3600.0
 
 
 # ── Vector helpers ───────────────────────────────────────────────────
@@ -123,6 +130,44 @@ def entity_embedding_text(
 # ── Backends ─────────────────────────────────────────────────────────
 
 
+def _validate_vectors(
+    raw: Any, expected: int, backend: str,
+) -> list[list[float]] | None:
+    """Coerce a backend payload into vectors, or None if it is unusable.
+
+    Rejects the shapes that would otherwise poison storage silently: the
+    wrong number of vectors, an empty inner vector, or vectors of
+    inconsistent dimensionality. An empty vector is especially dangerous —
+    it writes a zero-length blob that no query can ever match, and (before
+    this check) let the backfill loop re-fetch the same rows forever.
+    """
+    if not isinstance(raw, list) or len(raw) != expected:
+        logger.warning(
+            "%s embed returned %s vector(s) for %d input(s)",
+            backend, len(raw) if isinstance(raw, list) else "no", expected,
+        )
+        return None
+
+    vectors: list[list[float]] = []
+    for item in raw:
+        if not isinstance(item, list) or not item:
+            logger.warning("%s embed returned an empty vector", backend)
+            return None
+        try:
+            vectors.append([float(x) for x in item])
+        except (TypeError, ValueError):
+            logger.warning("%s embed returned a non-numeric vector", backend)
+            return None
+
+    dims = {len(v) for v in vectors}
+    if len(dims) != 1:
+        logger.warning(
+            "%s embed returned mixed dimensions %s", backend, sorted(dims),
+        )
+        return None
+    return vectors
+
+
 class Embedder(ABC):
     """Minimal embedding backend interface.
 
@@ -134,8 +179,15 @@ class Embedder(ABC):
     model: str
 
     @abstractmethod
-    def embed(self, texts: list[str]) -> list[list[float]] | None:
-        """Embed a batch of texts, or return None on backend failure."""
+    def embed(
+        self, texts: list[str], timeout: float | None = None,
+    ) -> list[list[float]] | None:
+        """Embed a batch of texts, or return None on backend failure.
+
+        ``timeout`` overrides the backend's configured timeout for this
+        call only — the interactive search path uses a much tighter
+        budget than ingest/backfill, which can afford to wait.
+        """
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -171,14 +223,16 @@ class OllamaEmbedder(Embedder):
             for n in names
         )
 
-    def embed(self, texts: list[str]) -> list[list[float]] | None:
+    def embed(
+        self, texts: list[str], timeout: float | None = None,
+    ) -> list[list[float]] | None:
         if not texts:
             return []
         try:
             resp = httpx.post(
                 f"{self.endpoint}/api/embed",
                 json={"model": self.model, "input": texts},
-                timeout=self.timeout,
+                timeout=self.timeout if timeout is None else timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -186,15 +240,7 @@ class OllamaEmbedder(Embedder):
             logger.warning("Ollama embed failed: %s", exc)
             return None
 
-        vectors = data.get("embeddings")
-        if not isinstance(vectors, list) or len(vectors) != len(texts):
-            logger.warning(
-                "Ollama embed returned %s vectors for %d input(s)",
-                len(vectors) if isinstance(vectors, list) else "no",
-                len(texts),
-            )
-            return None
-        return [[float(x) for x in v] for v in vectors]
+        return _validate_vectors(data.get("embeddings"), len(texts), "Ollama")
 
 
 class OpenAICompatEmbedder(Embedder):
@@ -215,7 +261,9 @@ class OpenAICompatEmbedder(Embedder):
     def is_available(self) -> bool:
         return bool(self.api_key) and self.embed(["ping"]) is not None
 
-    def embed(self, texts: list[str]) -> list[list[float]] | None:
+    def embed(
+        self, texts: list[str], timeout: float | None = None,
+    ) -> list[list[float]] | None:
         if not texts:
             return []
         if not self.api_key:
@@ -229,7 +277,7 @@ class OpenAICompatEmbedder(Embedder):
                     "Content-Type": "application/json",
                     "Authorization": f"Bearer {self.api_key}",
                 },
-                timeout=self.timeout,
+                timeout=self.timeout if timeout is None else timeout,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -238,16 +286,35 @@ class OpenAICompatEmbedder(Embedder):
             return None
 
         items = data.get("data")
-        if not isinstance(items, list) or len(items) != len(texts):
+        if not isinstance(items, list):
             logger.warning("OpenAI-compat embed returned an unusable payload")
             return None
         # The spec allows results in any order; `index` is authoritative.
         try:
             ordered = sorted(items, key=lambda d: int(d.get("index", 0)))
-            return [[float(x) for x in d["embedding"]] for d in ordered]
+            raw = [d["embedding"] for d in ordered]
         except (KeyError, TypeError, ValueError) as exc:
             logger.warning("OpenAI-compat embed payload malformed: %s", exc)
             return None
+
+        return _validate_vectors(raw, len(texts), "OpenAI-compat")
+
+
+def embedding_model_key(config: Config) -> str:
+    """The identity a stored vector is keyed by, written to `embeddings.model`.
+
+    A stored vector is fully determined by the model *and* the document
+    prefix that was prepended before embedding, so both belong in the key.
+    Changing either makes every existing vector a non-match for
+    ``list_entities_missing_embeddings`` and ``load_embedding_candidates``,
+    which auto-invalidates the old corpus: stale-prefix vectors stop being
+    searched and their entities become backfill candidates again.
+
+    ``query_prefix`` is deliberately *not* part of the key — it is applied
+    fresh to every query, so changing it cannot leave stale data behind.
+    """
+    settings = config.embeddings
+    return f"{settings.model}|{settings.document_prefix}"
 
 
 def create_embedder(config: Config) -> Embedder | None:
@@ -280,6 +347,94 @@ def create_embedder(config: Config) -> Embedder | None:
     )
 
 
+# ── Availability gate ────────────────────────────────────────────────
+
+#: Cached availability probes, keyed by backend identity so two projects
+#: pointing at the same ollama share one answer. Value is (available, when).
+_availability: dict[tuple[str, str, str], tuple[bool, float]] = {}
+
+
+def reset_availability_cache() -> None:
+    """Clear the cached availability probes (tests, and config reloads)."""
+    _availability.clear()
+
+
+def embedding_backend_available(config: Config) -> bool:
+    """Whether the embedding backend is reachable, with a cached probe.
+
+    The default config is ``enabled = true, backend = "ollama"``, so on any
+    machine that never pulled an embedding model every extraction would
+    otherwise queue a job that fails three times and lands in `failed` —
+    quietly tripping the pipeline-health banner fleet-wide. Gating the
+    enqueue on a real probe keeps the queue clean instead.
+
+    Negative results are cached for ``AVAILABILITY_RECHECK_SECONDS`` so a
+    backend that comes up later is picked up without a restart, and a
+    backend that is down does not get probed on every single extraction.
+    Positive results are cached indefinitely: if a healthy backend later
+    dies, the job itself fails and the queue's backoff handles it.
+    """
+    settings = config.embeddings
+    if not settings.enabled or settings.backend == "none":
+        return False
+
+    embedder = create_embedder(config)
+    if embedder is None:
+        return False
+
+    key = (
+        settings.backend,
+        getattr(embedder, "endpoint", ""),
+        settings.model,
+    )
+    cached = _availability.get(key)
+    now = time.monotonic()
+    if cached is not None:
+        available, checked_at = cached
+        if available or (now - checked_at) < AVAILABILITY_RECHECK_SECONDS:
+            return available
+
+    available = embedder.is_available()
+    _availability[key] = (available, now)
+    if not available:
+        logger.warning(
+            "Embedding backend unavailable (%s, model=%s at %s) — entity "
+            "embeddings will not be queued and search stays FTS-only. "
+            "For ollama run: ollama pull %s. Re-checking in %d minutes.",
+            settings.backend, settings.model, key[1], settings.model,
+            int(AVAILABILITY_RECHECK_SECONDS // 60),
+        )
+    else:
+        logger.info(
+            "Embedding backend available (%s, model=%s)",
+            settings.backend, settings.model,
+        )
+    return available
+
+
+def enqueue_embeddings(
+    queue: JobQueue,
+    config: Config,
+    entity_ids: list[str],
+    project_id: str,
+) -> str | None:
+    """Queue an embedding job for newly-created entities, if that makes sense.
+
+    Single choke point for every entity-creation path (LLM extraction,
+    directly-typed events, re-extraction) so the enabled check and the
+    availability gate can never be applied inconsistently. Returns the job
+    ID, or None when nothing was queued.
+    """
+    if not entity_ids or not config.embeddings.enabled:
+        return None
+    if not embedding_backend_available(config):
+        return None
+    return queue.enqueue(
+        EMBED_JOB_TYPE,
+        {"entity_ids": list(entity_ids), "project_id": project_id},
+    )
+
+
 # ── Worker ───────────────────────────────────────────────────────────
 
 
@@ -304,11 +459,20 @@ class EntityEmbedder:
         self.embedder = (
             embedder if embedder is not None else create_embedder(config)
         )
+        # Stored vectors are keyed by model *and* document prefix, so a
+        # prefix change invalidates the old corpus instead of silently
+        # mixing incompatible vectors (see embedding_model_key).
+        self.model_key = embedding_model_key(config)
 
     # ── Enqueue ──────────────────────────────────────────────────────
 
     def enqueue(self, entity_ids: list[str], project_id: str) -> str:
-        """Queue an embedding job for freshly-created entities."""
+        """Queue an embedding job for freshly-created entities.
+
+        Unconditional by design — this is the explicit "embed these" call.
+        Automatic entity-creation paths go through ``enqueue_embeddings``,
+        which applies the enabled check and the availability gate.
+        """
         return self.queue.enqueue(
             EMBED_JOB_TYPE,
             {"entity_ids": list(entity_ids), "project_id": project_id},
@@ -373,7 +537,7 @@ class EntityEmbedder:
 
         Resumable by construction: each pass re-queries what is still
         missing, so an interrupted run simply picks up where it left off.
-        Returns ``{embedded, remaining, disabled, model}``.
+        Returns ``{embedded, remaining, disabled, model, stalled}``.
         """
         from callmem.core.repository import Repository
 
@@ -381,34 +545,46 @@ class EntityEmbedder:
         if self.embedder is None:
             return {
                 "embedded": 0,
-                "remaining": len(
-                    repo.list_entities_missing_embeddings(project_id, "")
+                "remaining": repo.count_entities_missing_embeddings(
+                    project_id, "",
                 ),
                 "disabled": True,
                 "model": None,
+                "stalled": False,
             }
 
-        model = self.embedder.model
         size = max(1, batch_size or self.config.embeddings.batch_size)
         embedded = 0
+        stalled = False
 
         while limit is None or embedded < limit:
             want = size if limit is None else min(size, limit - embedded)
             rows = repo.list_entities_missing_embeddings(
-                project_id, model, limit=want,
+                project_id, self.model_key, limit=want,
             )
             if not rows:
                 break
-            embedded += self._embed_rows(repo, rows)
+            written = self._embed_rows(repo, rows)
+            if written == 0:
+                # The rows are still missing, so the next pass would fetch
+                # exactly the same ones — forever. Stop loudly instead.
+                stalled = True
+                logger.error(
+                    "Backfill stalled: the backend accepted %d entity text(s) "
+                    "but produced no usable vectors. Giving up this run to "
+                    "avoid an endless retry loop.", len(rows),
+                )
+                break
+            embedded += written
 
-        remaining = len(
-            repo.list_entities_missing_embeddings(project_id, model, limit=10_000)
-        )
         return {
             "embedded": embedded,
-            "remaining": remaining,
+            "remaining": repo.count_entities_missing_embeddings(
+                project_id, self.model_key,
+            ),
             "disabled": False,
-            "model": model,
+            "model": self.model_key,
+            "stalled": stalled,
         }
 
     # ── Internals ────────────────────────────────────────────────────
@@ -417,7 +593,7 @@ class EntityEmbedder:
         if self.embedder is None:
             return True
         row = repo.get_embedding(entity_id)
-        return row is not None and row["model"] == self.embedder.model
+        return row is not None and row["model"] == self.model_key
 
     def _embed_rows(self, repo: Any, rows: list[dict[str, Any]]) -> int:
         """Embed a batch of entity rows and persist the vectors."""
@@ -434,12 +610,15 @@ class EntityEmbedder:
             )
             raise RuntimeError(msg)
 
-        # strict: backends validate the count before returning, so a
-        # mismatch here is a contract violation worth failing the job over.
+        # strict: backends validate count and per-vector shape before
+        # returning, so a mismatch here is a contract violation worth
+        # failing the job over.
+        written = 0
         for row, vector in zip(rows, vectors, strict=True):
             if not vector:
                 continue
             repo.upsert_embedding(
-                row["id"], self.embedder.model, len(vector), pack_vector(vector),
+                row["id"], self.model_key, len(vector), pack_vector(vector),
             )
-        return sum(1 for v in vectors if v)
+            written += 1
+        return written

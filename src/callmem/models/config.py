@@ -67,10 +67,17 @@ class EmbeddingsConfig(BaseModel):
     ``query_prefix`` / ``document_prefix`` are the asymmetric task prefixes
     nomic-embed-text is trained on. They are not cosmetic: on the probe
     corpus, adding them moved top-1 retrieval from 1/3 to 3/3 correct.
-    Set both to "" for models that do not use prefixes. Changing either
-    after entities are embedded makes stored vectors inconsistent with
-    queries — re-run `callmem embed --backfill` against a fresh model name
-    if you change them.
+    Set both to "" for models that do not use prefixes. ``document_prefix``
+    is part of the stored vector's identity (see
+    ``embeddings.embedding_model_key``), so changing it auto-invalidates
+    the existing corpus: those vectors stop being searched and their
+    entities become backfill candidates again. ``query_prefix`` is applied
+    fresh per query and leaves no stale data behind.
+
+    ``timeout`` covers ingest and backfill, which can afford to wait.
+    ``query_timeout`` covers the one embed call on the interactive search
+    path — a hung backend must cost a search a few seconds, not a minute,
+    so on timeout the query is served from FTS alone.
     """
 
     enabled: bool = True
@@ -78,6 +85,7 @@ class EmbeddingsConfig(BaseModel):
     model: str = "nomic-embed-text"
     endpoint: str | None = None
     timeout: int = 60
+    query_timeout: float = 3.0
     batch_size: int = 32
     candidate_limit: int = 500
     min_similarity: float = 0.45

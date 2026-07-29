@@ -205,17 +205,13 @@ class EntityExtractor:
         worst case is these entities stay FTS-only until the next
         ``callmem embed --backfill``.
         """
-        if self.config is None or not self.config.embeddings.enabled:
+        if self.config is None:
             return
         try:
-            from callmem.core.embeddings import EMBED_JOB_TYPE
+            from callmem.core.embeddings import enqueue_embeddings
 
-            self.queue.enqueue(
-                EMBED_JOB_TYPE,
-                {
-                    "entity_ids": [e.id for e in entities],
-                    "project_id": project_id,
-                },
+            enqueue_embeddings(
+                self.queue, self.config, [e.id for e in entities], project_id,
             )
         except Exception as exc:
             logger.warning("Failed to enqueue embedding job: %s", exc)

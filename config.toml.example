@@ -46,7 +46,11 @@ model = "nomic-embed-text"
 # Overrides the backend's own endpoint when set; null uses
 # [ollama].endpoint / [openai_compat].endpoint
 endpoint = null
+# Ingest/backfill budget in seconds
 timeout = 60
+# Interactive search budget in seconds. A hung backend costs a search this
+# long, then the query is served from full-text search alone.
+query_timeout = 3.0
 # Entities per embedding request
 batch_size = 32
 # How many stored vectors one query scores, most-recently-updated first.

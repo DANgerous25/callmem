@@ -184,24 +184,37 @@ CREATE TABLE schema_version (
 );
 ```
 
-### `embeddings` (v2 — optional)
+### `embeddings` (v18)
 
-Vector embeddings for semantic search. Not created in v1.
+Entity vectors backing hybrid (FTS + semantic) search. Created by
+migration 018 on every database — the table always exists; it simply
+stays empty until an embedding backend is reachable.
 
 ```sql
--- v2: Created only when embeddings backend is configured
 CREATE TABLE embeddings (
-    id          TEXT PRIMARY KEY,  -- ULID
-    source_id   TEXT NOT NULL,     -- ID of the entity/event/summary being embedded
-    source_type TEXT NOT NULL,     -- entity, event, summary
-    model       TEXT NOT NULL,     -- Embedding model name
-    vector      BLOB NOT NULL,     -- Raw float32 vector bytes
-    dimensions  INTEGER NOT NULL,
-    created_at  TEXT NOT NULL
+    entity_id  TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+    model      TEXT NOT NULL,     -- "<model>|<document_prefix>" identity key
+    dim        INTEGER NOT NULL,  -- vector length; LENGTH(vector) = dim * 4
+    vector     BLOB NOT NULL,     -- little-endian packed float32
+    created_at TEXT NOT NULL
 );
-CREATE INDEX idx_embeddings_source ON embeddings(source_id, source_type);
 CREATE INDEX idx_embeddings_model ON embeddings(model);
 ```
+
+Notes:
+
+- **Entities only.** Events and summaries are not embedded; entity search
+  is where semantic recall pays off.
+- **One row per entity**, replaced in place (`entity_id` is the PK).
+  `ON DELETE CASCADE` means vectors never outlive their entity.
+- **`model` is a composite identity key**, `"<model>|<document_prefix>"`.
+  A stored vector depends on both, so changing either makes existing rows
+  a non-match: they stop being searched and their entities become
+  `callmem embed --backfill` candidates again.
+- **Plain table, not `sqlite-vec`.** A `vec0` virtual table would make
+  every database upgrade depend on a loadable SQLite extension; scoring
+  runs in Python over a recency-prefiltered candidate set instead
+  (~40ms for the 500-candidate default on a 10k-entity corpus).
 
 Note: For v2, consider using `sqlite-vec` extension for native vector operations, or keep vectors in a separate FAISS/hnswlib index with SQLite as the metadata store.
 

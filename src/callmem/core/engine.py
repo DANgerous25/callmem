@@ -293,6 +293,22 @@ class MemoryEngine:
             self.repo.create_entity(entity)
         except Exception as exc:
             logger.warning("Direct entity creation failed for %s: %s", event.id[:8], exc)
+            return
+
+        # Directly-typed events bypass LLM extraction entirely, so this is
+        # the only place they can be queued for embedding — without it they
+        # would stay FTS-only forever while extracted entities got vectors.
+        try:
+            from callmem.core.embeddings import enqueue_embeddings
+
+            enqueue_embeddings(
+                self.queue, self.config, [entity.id], event.project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to enqueue embedding for entity %s: %s",
+                entity.id[:8], exc,
+            )
 
     # ── Read ─────────────────────────────────────────────────────────
 
