@@ -44,6 +44,7 @@ class TestToolDefinitions:
             "mem_search_by_file", "mem_file_context",
             "mem_check_context", "mem_compress_context",
             "mem_vault_review", "mem_mark_stale", "mem_mark_current",
+            "mem_resolve",
             "mem_task_create", "mem_task_update", "mem_task_list",
             "mem_task_tree",
             "mem_eval", "mem_eval_summary",
@@ -243,6 +244,40 @@ class TestGetEntities:
         data = _parse_result(result)
         assert data["count"] == 1
 
+    def test_ambiguous_short_id_reported_as_error_not_guessed(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.models.entities import Entity
+
+        engine = _make_engine(memory_db)
+        e1 = Entity(
+            id="AAAAAAAAAAAAAAAAAA01234567",
+            project_id=engine.project_id, type="fact",
+            title="collider one", content="c",
+        )
+        e2 = Entity(
+            id="BBBBBBBBBBBBBBBBBB01234567",
+            project_id=engine.project_id, type="fact",
+            title="collider two", content="c",
+        )
+        engine.repo.create_entity(e1)
+        engine.repo.create_entity(e2)
+
+        result = handle_get_entities(engine, {"ids": ["01234567"]})
+        data = _parse_result(result)
+        # Never silently guesses one of the two matches.
+        assert data["count"] == 0
+        assert data.get("errors")
+        error_text = data["errors"][0]["error"]
+        assert e1.id in error_text
+        assert e2.id in error_text
+
+    def test_unknown_id_silently_skipped(self, memory_db: Database) -> None:
+        result = handle_get_entities(_make_engine(memory_db), {"ids": ["nonexistent"]})
+        data = _parse_result(result)
+        assert data["count"] == 0
+        assert not data.get("errors")
+
 
 class TestFileContextTool:
     def _seed_entity_with_file(
@@ -329,6 +364,41 @@ class TestPin:
         engine = _make_engine(memory_db)
         with pytest.raises(ValueError, match="Entity not found"):
             handle_pin(engine, {"entity_id": "nonexistent", "pinned": True})
+
+    def test_pin_accepts_short_id(self, memory_db: Database) -> None:
+        from callmem.models.entities import Entity
+
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="pin me", content="c",
+        )
+        engine.repo.create_entity(entity)
+
+        result = handle_pin(engine, {"entity_id": entity.id[-8:], "pinned": True})
+        data = _parse_result(result)
+        assert data["entity_id"] == entity.id
+        assert data["pinned"] is True
+
+    def test_pin_ambiguous_short_id_raises(self, memory_db: Database) -> None:
+        from callmem.models.entities import Entity
+
+        engine = _make_engine(memory_db)
+        e1 = Entity(
+            id="AAAAAAAAAAAAAAAAAA01234567",
+            project_id=engine.project_id, type="fact",
+            title="collider one", content="c",
+        )
+        e2 = Entity(
+            id="BBBBBBBBBBBBBBBBBB01234567",
+            project_id=engine.project_id, type="fact",
+            title="collider two", content="c",
+        )
+        engine.repo.create_entity(e1)
+        engine.repo.create_entity(e2)
+
+        with pytest.raises(ValueError, match="ambiguous"):
+            handle_pin(engine, {"entity_id": "01234567", "pinned": True})
 
 
 class TestCheckContext:

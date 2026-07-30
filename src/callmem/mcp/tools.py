@@ -12,10 +12,17 @@ from typing import TYPE_CHECKING, Any
 
 from mcp.types import TextContent, Tool
 
+from callmem.core.engine import AmbiguousEntityIdError, EntityNotFoundError
+
 if TYPE_CHECKING:
     from mcp.server import Server
 
     from callmem.core.engine import MemoryEngine
+
+# Real EntityStatus values (see models/entities.py) that make sense as a
+# closing state for mem_resolve. "open" and "unresolved" are excluded --
+# resolving TO an open state isn't "resolving".
+_RESOLVE_STATUSES = ("done", "resolved", "cancelled")
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -419,6 +426,42 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mem_resolve",
+        "description": (
+            "Close out entities (TODOs, failures) by setting their "
+            "status to done/resolved/cancelled. This is the tool for "
+            "finishing work -- mem_mark_stale only hides an entity "
+            "without recording that it was completed. Also clears any "
+            "stale flag left over from a mistaken mem_mark_stale call, "
+            "so the entity's record stays coherent. Accepts full ULIDs "
+            "or the 8-char short IDs shown in briefings."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["entity_ids"],
+            "properties": {
+                "entity_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Entity IDs to resolve. Full ULIDs or the short "
+                        "form shown in briefings (e.g. 'F5AVDQ25')."
+                    ),
+                },
+                "status": {
+                    "type": "string",
+                    "enum": list(_RESOLVE_STATUSES),
+                    "description": "Target status (default: 'done')",
+                    "default": "done",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note about how/why it was resolved",
+                },
+            },
+        },
+    },
+    {
         "name": "mem_task_create",
         "description": (
             "Create a task (optionally with parent_id for subtasks). "
@@ -670,7 +713,8 @@ def _make_error(message: str) -> list[TextContent]:
 # callable, so the server is a safe, query-only view.
 _WRITE_TOOLS: frozenset[str] = frozenset({
     "mem_session_start", "mem_session_end", "mem_ingest", "mem_pin",
-    "mem_mark_stale", "mem_mark_current", "mem_task_create", "mem_task_update",
+    "mem_mark_stale", "mem_mark_current", "mem_resolve",
+    "mem_task_create", "mem_task_update",
     "mem_compress_context", "mem_set_overview", "mem_rewind_create",
     "mem_rewind_restore", "mem_vault_review",
 })
@@ -781,7 +825,8 @@ def handle_get_tasks(engine: MemoryEngine, args: dict[str, Any]) -> list[TextCon
 def handle_pin(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
     entity_id = args.get("entity_id", "")
     pinned = args.get("pinned", True)
-    entity = engine.set_pinned(entity_id, pinned)
+    resolved_id = engine.resolve_entity_id(entity_id)
+    entity = engine.set_pinned(resolved_id, pinned)
     return _make_result({
         "entity_id": entity["id"],
         "pinned": bool(entity.get("pinned", 0)),
@@ -857,13 +902,22 @@ def handle_get_entities(
 ) -> list[TextContent]:
     ids = args.get("ids", [])
     rows = []
+    errors = []
     for raw_eid in ids:
         eid = (raw_eid or "").lstrip("#").strip()
         if not eid:
             continue
-        row = engine.repo.get_entity(eid)
-        if row is None and len(eid) < 26:
-            row = engine.repo.get_entity_by_short_id(eid)
+        try:
+            full_id = engine.resolve_entity_id(eid)
+        except AmbiguousEntityIdError as exc:
+            # Never guess between multiple matches — surface it instead.
+            errors.append({"id": raw_eid, "error": str(exc)})
+            continue
+        except EntityNotFoundError:
+            # Preserve existing lenient behavior: an unresolvable id in a
+            # batch is silently skipped, not fatal to the whole request.
+            continue
+        row = engine.repo.get_entity(full_id)
         if row:
             rows.append(row)
 
@@ -881,7 +935,10 @@ def handle_get_entities(
         d["files"] = anchors_by_id.get(full_id, [])
         results.append(d)
 
-    return _make_result({"entities": results, "count": len(results)})
+    result = {"entities": results, "count": len(results)}
+    if errors:
+        result["errors"] = errors
+    return _make_result(result)
 
 
 def handle_search_by_file(
@@ -952,14 +1009,18 @@ def handle_mark_stale(
     reason = args.get("reason", "manual")
     if not entity_id:
         return _make_error("entity_id is required")
+    try:
+        resolved_id = engine.resolve_entity_id(entity_id)
+    except ValueError as exc:
+        return _make_error(str(exc))
     entity = engine.mark_stale(
-        entity_id, reason=reason,
+        resolved_id, reason=reason,
         superseded_by=args.get("superseded_by"),
     )
     if entity is None:
         return _make_error(f"Entity not found: {entity_id}")
     return _make_result({
-        "entity_id": entity_id,
+        "entity_id": resolved_id,
         "stale": bool(entity.get("stale", 0)),
         "reason": entity.get("staleness_reason"),
         "superseded_by": entity.get("superseded_by"),
@@ -972,13 +1033,62 @@ def handle_mark_current(
     entity_id = args.get("entity_id", "")
     if not entity_id:
         return _make_error("entity_id is required")
-    entity = engine.mark_current(entity_id)
+    try:
+        resolved_id = engine.resolve_entity_id(entity_id)
+    except ValueError as exc:
+        return _make_error(str(exc))
+    entity = engine.mark_current(resolved_id)
     if entity is None:
         return _make_error(f"Entity not found: {entity_id}")
     return _make_result({
-        "entity_id": entity_id,
+        "entity_id": resolved_id,
         "stale": bool(entity.get("stale", 0)),
     })
+
+
+def handle_resolve(
+    engine: MemoryEngine, args: dict[str, Any],
+) -> list[TextContent]:
+    entity_ids = args.get("entity_ids", [])
+    status = args.get("status", "done")
+    note = args.get("note")
+
+    if status not in _RESOLVE_STATUSES:
+        return _make_error(
+            f"Invalid status '{status}'. Must be one of: "
+            + ", ".join(_RESOLVE_STATUSES)
+        )
+
+    results: list[dict[str, Any]] = []
+    for raw_id in entity_ids:
+        eid = (raw_id or "").lstrip("#").strip()
+        if not eid:
+            results.append({"id": raw_id, "error": "entity id is required"})
+            continue
+        try:
+            resolved_id = engine.resolve_entity_id(eid)
+        except ValueError as exc:
+            results.append({"id": raw_id, "error": str(exc)})
+            continue
+
+        entity = engine.resolve_entity(resolved_id, status, note=note)
+        if entity is None:
+            results.append(
+                {"id": raw_id, "error": f"Entity not found: {raw_id}"}
+            )
+            continue
+
+        entry = {
+            "id": resolved_id,
+            "old_status": entity.get("old_status"),
+            "new_status": entity.get("status"),
+            "resolved_at": entity.get("resolved_at"),
+        }
+        if entity.get("unchanged"):
+            entry["unchanged"] = True
+        results.append(entry)
+
+    return _make_result({"results": results, "count": len(results)})
 
 
 # ── Task graph handlers (A1) ────────────────────────────────────────
@@ -1166,6 +1276,7 @@ _HANDLERS: dict[str, Any] = {
     "mem_vault_review": handle_vault_review,
     "mem_mark_stale": handle_mark_stale,
     "mem_mark_current": handle_mark_current,
+    "mem_resolve": handle_resolve,
     "mem_task_create": handle_task_create,
     "mem_task_update": handle_task_update,
     "mem_task_list": handle_task_list,

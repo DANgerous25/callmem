@@ -122,6 +122,28 @@ Pin or unpin an entity (prevents compaction, ensures it appears in briefings).
 }
 ```
 
+### `mem_resolve`
+
+Close out TODOs/failures by setting their status to done/resolved/cancelled — this is the tool for finishing work, not `mem_pin`/`mem_mark_stale` (staleness only hides an entity without recording that it was completed). Accepts full IDs or the 8-char short IDs shown in briefings; also clears any stale flag so the entity's record stays coherent.
+
+```json
+{
+  "name": "mem_resolve",
+  "description": "Close out entities by setting their status to done/resolved/cancelled.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "entity_ids": { "type": "array", "items": { "type": "string" } },
+      "status": { "type": "string", "enum": ["done", "resolved", "cancelled"], "default": "done" },
+      "note": { "type": "string", "description": "Optional note about how/why it was resolved" }
+    },
+    "required": ["entity_ids"]
+  }
+}
+```
+
+Returns per-entity results (`{id, old_status, new_status, resolved_at}`, or `unchanged: true` for a no-op); a bad ID in the batch is reported per-entity, not fatal to the rest.
+
 ### `mem_get_tasks`
 
 Get current TODOs and their status.

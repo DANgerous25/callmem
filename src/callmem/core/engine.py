@@ -24,6 +24,17 @@ if TYPE_CHECKING:
 TRUNCATION_MARKER = "\n\n[... truncated at {max_chars} chars]"
 DEFAULT_MAX_EVENT_SIZE = 100_000
 DEFAULT_DEDUP_WINDOW_S = 60
+_FULL_ULID_LEN = 26
+
+
+class EntityNotFoundError(ValueError):
+    """An entity ID (full or short) did not resolve to any entity in the
+    current project."""
+
+
+class AmbiguousEntityIdError(ValueError):
+    """A short entity ID matched more than one entity in the current
+    project. Never silently guessed -- callers get every full ID."""
 
 
 def _create_llm_client(config: Config) -> Any:
@@ -541,6 +552,58 @@ class MemoryEngine:
         if changed:
             self._publish("entity_marked_current", {"entity_id": entity_id})
         return self.repo.get_entity(entity_id)
+
+    def resolve_entity_id(self, raw_id: str) -> str:
+        """Resolve a full ULID or an 8-char short ID (prefix/suffix, as
+        printed in briefings) to this project's full entity ID.
+
+        Every MCP tool that takes an entity ID goes through this one
+        helper so short-ID handling is consistent: full IDs and short
+        IDs are both scoped to this project (never matching another
+        project's entity in a shared database), and a short ID that
+        matches more than one entity raises instead of guessing.
+        """
+        eid = (raw_id or "").lstrip("#").strip()
+        if not eid:
+            msg = "entity id is required"
+            raise EntityNotFoundError(msg)
+
+        if len(eid) >= _FULL_ULID_LEN:
+            row = self.repo.get_entity(eid)
+            if row is not None and row.get("project_id") == self.project_id:
+                return eid
+            msg = f"Entity not found: {raw_id}"
+            raise EntityNotFoundError(msg)
+
+        matches = self.repo.find_entities_by_short_id(self.project_id, eid)
+        if len(matches) == 1:
+            return matches[0]["id"]
+        if len(matches) > 1:
+            ids = ", ".join(sorted(m["id"] for m in matches))
+            msg = (
+                f"Short ID '{raw_id}' is ambiguous -- matches "
+                f"{len(matches)} entities: {ids}"
+            )
+            raise AmbiguousEntityIdError(msg)
+        msg = f"Entity not found: {raw_id}"
+        raise EntityNotFoundError(msg)
+
+    def resolve_entity(
+        self, entity_id: str, status: str, note: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Close out an entity (TODO, failure, etc.): set ``status``,
+        stamp ``resolved_at``, and clear any stale flag. Returns the
+        updated entity row (with an ``unchanged`` marker if it was
+        already at that status and not stale), or None if the entity
+        does not exist."""
+        result = self.repo.mark_resolved(entity_id, status, note=note)
+        if result is not None and not result.get("unchanged"):
+            self._publish("entity_resolved", {
+                "entity_id": entity_id,
+                "status": status,
+                "note": note,
+            })
+        return result
 
     def list_stale_entities(self, limit: int = 200) -> list[dict[str, Any]]:
         return self.repo.list_stale_entities(self.project_id, limit=limit)

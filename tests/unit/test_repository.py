@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -487,3 +488,165 @@ class TestEntityFtsSearch:
             project.id, "staleflagword", include_stale=True,
         )
         assert any(r["id"] == entity.id for r in included)
+
+
+class TestFindEntitiesByShortId:
+    """Collision-safe, project-scoped short-ID resolution — the helper
+    every entity-id-taking MCP tool must share (mem_get_entities already
+    resolved short IDs via a one-off, non-project-scoped LIMIT-1 query;
+    this replaces it)."""
+
+    def test_matches_by_suffix(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="fact",
+            title="short id target", content="content",
+        )
+        repo.create_entity(entity)
+
+        matches = repo.find_entities_by_short_id(project.id, entity.id[-8:])
+        assert [m["id"] for m in matches] == [entity.id]
+
+    def test_matches_by_prefix(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="fact",
+            title="short id target", content="content",
+        )
+        repo.create_entity(entity)
+
+        matches = repo.find_entities_by_short_id(project.id, entity.id[:8])
+        assert [m["id"] for m in matches] == [entity.id]
+
+    def test_no_match_returns_empty_list(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+
+        assert repo.find_entities_by_short_id(project.id, "ZZZZZZZZ") == []
+
+    def test_ambiguous_short_id_returns_every_match(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        e1 = Entity(
+            id="AAAAAAAAAAAAAAAAAA01234567",
+            project_id=project.id, type="fact",
+            title="first collider", content="content",
+        )
+        e2 = Entity(
+            id="BBBBBBBBBBBBBBBBBB01234567",
+            project_id=project.id, type="fact",
+            title="second collider", content="content",
+        )
+        repo.create_entity(e1)
+        repo.create_entity(e2)
+
+        matches = repo.find_entities_by_short_id(project.id, "01234567")
+        assert {m["id"] for m in matches} == {e1.id, e2.id}
+
+    def test_scoped_to_project_no_cross_project_collision(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_a = Project(name="a")
+        project_b = Project(name="b")
+        repo.create_project(project_a)
+        repo.create_project(project_b)
+        in_a = Entity(
+            id="AAAAAAAAAAAAAAAAAA01234567",
+            project_id=project_a.id, type="fact",
+            title="lives in project a", content="content",
+        )
+        in_b = Entity(
+            id="BBBBBBBBBBBBBBBBBB01234567",
+            project_id=project_b.id, type="fact",
+            title="lives in project b", content="content",
+        )
+        repo.create_entity(in_a)
+        repo.create_entity(in_b)
+
+        matches = repo.find_entities_by_short_id(project_a.id, "01234567")
+        assert [m["id"] for m in matches] == [in_a.id]
+
+
+class TestMarkResolved:
+    """mark_resolved backs the mem_resolve MCP tool -- the closing verb
+    that was missing, which forced agents to fall back to mem_mark_stale
+    (leaving entities open+stale=1: invisible but unresolved)."""
+
+    def test_sets_status_and_resolved_at(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="ship the thing", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_resolved(entity.id, "done")
+        assert result is not None
+        assert result["status"] == "done"
+        assert result["old_status"] == "open"
+        assert result["resolved_at"]
+        assert result["unchanged"] is False
+
+    def test_clears_stale_flag(self, memory_db: Database) -> None:
+        """The exact defect scenario: an agent fell back to mark_stale as
+        a workaround for the missing 'done' verb, leaving the entity
+        open+stale=1. Resolving it must clear stale so the record is
+        coherent again."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="wrong-verb'd todo", content="content",
+        )
+        repo.create_entity(entity)
+        repo.mark_stale(entity.id, reason="outdated")
+        assert repo.get_entity(entity.id)["stale"] == 1
+
+        result = repo.mark_resolved(entity.id, "done")
+        assert result["stale"] == 0
+        assert result["unchanged"] is False
+
+    def test_unchanged_when_already_at_status_and_not_stale(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="done",
+            title="already done", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_resolved(entity.id, "done")
+        assert result["unchanged"] is True
+        assert result["old_status"] == "done"
+
+    def test_unknown_entity_returns_none(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        assert repo.mark_resolved("nonexistent", "done") is None
+
+    def test_note_is_stored_in_metadata(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="ship the thing", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_resolved(entity.id, "done", note="shipped in v2")
+        assert json.loads(result["metadata"])["resolution_note"] == "shipped in v2"

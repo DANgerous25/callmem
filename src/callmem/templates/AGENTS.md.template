@@ -11,6 +11,7 @@ These are concrete rules for WHEN and WHY to use callmem. Follow them at each de
 - **Before asking the user a clarifying question**: Call `mem_search(query)` — the answer may already be stored from a previous session.
 - **When you make a design decision**: Call `mem_ingest` with type `decision` immediately. Don't wait for the session to end. Include the "why" (alternatives considered, tradeoffs).
 - **When you identify a TODO**: Call `mem_ingest` with type `todo` and set priority (high/medium/low). Do this the moment you notice the work, not later.
+- **When you finish a TODO or fix a failure**: Call `mem_resolve(entity_ids=[...])` (defaults to status `done`; use `resolved` for failures, `cancelled` if it's no longer needed). This is the closing verb — `mem_mark_stale` only hides an entity, it doesn't record that the work is done.
 - **When something surprising happens**: Call `mem_ingest` with type `discovery` or `failure`. Include what you expected vs what happened, and the root cause if known.
 - **If briefing shows 0 entities but N events**: Run `callmem re-extract` — extraction may have failed. Check `callmem doctor` to diagnose the LLM backend.
 - **Before re-reading a file**: Always check `mem_file_context` first. Only read from disk if the memory is stale or missing.
@@ -41,6 +42,6 @@ These are concrete rules for WHEN and WHY to use callmem. Follow them at each de
 ## Memory guidelines
 - Be specific in memory content (include file paths, function names, error messages)
 - Set priority on TODOs: high, medium, or low
-- Mark failures as resolved when you fix them
+- Mark failures and TODOs resolved with `mem_resolve` when you fix/finish them
 - You don't need to memorize everything — the system captures raw events automatically and auto-detects decisions/discoveries/failures in your responses
 - Focus on recording decisions (the "why") and TODOs (what's next)

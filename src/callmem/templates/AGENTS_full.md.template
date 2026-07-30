@@ -98,6 +98,10 @@ This project uses callmem for persistent memory via MCP tools. The same
 - When you discover something notable, call `mem_ingest` with type
   `"discovery"`.
 - When something fails unexpectedly, call `mem_ingest` with type `"failure"`.
+- When you finish a TODO or fix a failure, call `mem_resolve` with its ID
+  (accepts full or short IDs). This is the closing verb — it sets status to
+  `done`/`resolved`/`cancelled`, not `mem_mark_stale`, which only hides an
+  entity without recording that it was completed.
 - To recall past context, call `mem_search` with keywords.
 - To see open tasks, call `mem_get_tasks`.
 - **Before re-reading a file you've worked on before**, call

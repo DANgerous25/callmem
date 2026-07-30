@@ -744,6 +744,53 @@ class TestOpenItemsFloor:
 
         assert resolved.id not in {e["id"] for e in entities}
 
+    def test_action_items_excludes_done_and_cancelled_todos(
+        self, memory_db: Database,
+    ) -> None:
+        """mem_resolve's whole point is that a resolved TODO disappears
+        from Action Items by status, not staleness. Only 'resolved' was
+        previously excluded from the render filter -- a fresh 'done' or
+        'cancelled' todo scores high enough (via recency) to land in
+        Action Items anyway unless the filter also excludes them."""
+        repo = Repository(memory_db)
+        project_id = _seed_project(memory_db)
+
+        done_todo = Entity(
+            project_id=project_id, type="todo", status="done",
+            title="Finished todo should not resurface",
+            content="x", priority="high",
+        )
+        _insert_entity(memory_db, done_todo)
+        cancelled_todo = Entity(
+            project_id=project_id, type="todo", status="cancelled",
+            title="Cancelled todo should not resurface",
+            content="x", priority="high",
+        )
+        _insert_entity(memory_db, cancelled_todo)
+        open_todo = Entity(
+            project_id=project_id, type="todo", status="open",
+            title="Still open todo should show up",
+            content="x", priority="high",
+        )
+        _insert_entity(memory_db, open_todo)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+
+        # Action Items / Suggested next lines are rendered with a
+        # two-space-then-'#' prefix; the generic date-grouped listing
+        # (which every non-stale entity passes through regardless of
+        # status) uses a four-space prefix, so this precisely scopes the
+        # assertion to the action-item-style lines.
+        action_lines = [
+            line for line in briefing.content.splitlines()
+            if line.startswith("  #")
+        ]
+        action_text = "\n".join(action_lines)
+        assert "Finished todo should not resurface" not in action_text
+        assert "Cancelled todo should not resurface" not in action_text
+        assert "Still open todo should show up" in action_text
+
 
 class TestArchivedEntitiesExcluded:
     """Archived entities (archived_at set — e.g. NOOP-archived duplicates

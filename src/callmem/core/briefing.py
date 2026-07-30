@@ -547,12 +547,12 @@ class BriefingGenerator:
         todos = [
             e for e in entities
             if e.get("type") == "todo"
-            and e.get("status") != "resolved"
+            and e.get("status") not in _CLOSED_STATUSES
         ]
         failures = [
             e for e in entities
             if e.get("type") == "failure"
-            and e.get("status") != "resolved"
+            and e.get("status") not in _CLOSED_STATUSES
         ]
 
         if todos or failures:
@@ -609,12 +609,12 @@ class BriefingGenerator:
         failures = [
             e for e in entities
             if e.get("type") == "failure"
-            and e.get("status") != "resolved"
+            and e.get("status") not in _CLOSED_STATUSES
         ]
         todos = [
             e for e in entities
             if e.get("type") == "todo"
-            and e.get("status") != "resolved"
+            and e.get("status") not in _CLOSED_STATUSES
         ]
         high = [t for t in todos if t.get("priority") == "high"]
         medium = [t for t in todos if t.get("priority") == "medium"]
@@ -1080,7 +1080,7 @@ class BriefingGenerator:
         next_steps = [
             e for e in session_entities
             if e.get("type") in ("todo", "failure")
-            and e.get("status") != "resolved"
+            and e.get("status") not in _CLOSED_STATUSES
         ]
 
         def _render_section(label: str, items: list[dict[str, Any]]) -> None:

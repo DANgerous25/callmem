@@ -1109,21 +1109,24 @@ class Repository:
         finally:
             conn.close()
 
-    def get_entity_by_short_id(self, short_id: str) -> dict[str, Any] | None:
-        """Look up an entity by its short ID prefix or suffix."""
+    def find_entities_by_short_id(
+        self, project_id: str, short_id: str,
+    ) -> list[dict[str, Any]]:
+        """Resolve an 8-char short ID (prefix or suffix of the full ULID,
+        as shown in briefings) to the matching entities within a single
+        project. Collision-safe: never guesses -- returns every match so
+        the caller can detect and report an ambiguity instead of picking
+        one implicitly."""
         from callmem.models.entities import Entity
 
         conn = self.db.connect()
         try:
-            row = conn.execute(
+            rows = conn.execute(
                 "SELECT * FROM entities "
-                "WHERE id LIKE ? OR id LIKE ? "
-                "LIMIT 1",
-                (f"{short_id}%", f"%{short_id}"),
-            ).fetchone()
-            if row is None:
-                return None
-            return dict(Entity.from_row(dict(row)).to_row())
+                "WHERE project_id = ? AND (id LIKE ? OR id LIKE ?)",
+                (project_id, f"{short_id}%", f"%{short_id}"),
+            ).fetchall()
+            return [dict(Entity.from_row(dict(r)).to_row()) for r in rows]
         finally:
             conn.close()
 
@@ -1228,6 +1231,62 @@ class Repository:
             )
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def mark_resolved(
+        self, entity_id: str, status: str, note: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Close out an entity: set ``status``, stamp ``resolved_at``, and
+        clear any stale flag so the record stays coherent -- covers the
+        case where an entity was previously mark_stale'd as a workaround
+        for a missing 'done' verb, leaving it open+stale=1. An optional
+        note is merged into metadata. A no-op when the entity is already
+        at ``status`` and not stale: callers check the ``unchanged`` key
+        on the result instead of diffing themselves. Returns None if the
+        entity does not exist.
+        """
+        from callmem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM entities WHERE id = ?", (entity_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            row = dict(row)
+            old_status = row.get("status")
+            unchanged = old_status == status and not row.get("stale")
+
+            if not unchanged:
+                metadata = (
+                    json.loads(row["metadata"]) if row.get("metadata") else {}
+                )
+                if note:
+                    metadata["resolution_note"] = note
+                now = datetime.now(UTC).isoformat()
+                conn.execute(
+                    "UPDATE entities SET status = ?, resolved_at = ?, "
+                    "stale = 0, staleness_reason = NULL, "
+                    "superseded_by = NULL, invalidated_at = NULL, "
+                    "metadata = ?, updated_at = ? WHERE id = ?",
+                    (
+                        status, now,
+                        json.dumps(metadata) if metadata else None,
+                        now, entity_id,
+                    ),
+                )
+                conn.commit()
+                row = dict(conn.execute(
+                    "SELECT * FROM entities WHERE id = ?", (entity_id,),
+                ).fetchone())
+
+            entity = Entity.from_row(row)
+            result = dict(entity.to_row())
+            result["old_status"] = old_status
+            result["unchanged"] = unchanged
+            return result
         finally:
             conn.close()
 

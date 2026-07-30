@@ -58,16 +58,20 @@ def _insert_entity(
     title: str,
     content: str,
     created_at: str | None = None,
+    entity_id: str | None = None,
 ) -> str:
     if created_at is None:
         # Default to "2 hours ago" so entities land well inside any
         # reasonable lookback window regardless of test run time.
         created_at = _hours_ago(2)
-    entity = Entity(
-        project_id=project_id, type=etype,
-        title=title, content=content,
-        created_at=created_at, updated_at=created_at,
-    )
+    kwargs: dict = {
+        "project_id": project_id, "type": etype,
+        "title": title, "content": content,
+        "created_at": created_at, "updated_at": created_at,
+    }
+    if entity_id is not None:
+        kwargs["id"] = entity_id
+    entity = Entity(**kwargs)
     row = entity.to_row()
     conn = repo.db.connect()
     try:
@@ -240,6 +244,73 @@ class TestMcpTools:
         result = handle_mark_current(engine, {"entity_id": eid})
         data = json.loads(result[0].text)
         assert data["stale"] is False
+
+    def test_mark_stale_tool_accepts_short_id(self, tmp_path: Path) -> None:
+        # Live-forensics defect: mem_mark_stale({"entity_id": "BD97K0C7"})
+        # ("Entity not found") while mem_get_entities resolved the same
+        # short ID fine. Every entity-id tool must share one resolver.
+        engine = _make_engine(tmp_path)
+        eid = _insert_entity(
+            engine.repo, engine.project_id,
+            "decision", "title", "content",
+        )
+        result = handle_mark_stale(engine, {
+            "entity_id": eid[-8:], "reason": "superseded",
+        })
+        data = json.loads(result[0].text)
+        assert data["entity_id"] == eid
+        assert data["stale"] is True
+
+    def test_mark_stale_tool_unknown_id_is_loud_error(
+        self, tmp_path: Path,
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        result = handle_mark_stale(engine, {
+            "entity_id": "totallyunknown", "reason": "manual",
+        })
+        data = json.loads(result[0].text)
+        assert "totallyunknown" in data["error"]
+
+    def test_mark_stale_tool_ambiguous_short_id_is_loud_error(
+        self, tmp_path: Path,
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        e1 = _insert_entity(
+            engine.repo, engine.project_id,
+            "decision", "one", "content",
+            entity_id="AAAAAAAAAAAAAAAAAA01234567",
+        )
+        e2 = _insert_entity(
+            engine.repo, engine.project_id,
+            "decision", "two", "content",
+            entity_id="BBBBBBBBBBBBBBBBBB01234567",
+        )
+        result = handle_mark_stale(engine, {
+            "entity_id": "01234567", "reason": "manual",
+        })
+        data = json.loads(result[0].text)
+        assert e1 in data["error"]
+        assert e2 in data["error"]
+
+    def test_mark_current_tool_accepts_short_id(self, tmp_path: Path) -> None:
+        engine = _make_engine(tmp_path)
+        eid = _insert_entity(
+            engine.repo, engine.project_id,
+            "decision", "title", "content",
+        )
+        engine.mark_stale(eid, reason="outdated")
+        result = handle_mark_current(engine, {"entity_id": eid[-8:]})
+        data = json.loads(result[0].text)
+        assert data["entity_id"] == eid
+        assert data["stale"] is False
+
+    def test_mark_current_tool_unknown_id_is_loud_error(
+        self, tmp_path: Path,
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        result = handle_mark_current(engine, {"entity_id": "totallyunknown"})
+        data = json.loads(result[0].text)
+        assert "totallyunknown" in data["error"]
 
     def test_search_honours_include_stale(self, tmp_path: Path) -> None:
         engine = _make_engine(tmp_path)
