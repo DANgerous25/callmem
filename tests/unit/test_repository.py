@@ -15,6 +15,7 @@ from callmem.models.sessions import Session
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
+    from callmem.core.engine import MemoryEngine
 
 
 HOSTILE_QUERIES = [
@@ -867,3 +868,79 @@ class TestMarkReopened:
         assert result["old_status"] is None
         row = repo.get_entity(entity.id)
         assert row["status"] is None
+
+
+class TestGetEntitiesSourceText:
+    """Batched counterpart to ``get_entity_source_text`` -- fetches source
+    text for MANY entities in ONE query. Feeds the judged resolve sweep's
+    discussion guard and judge prompt, both of which need every driver's
+    source text up front rather than one query per driver (the N+1 the
+    live per-driver lazy fetch is fine for, but a sweep over dozens of
+    drivers is not)."""
+
+    @staticmethod
+    def _entity_with_events(
+        engine: MemoryEngine, contents: list[str],
+    ) -> tuple[str, list[str]]:
+        """Create real events (via MemoryEngine, so FK constraints are
+        satisfied) and an entity whose source_event_ids point at them.
+        Returns (entity_id, event_ids)."""
+        event_ids = []
+        for content in contents:
+            event = engine.ingest_one("note", content)
+            assert event is not None
+            event_ids.append(event.id)
+
+        repo = Repository(engine.db)
+        entity = Entity(
+            project_id=engine.project_id, type="feature", title="driver",
+            content="driver", source_event_ids=event_ids,
+        )
+        repo.create_entity(entity)
+        return entity.id, event_ids
+
+    def test_matches_n_individual_fetches(self, memory_db: Database) -> None:
+        from callmem.core.engine import MemoryEngine
+        from callmem.models.config import Config
+
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        engine = MemoryEngine(memory_db, config)
+        engine.start_session()
+        repo = Repository(memory_db)
+
+        id_a, _ = self._entity_with_events(
+            engine, ["fixed the thing", "more detail"],
+        )
+        id_b, _ = self._entity_with_events(
+            engine, ["separate event text"],
+        )
+
+        individually = {
+            eid: repo.get_entity_source_text(eid) for eid in (id_a, id_b)
+        }
+        batched = repo.get_entities_source_text([id_a, id_b])
+        assert batched == individually
+
+    def test_empty_input_returns_empty_dict(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        assert repo.get_entities_source_text([]) == {}
+
+    def test_entity_with_no_source_events_maps_to_empty_string(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="feature", title="no events",
+            content="no events",
+        )
+        repo.create_entity(entity)
+
+        result = repo.get_entities_source_text([entity.id])
+        assert result[entity.id] == ""
+
+    def test_unknown_id_omitted_or_empty(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        result = repo.get_entities_source_text(["does-not-exist"])
+        assert result.get("does-not-exist", "") == ""

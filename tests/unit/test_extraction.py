@@ -988,3 +988,279 @@ class TestAutoResolveDiscussionGuard:
         ).fetchone()
         conn.close()
         assert row["status"] == "open"
+
+
+class TestGatherResolutionCandidates:
+    """Recall stage for the judged sweep (``callmem resolve``'s default
+    mode): matches become candidates for ``ResolutionJudge`` to verify --
+    unlike ``sweep_resolutions`` (the legacy/--no-judge path), nothing is
+    closed here."""
+
+    @staticmethod
+    def _insert_entity(
+        db: Database,
+        project_id: str,
+        type: str,
+        title: str,
+        status: str | None = None,
+        stale: int = 0,
+        source_event_ids: list[str] | None = None,
+    ) -> str:
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=project_id, type=type, title=title, content=title,
+            status=status, source_event_ids=source_event_ids,
+        )
+        row = entity.to_row()
+        conn = db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, source_event_ids, type, "
+                "title, content, key_points, synopsis, status, priority, "
+                "pinned, created_at, updated_at, resolved_at, metadata, "
+                "archived_at, stale) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["source_event_ids"], row["type"], row["title"],
+                    row["content"], row["key_points"], row["synopsis"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"], row["resolved_at"],
+                    row["metadata"], row["archived_at"], stale,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return entity.id
+
+    def test_keyword_match_becomes_candidate_not_closed(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+        )
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+
+        candidates = extractor.gather_resolution_candidates(engine.project_id)
+        assert any(c.target_id == todo_id for c in candidates)
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        # Unlike sweep_resolutions, gathering candidates never closes.
+        assert row["status"] == "open"
+
+    def test_candidate_carries_driver_and_target_content(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        driver_id = self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+        )
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+
+        candidates = extractor.gather_resolution_candidates(engine.project_id)
+        match = next(c for c in candidates if c.target_id == todo_id)
+        assert match.driver_id == driver_id
+        assert match.driver_title == "Analysis history selector implemented"
+        assert match.driver_content == "Analysis history selector implemented"
+        assert match.target_title == "Implement analysis history selector"
+        assert match.target_content == "Implement analysis history selector"
+        assert match.target_type == "todo"
+
+    def test_guard_skip_excluded_from_candidates(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+        short_id = todo_id[-8:]
+        discussion_event = engine.ingest_one(
+            "response",
+            f"Triage note: #{short_id} still open, discussed with team.",
+        )
+        assert discussion_event is not None
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+            source_event_ids=[discussion_event.id],
+        )
+
+        stats: dict[str, int] = {}
+        candidates = extractor.gather_resolution_candidates(
+            engine.project_id, stats=stats,
+        )
+        assert not any(c.target_id == todo_id for c in candidates)
+        assert stats.get("skipped_by_guard") == 1
+
+    def test_no_drivers_returns_empty_list(
+        self, memory_db: Database,
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Something lonely", status="open",
+        )
+        candidates = extractor.gather_resolution_candidates(engine.project_id)
+        assert candidates == []
+
+    def test_stale_driver_ignored(self, memory_db: Database) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented", stale=1,
+        )
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+        candidates = extractor.gather_resolution_candidates(engine.project_id)
+        assert not any(c.target_id == todo_id for c in candidates)
+
+
+class TestWidenRecallWithEmbeddings:
+    """Embedding similarity optionally widens the judged sweep's recall
+    past what keyword matching alone would find -- e.g. a paraphrased
+    completion sharing no words with its TODO's title. Degrades cleanly
+    to keyword-only whenever vector data is unusable."""
+
+    class _StubEmbedder:
+        """Deterministic embedder stand-in -- returns the same fixed
+        vector for every text, so tests control similarity directly."""
+
+        model = "stub-embed"
+
+        def __init__(self, vector: list[float]) -> None:
+            self._vector = vector
+
+        def embed(
+            self, texts: list[str], timeout: float | None = None,
+        ) -> list[list[float]] | None:
+            return [list(self._vector) for _ in texts]
+
+        def is_available(self) -> bool:
+            return True
+
+    @staticmethod
+    def _setup(memory_db: Database, config: Config):
+        from callmem.core.engine import MemoryEngine
+
+        engine = MemoryEngine(memory_db, config)
+        extractor = EntityExtractor(memory_db, OllamaClient(), config=config)
+        return engine, extractor
+
+    def test_embeddings_disabled_falls_back_to_keyword_only(
+        self, memory_db: Database,
+    ) -> None:
+        config = Config(
+            sensitive_data={"enabled": False, "llm_scan": False},
+            embeddings={"enabled": False},
+        )
+        engine, extractor = self._setup(memory_db, config)
+
+        TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Investigate login bug", status="open",
+        )
+        TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Refactored the auth module",
+        )
+
+        candidates = extractor.gather_resolution_candidates(
+            engine.project_id, embedder=self._StubEmbedder([1.0, 0.0, 0.0]),
+        )
+        # No keyword overlap between the two titles and embeddings are
+        # off -- nothing should surface.
+        assert candidates == []
+
+    def test_similar_vector_widens_recall_past_keyword_miss(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.core.embeddings import embedding_model_key, pack_vector
+        from callmem.core.repository import Repository
+
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        engine, extractor = self._setup(memory_db, config)
+        repo = Repository(memory_db)
+
+        todo_id = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Investigate login bug", status="open",
+        )
+        vector = [1.0, 0.0, 0.0]
+        model_key = embedding_model_key(config)
+        repo.upsert_embedding(
+            todo_id, model_key, len(vector), pack_vector(vector),
+        )
+        driver_id = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Refactored the auth module",
+        )
+
+        candidates = extractor.gather_resolution_candidates(
+            engine.project_id, embedder=self._StubEmbedder(vector),
+        )
+        assert any(
+            c.target_id == todo_id and c.driver_id == driver_id
+            for c in candidates
+        )
+
+    def test_guard_applies_to_embedding_widened_candidates(
+        self, memory_db: Database,
+    ) -> None:
+        from callmem.core.embeddings import embedding_model_key, pack_vector
+        from callmem.core.repository import Repository
+
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        engine, extractor = self._setup(memory_db, config)
+        engine.start_session()
+        repo = Repository(memory_db)
+
+        todo_id = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Investigate login bug", status="open",
+        )
+        short_id = todo_id[-8:]
+        vector = [1.0, 0.0, 0.0]
+        model_key = embedding_model_key(config)
+        repo.upsert_embedding(
+            todo_id, model_key, len(vector), pack_vector(vector),
+        )
+
+        discussion_event = engine.ingest_one(
+            "response",
+            f"Triage note: #{short_id} still open, discussed with team.",
+        )
+        assert discussion_event is not None
+        TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Refactored the auth module",
+            source_event_ids=[discussion_event.id],
+        )
+
+        stats: dict[str, int] = {}
+        candidates = extractor.gather_resolution_candidates(
+            engine.project_id, stats=stats,
+            embedder=self._StubEmbedder(vector),
+        )
+        assert not any(c.target_id == todo_id for c in candidates)
+        assert stats.get("skipped_by_guard") == 1

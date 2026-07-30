@@ -142,6 +142,28 @@ above, in this exact shape:
 Do not include explanatory text outside the JSON array."""
 
 
+RESOLVE_JUDGE_PROMPT = """You are verifying candidate matches between completed work (a driver: a feature, bugfix, or change) and previously open TODOs/failures (a target), using direct evidence -- not just similar wording.
+
+For EACH pair below, decide exactly ONE verdict:
+- "CONFIRMED"    - the driver's content and source evidence clearly show the target's work was actually completed, fixed, or resolved.
+- "CONTRADICTED" - the evidence shows the target's problem persists, was NOT fixed, or the driver only discusses/re-raises the target rather than resolving it.
+- "UNCERTAIN"    - the evidence is not clear enough to say either way.
+
+Be conservative: only return CONFIRMED when the evidence directly supports it. An incorrectly-closed item is far worse than one that stays open a little longer -- when in doubt, prefer UNCERTAIN.
+
+Candidate pairs:
+{pairs_block}
+
+Respond with ONLY a JSON array, exactly one object per pair listed above, in this exact shape:
+[
+  {{"pair": <pair number from the list above>,
+    "verdict": "CONFIRMED" | "CONTRADICTED" | "UNCERTAIN",
+    "reason": "<one short sentence>"}}
+]
+
+Do not include explanatory text outside the JSON array."""
+
+
 CHUNK_SUMMARY_PROMPT = """Summarize this batch of coding session events into a concise paragraph.
 Focus on: what was worked on, what was accomplished, any problems encountered.
 

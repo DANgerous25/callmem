@@ -1034,10 +1034,84 @@ class Repository:
 
             placeholders = ",".join("?" for _ in event_ids)
             event_rows = conn.execute(
-                f"SELECT content FROM events WHERE id IN ({placeholders})",
+                f"SELECT id, content FROM events WHERE id IN ({placeholders})",
                 event_ids,
             ).fetchall()
-            return "\n".join(r["content"] for r in event_rows if r["content"])
+            # `IN (...)` does not guarantee row order matches `event_ids`
+            # -- rejoin by id so this always reads in recorded order,
+            # matching the batched ``get_entities_source_text`` below.
+            content_by_id = {r["id"]: r["content"] for r in event_rows}
+            return "\n".join(
+                content_by_id[eid] for eid in event_ids
+                if content_by_id.get(eid)
+            )
+        finally:
+            conn.close()
+
+    def get_entities_source_text(
+        self, entity_ids: list[str],
+    ) -> dict[str, str]:
+        """Batched counterpart to ``get_entity_source_text``: source text
+        for MANY entities in ONE round trip (two queries total, not 2*N).
+
+        Used by the judged resolve sweep, which needs every driver's
+        source text up front for both the discussion guard and the judge
+        prompt -- one query per driver would be an N+1 over the whole
+        sweep. The live per-driver lazy path is unaffected; it still
+        calls ``get_entity_source_text`` one id at a time.
+
+        Every id in ``entity_ids`` is present in the result (mapped to
+        ``""`` if the entity is unknown or has no source events), so
+        callers can index the dict directly without a fallback.
+        """
+        result = {eid: "" for eid in entity_ids}
+        if not entity_ids:
+            return result
+
+        conn = self.db.connect()
+        try:
+            placeholders = ",".join("?" for _ in entity_ids)
+            rows = conn.execute(
+                f"SELECT id, source_event_id, source_event_ids FROM entities "
+                f"WHERE id IN ({placeholders})",
+                entity_ids,
+            ).fetchall()
+
+            event_ids_by_entity: dict[str, list[str]] = {}
+            all_event_ids: set[str] = set()
+            for row in rows:
+                ids: list[str] = []
+                raw = row["source_event_ids"]
+                if raw:
+                    try:
+                        parsed = json.loads(raw)
+                    except (TypeError, ValueError):
+                        parsed = None
+                    if isinstance(parsed, list):
+                        ids = [str(eid) for eid in parsed if eid]
+                if not ids and row["source_event_id"]:
+                    ids = [row["source_event_id"]]
+                if ids:
+                    event_ids_by_entity[row["id"]] = ids
+                    all_event_ids.update(ids)
+
+            if not all_event_ids:
+                return result
+
+            event_placeholders = ",".join("?" for _ in all_event_ids)
+            event_rows = conn.execute(
+                f"SELECT id, content FROM events WHERE id IN ({event_placeholders})",
+                list(all_event_ids),
+            ).fetchall()
+            content_by_event = {
+                r["id"]: r["content"] for r in event_rows if r["content"]
+            }
+
+            for entity_id, ids in event_ids_by_entity.items():
+                result[entity_id] = "\n".join(
+                    content_by_event[eid] for eid in ids if eid in content_by_event
+                )
+            return result
         finally:
             conn.close()
 

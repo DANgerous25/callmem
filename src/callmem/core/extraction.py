@@ -18,7 +18,9 @@ from callmem.models.entities import Entity
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
+    from callmem.core.embeddings import Embedder
     from callmem.core.ollama import OllamaClient
+    from callmem.core.resolve_judge import ResolutionCandidate
     from callmem.models.config import Config
 
 logger = logging.getLogger(__name__)
@@ -327,6 +329,208 @@ class EntityExtractor:
             project_id, drivers, dry_run=dry_run, collect=True, stats=stats,
         )
 
+    def gather_resolution_candidates(
+        self,
+        project_id: str,
+        stats: dict[str, int] | None = None,
+        embedder: Embedder | None = None,
+    ) -> list[ResolutionCandidate]:
+        """Recall stage for the JUDGED sweep (``callmem resolve``'s default
+        mode): find candidate driver/target pairs but close NONE of them —
+        ``ResolutionJudge`` decides that from evidence. Keyword matching is
+        the base recall (via ``_resolve_by_drivers`` with ``auto_close=
+        False``), optionally widened with embedding similarity when this
+        project has vector data, so paraphrased matches keyword recall
+        misses still get a chance at being judged. Falls back to
+        keyword-only, unchanged, whenever vector data is unusable (feature
+        off, none stored, backend unreachable) — same degradation
+        discipline as ``consolidation.py``.
+
+        Every driver's source text is fetched once, up front, in a single
+        batched query (``Repository.get_entities_source_text``) and shared
+        by both the keyword stage's discussion guard and the embedding
+        stage's — the sweep runs over every driver in the project, so a
+        per-driver query here would be the N+1 the live path can afford
+        but a sweep cannot.
+        """
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT id, type, title FROM entities "
+                "WHERE project_id = ? AND type IN (?, ?, ?) "
+                "AND stale = 0 AND title IS NOT NULL "
+                "ORDER BY created_at ASC",
+                (project_id, "bugfix", "feature", "change"),
+            ).fetchall()
+            drivers = [(r["title"], r["type"], r["id"]) for r in rows]
+        finally:
+            conn.close()
+
+        if not drivers:
+            if stats is not None:
+                stats["skipped_by_guard"] = 0
+            return []
+
+        from callmem.core.repository import Repository
+
+        repo = Repository(self.db)
+        driver_ids = [d[2] for d in drivers if d[2]]
+        driver_source_map = repo.get_entities_source_text(driver_ids)
+
+        pairs = self._resolve_by_drivers(
+            project_id, drivers, auto_close=False, collect=True,
+            stats=stats, driver_source_map=driver_source_map,
+        )
+        pairs = self._widen_recall_with_embeddings(
+            project_id, drivers, pairs, driver_source_map,
+            stats=stats, embedder=embedder,
+        )
+        if not pairs:
+            return []
+
+        from callmem.core.resolve_judge import ResolutionCandidate
+
+        all_ids = sorted(
+            {p["driver_id"] for p in pairs} | {p["id"] for p in pairs}
+        )
+        rows_by_id = {r["id"]: r for r in repo.get_entities_by_ids(all_ids)}
+
+        candidates: list[ResolutionCandidate] = []
+        for p in pairs:
+            driver_row = rows_by_id.get(p["driver_id"])
+            target_row = rows_by_id.get(p["id"])
+            if driver_row is None or target_row is None:
+                continue
+            candidates.append(ResolutionCandidate(
+                driver_id=p["driver_id"],
+                driver_title=driver_row.get("title") or "",
+                driver_content=driver_row.get("content") or "",
+                driver_source_text=driver_source_map.get(p["driver_id"], ""),
+                target_id=p["id"],
+                target_type=p["type"],
+                target_title=target_row.get("title") or "",
+                target_content=target_row.get("content") or "",
+            ))
+        return candidates
+
+    _EMBED_WIDEN_TOP_K = 3
+
+    def _widen_recall_with_embeddings(
+        self,
+        project_id: str,
+        drivers: list[tuple[str, str, str]],
+        existing_pairs: list[dict[str, Any]],
+        driver_source_map: dict[str, str],
+        stats: dict[str, int] | None = None,
+        embedder: Embedder | None = None,
+    ) -> list[dict[str, Any]]:
+        """Add extra (driver, target) candidate pairs found via embedding
+        similarity — keyword recall only matches shared words, so a
+        paraphrased completion never surfaces without this. Returns
+        ``existing_pairs`` unchanged whenever vector data is unusable for
+        this project (embeddings disabled, none stored, or the backend is
+        unreachable/misconfigured) — same degradation discipline as
+        ``consolidation.py``.
+        """
+        if self.config is None or not self.config.embeddings.enabled:
+            return existing_pairs
+
+        from callmem.core.repository import Repository
+
+        repo = Repository(self.db)
+        if not repo.has_embeddings(project_id):
+            return existing_pairs
+
+        if embedder is None:
+            from callmem.core.embeddings import create_embedder
+
+            embedder = create_embedder(self.config)
+        if embedder is None:
+            return existing_pairs
+
+        from callmem.core.embeddings import (
+            embedding_model_key,
+            entity_embedding_text,
+            rank_by_similarity,
+        )
+
+        settings = self.config.embeddings
+        model_key = embedding_model_key(self.config)
+        vector_candidates = repo.load_embedding_candidates(
+            project_id, model_key, types=list(self._RESOLVABLE_TYPES),
+            include_stale=False, limit=settings.candidate_limit,
+        )
+        if not vector_candidates:
+            return existing_pairs
+
+        open_targets = {
+            r["id"]: r for r in repo.get_entities_by_ids(
+                [c["entity_id"] for c in vector_candidates],
+                include_stale=False,
+            )
+            if r.get("status") in ("open", "unresolved")
+        }
+        if not open_targets:
+            return existing_pairs
+
+        driver_by_id = {d[2]: d[0] for d in drivers if d[2]}
+        driver_ids = list(driver_by_id.keys())
+        texts = [
+            settings.document_prefix + entity_embedding_text({
+                "title": driver_by_id[did], "synopsis": None,
+                "key_points": None, "content": None,
+            })
+            for did in driver_ids
+        ]
+        vectors = embedder.embed(texts, timeout=settings.timeout)
+        if not vectors or len(vectors) != len(driver_ids):
+            return existing_pairs
+
+        claimed = {p["id"] for p in existing_pairs}
+        skipped_by_guard = 0
+        widened = list(existing_pairs)
+
+        for driver_id, vector in zip(driver_ids, vectors, strict=True):
+            if not vector:
+                continue
+            scored = rank_by_similarity(
+                vector, vector_candidates,
+                min_similarity=settings.min_similarity,
+            )
+            found = 0
+            for _score, target_id in scored:
+                if found >= self._EMBED_WIDEN_TOP_K:
+                    break
+                if target_id in claimed or target_id not in open_targets:
+                    continue
+                if _mentions_entity_id(
+                    driver_source_map.get(driver_id, ""), target_id,
+                ):
+                    skipped_by_guard += 1
+                    continue
+
+                target_row = open_targets[target_id]
+                resolved_status = (
+                    "done" if target_row["type"] == "todo" else "resolved"
+                )
+                widened.append({
+                    "id": target_id,
+                    "type": target_row["type"],
+                    "title": target_row["title"],
+                    "status": resolved_status,
+                    "driver_title": driver_by_id[driver_id],
+                    "driver_id": driver_id,
+                })
+                claimed.add(target_id)
+                found += 1
+
+        if skipped_by_guard and stats is not None:
+            stats["skipped_by_guard"] = (
+                stats.get("skipped_by_guard", 0) + skipped_by_guard
+            )
+
+        return widened
+
     def _resolve_by_drivers(
         self,
         project_id: str,
@@ -334,20 +538,31 @@ class EntityExtractor:
         dry_run: bool = False,
         collect: bool = False,
         stats: dict[str, int] | None = None,
+        auto_close: bool = True,
+        driver_source_map: dict[str, str] | None = None,
     ) -> Any:
         """Run resolution logic for a list of (title, type, id) driver triples.
 
         When ``collect`` is True, returns a list of resolution records
-        suitable for CLI output; otherwise returns the count.
+        suitable for CLI output; otherwise returns the count. When
+        ``auto_close`` is False (the judged sweep's recall stage), matches
+        are collected exactly like ``dry_run`` — never written to the DB,
+        because closing is deferred to ``ResolutionJudge`` — while live
+        auto-resolve and the legacy (``--no-judge``) sweep both leave this
+        at its default of True.
 
-        Discussion guard: before closing a candidate match, checks
-        whether the driver's own source text (fetched lazily, once per
-        driver) quotes the match's short or full ID. Genuine completion
-        work almost never quotes the todo's own ID; triage/review text
-        nearly always does when discussing it — so a hit means "this
-        driver is talking about the target, not resolving it," and the
-        match is skipped rather than closed. ``stats["skipped_by_guard"]``
-        tallies how many matches this held back.
+        Discussion guard: before treating a candidate match as resolvable,
+        checks whether the driver's own source text quotes the match's
+        short or full ID — ``driver_source_map`` when the caller already
+        batched it (the judged sweep), else fetched lazily once per driver
+        (the live path, unchanged). Genuine completion work almost never
+        quotes the todo's own ID; triage/review text nearly always does
+        when discussing it — so a hit means "this driver is talking about
+        the target, not resolving it," and the match is skipped rather
+        than closed. That trade-off is deliberately one-sided: a
+        stuck-open TODO from a false skip is visible and recoverable; a
+        wrongly-closed one wasn't. ``stats["skipped_by_guard"]`` tallies
+        how many matches this held back.
         """
         skipped_by_guard = 0
         if not drivers:
@@ -390,11 +605,18 @@ class EntityExtractor:
                     continue
 
                 if driver_source_text is None:
-                    driver_source_text = (
-                        repo.get_entity_source_text(driver_id)
-                        if driver_id else ""
-                    )
+                    if driver_source_map is not None:
+                        driver_source_text = driver_source_map.get(
+                            driver_id, "",
+                        )
+                    else:
+                        driver_source_text = (
+                            repo.get_entity_source_text(driver_id)
+                            if driver_id else ""
+                        )
                 if _mentions_entity_id(driver_source_text, match["id"]):
+                    # Biased toward skipping on purpose: a stuck-open TODO
+                    # is visible and recoverable; a wrongly-closed one wasn't.
                     skipped_by_guard += 1
                     logger.debug(
                         "Auto-resolve guard: skipping %s '%s' -- driver "
@@ -413,8 +635,9 @@ class EntityExtractor:
                     "title": match["title"],
                     "status": resolved_status,
                     "driver_title": title,
+                    "driver_id": driver_id,
                 }
-                if dry_run:
+                if dry_run or not auto_close:
                     closed_ids.add(match["id"])
                     records.append(record)
                     continue

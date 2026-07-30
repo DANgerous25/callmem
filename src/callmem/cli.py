@@ -2737,17 +2737,31 @@ def _resolve_project_id(db, config):
     "--dry-run", is_flag=True,
     help="Report what would be closed without updating the database.",
 )
-def resolve(project: Path, dry_run: bool) -> None:
+@click.option(
+    "--no-judge", is_flag=True,
+    help=(
+        "Skip LLM verification and auto-close every keyword match "
+        "(legacy behavior). The default judged mode only closes a match "
+        "the LLM confirms from evidence."
+    ),
+)
+def resolve(project: Path, dry_run: bool, no_judge: bool) -> None:
     """Retroactively close open TODOs/failures matched by prior drivers.
 
     The extraction loop auto-closes TODOs when a resolving feature is
     extracted afterwards, but mis-ordered pairs (TODO extracted *after*
     its driver, or extraction skipped the match) accumulate over time.
     This sweep walks every non-stale feature/bugfix/change in the project
-    against the current open pool and applies the same keyword matcher.
+    against the current open pool.
+
+    By default, keyword matches are only CANDIDATES: a configured LLM
+    backend judges each one against its own evidence (driver content and
+    source text vs. the target) before anything closes -- a live 69-item
+    triage found the keyword matcher alone would have been wrong on 46%
+    of its matches. Pass --no-judge to restore the old behavior, where
+    every keyword match closes immediately.
     """
     from callmem.core.database import Database
-    from callmem.core.extraction import EntityExtractor
 
     db_path = project / ".callmem" / "memory.db"
     if not db_path.exists():
@@ -2764,6 +2778,32 @@ def resolve(project: Path, dry_run: bool) -> None:
     if project_id is None:
         click.echo(f"No project named {config.project.name!r} found.", err=True)
         raise SystemExit(1)
+
+    if no_judge:
+        _resolve_legacy(db, project_id, dry_run=dry_run)
+        return
+
+    from callmem.core.engine import _create_llm_client
+
+    llm = _create_llm_client(config)
+    if llm is None:
+        click.echo(
+            "LLM backend is 'none' — judged resolve has nothing to verify "
+            "matches with."
+        )
+        click.echo(
+            "Set [llm] backend = 'ollama' or 'openai_compat' in "
+            "config.toml, or pass --no-judge to auto-close on keyword "
+            "match alone."
+        )
+        raise SystemExit(1)
+
+    _resolve_judged(db, project_id, llm, config, dry_run=dry_run)
+
+
+def _resolve_legacy(db: Any, project_id: str, dry_run: bool) -> None:
+    """--no-judge: the original keyword-match-and-close sweep, unchanged."""
+    from callmem.core.extraction import EntityExtractor
 
     extractor = EntityExtractor(db, ollama=None)  # type: ignore[arg-type]
     stats: dict[str, int] = {}
@@ -2790,6 +2830,68 @@ def resolve(project: Path, dry_run: bool) -> None:
         click.echo(f"      matched by: {r['driver_title'][:70]}")
     if skipped:
         click.echo(f"{skipped} skipped (discussion guard)")
+
+
+def _resolve_judged(
+    db: Any, project_id: str, llm: Any, config: Any, dry_run: bool,
+) -> None:
+    """Default mode: keyword+embedding candidates, verified by the judge
+    before anything closes. Only CONFIRMED verdicts close, via the
+    unified ``Repository.mark_resolved``."""
+    from callmem.core.extraction import EntityExtractor
+    from callmem.core.resolve_judge import ResolutionJudge, ResolveSweepStats
+
+    extractor = EntityExtractor(db, ollama=llm, config=config)
+    stats: dict[str, int] = {}
+    candidates = extractor.gather_resolution_candidates(project_id, stats=stats)
+    skipped = stats.get("skipped_by_guard", 0)
+
+    if not candidates:
+        click.echo("No candidate matches found.")
+        judge_stats = ResolveSweepStats()
+    else:
+        judge = ResolutionJudge(db, llm, config)
+        records, judge_stats = judge.run(candidates, dry_run=dry_run)
+
+        if dry_run:
+            click.echo(f"Judged {len(records)} candidate pair(s):")
+            for r in records:
+                short = r["id"][-8:]
+                arrow = f" → {r['status']}" if r["verdict"] == "CONFIRMED" else ""
+                click.echo(
+                    f"  [{r['verdict']}] #{short} [{r['type']}] "
+                    f"{r['title'][:60]}{arrow}"
+                )
+                click.echo(f"      matched by: {r['driver_title'][:70]}")
+        else:
+            confirmed = [r for r in records if r["verdict"] == "CONFIRMED"]
+            if confirmed:
+                click.echo(f"Closed {len(confirmed)} item(s):")
+                for r in confirmed:
+                    short = r["id"][-8:]
+                    click.echo(
+                        f"  #{short} [{r['type']}] {r['title'][:60]} "
+                        f"→ {r['status']}"
+                    )
+                    click.echo(f"      matched by: {r['driver_title'][:70]}")
+            else:
+                click.echo(
+                    "Nothing closed — no candidate was confirmed by evidence."
+                )
+
+        if judge_stats.judge_failed:
+            click.echo(
+                "Warning: the judge returned a malformed or absent "
+                "response for at least one batch of pairs -- those were "
+                "left UNCERTAIN rather than closed. See logs for detail."
+            )
+
+    click.echo(
+        f"confirmed-closed: {judge_stats.confirmed}  "
+        f"contradicted-open: {judge_stats.contradicted}  "
+        f"uncertain-open: {judge_stats.uncertain}  "
+        f"guard-skipped: {skipped}"
+    )
 
 
 # ── Audit command (database integrity checks) ────────────────────────
