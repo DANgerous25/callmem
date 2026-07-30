@@ -2864,7 +2864,14 @@ def _resolve_judged(
                 )
                 click.echo(f"      matched by: {r['driver_title'][:70]}")
         else:
-            confirmed = [r for r in records if r["verdict"] == "CONFIRMED"]
+            # "status" is only set when the close actually applied --
+            # a CONFIRMED verdict whose mark_resolved was a no-op (already
+            # at that status) or found nothing (entity vanished) closed
+            # nothing and must not appear in this listing.
+            confirmed = [
+                r for r in records
+                if r["verdict"] == "CONFIRMED" and "status" in r
+            ]
             if confirmed:
                 click.echo(f"Closed {len(confirmed)} item(s):")
                 for r in confirmed:
@@ -2886,8 +2893,11 @@ def _resolve_judged(
                 "left UNCERTAIN rather than closed. See logs for detail."
             )
 
+    # dry_run never calls mark_resolved, so nothing was actually closed --
+    # label the count accordingly rather than claiming "confirmed-closed".
+    confirmed_label = "would-close" if dry_run else "confirmed-closed"
     click.echo(
-        f"confirmed-closed: {judge_stats.confirmed}  "
+        f"{confirmed_label}: {judge_stats.confirmed}  "
         f"contradicted-open: {judge_stats.contradicted}  "
         f"uncertain-open: {judge_stats.uncertain}  "
         f"guard-skipped: {skipped}"

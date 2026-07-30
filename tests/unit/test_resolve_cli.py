@@ -247,7 +247,8 @@ class TestJudgedDefaultMode:
 
             assert result.exit_code == 0
             assert "[CONFIRMED]" in result.output
-            assert "confirmed-closed: 1" in result.output
+            assert "would-close: 1" in result.output
+            assert "confirmed-closed" not in result.output
             conn = db.connect()
             row = conn.execute(
                 "SELECT status FROM entities WHERE id = ?", (todo_id,),

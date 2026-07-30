@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _VALID_VERDICTS = {"CONFIRMED", "CONTRADICTED", "UNCERTAIN"}
 _CHUNK_SIZE = 10
 _MAX_TEXT_CHARS = 400
+_MAX_TITLE_CHARS = 200
 
 
 @dataclass
@@ -114,15 +115,27 @@ class ResolutionJudge:
                     "verdict": verdict,
                 }
                 if verdict == "CONFIRMED":
-                    stats.confirmed += 1
                     resolved_status = (
                         "done" if candidate.target_type == "todo" else "resolved"
                     )
-                    record["status"] = resolved_status
-                    if not dry_run:
-                        self.repo.mark_resolved(
+                    if dry_run:
+                        # Nothing is written under dry_run, so there is no
+                        # mark_resolved result to check -- the candidate
+                        # was open at gather time, so "would close" holds.
+                        stats.confirmed += 1
+                        record["status"] = resolved_status
+                    else:
+                        result = self.repo.mark_resolved(
                             candidate.target_id, resolved_status,
                         )
+                        if result is not None and not result.get("unchanged"):
+                            stats.confirmed += 1
+                            record["status"] = resolved_status
+                        # else: the entity vanished or was already at this
+                        # status by the time the judge ran (e.g. a race
+                        # with another close) -- nothing was actually
+                        # closed, so don't count it and don't report a
+                        # status change that never happened.
                 elif verdict == "CONTRADICTED":
                     stats.contradicted += 1
                 else:
@@ -140,7 +153,24 @@ class ResolutionJudge:
             return None
 
         prompt = RESOLVE_JUDGE_PROMPT.format(pairs_block=_format_pairs(chunk))
-        raw = self.llm.extract(prompt)
+        try:
+            raw = self.llm.extract(prompt)
+        except Exception as exc:
+            # Deliberately broader than the transport-error handling
+            # inside individual LLM clients (e.g. OllamaClient only
+            # catches httpx.ConnectError/TimeoutException/
+            # HTTPStatusError) -- a sweep runs many chunks back to back,
+            # and letting ANY exception from one judge call (a raw
+            # RemoteProtocolError, a client bug, anything) propagate
+            # would abort the whole sweep with earlier chunks' closes
+            # already committed. One bad chunk fails open; the rest of
+            # the sweep keeps running.
+            logger.warning(
+                "Resolve-sweep judge call raised %s for %d pair(s) -- "
+                "leaving all as UNCERTAIN (fail-open).",
+                type(exc).__name__, len(chunk),
+            )
+            return None
         parsed = _parse(raw, len(chunk))
         if parsed is None:
             logger.warning(
@@ -163,11 +193,11 @@ def _format_pairs(chunk: list[ResolutionCandidate]) -> str:
     for idx, c in enumerate(chunk, start=1):
         parts.append(
             f"{idx}. DRIVER (candidate completion) [{c.driver_id}] "
-            f"{c.driver_title!r}\n"
+            f"{_truncate(c.driver_title, _MAX_TITLE_CHARS)!r}\n"
             f"   content: {_truncate(c.driver_content)!r}\n"
             f"   source evidence: {_truncate(c.driver_source_text)!r}\n"
             f"   TARGET (open {c.target_type}) [{c.target_id}] "
-            f"{c.target_title!r}\n"
+            f"{_truncate(c.target_title, _MAX_TITLE_CHARS)!r}\n"
             f"   content: {_truncate(c.target_content)!r}"
         )
     return "\n\n".join(parts)

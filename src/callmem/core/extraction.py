@@ -414,6 +414,16 @@ class EntityExtractor:
         return candidates
 
     _EMBED_WIDEN_TOP_K = 3
+    # Stricter than the global search floor (``config.embeddings.
+    # min_similarity``, tuned for retrieval recall): every widened pair
+    # costs a judge call, so a borderline vector match here is pure waste
+    # (or worse, judge input noise) rather than just a slightly-worse
+    # search result.
+    _EMBED_WIDEN_MIN_SIM = 0.60
+    # Global cap across the whole widen pass, highest similarity first --
+    # without it, a large project's driver set could add unboundedly many
+    # judge-call pairs in one sweep.
+    _EMBED_WIDEN_MAX_PAIRS = 50
 
     def _widen_recall_with_embeddings(
         self,
@@ -482,23 +492,36 @@ class EntityExtractor:
             })
             for did in driver_ids
         ]
-        vectors = embedder.embed(texts, timeout=settings.timeout)
-        if not vectors or len(vectors) != len(driver_ids):
-            return existing_pairs
+
+        # Chunk the embed call itself, batches of ``batch_size`` (matches
+        # the embedder's own batching convention) -- one huge request for
+        # a project with a large driver set could time out.
+        batch_size = max(1, settings.batch_size)
+        vectors: list[list[float] | None] = []
+        for i in range(0, len(texts), batch_size):
+            chunk_texts = texts[i:i + batch_size]
+            chunk_vectors = embedder.embed(chunk_texts, timeout=settings.timeout)
+            if not chunk_vectors or len(chunk_vectors) != len(chunk_texts):
+                vectors.extend([None] * len(chunk_texts))
+            else:
+                vectors.extend(chunk_vectors)
 
         claimed = {p["id"] for p in existing_pairs}
         skipped_by_guard = 0
-        widened = list(existing_pairs)
+        # (similarity, driver_id, target_id) -- collected across every
+        # driver so the global cap below can keep the highest-similarity
+        # pairs project-wide, not just the first few drivers iterated.
+        scored_new: list[tuple[float, str, str]] = []
 
         for driver_id, vector in zip(driver_ids, vectors, strict=True):
             if not vector:
                 continue
             scored = rank_by_similarity(
                 vector, vector_candidates,
-                min_similarity=settings.min_similarity,
+                min_similarity=self._EMBED_WIDEN_MIN_SIM,
             )
             found = 0
-            for _score, target_id in scored:
+            for score, target_id in scored:
                 if found >= self._EMBED_WIDEN_TOP_K:
                     break
                 if target_id in claimed or target_id not in open_targets:
@@ -509,18 +532,7 @@ class EntityExtractor:
                     skipped_by_guard += 1
                     continue
 
-                target_row = open_targets[target_id]
-                resolved_status = (
-                    "done" if target_row["type"] == "todo" else "resolved"
-                )
-                widened.append({
-                    "id": target_id,
-                    "type": target_row["type"],
-                    "title": target_row["title"],
-                    "status": resolved_status,
-                    "driver_title": driver_by_id[driver_id],
-                    "driver_id": driver_id,
-                })
+                scored_new.append((score, driver_id, target_id))
                 claimed.add(target_id)
                 found += 1
 
@@ -528,6 +540,30 @@ class EntityExtractor:
             stats["skipped_by_guard"] = (
                 stats.get("skipped_by_guard", 0) + skipped_by_guard
             )
+
+        scored_new.sort(key=lambda t: t[0], reverse=True)
+        if len(scored_new) > self._EMBED_WIDEN_MAX_PAIRS:
+            logger.info(
+                "Embedding widen: %d candidate pair(s) found, capping to "
+                "the top %d by similarity",
+                len(scored_new), self._EMBED_WIDEN_MAX_PAIRS,
+            )
+            scored_new = scored_new[:self._EMBED_WIDEN_MAX_PAIRS]
+
+        widened = list(existing_pairs)
+        for _score, driver_id, target_id in scored_new:
+            target_row = open_targets[target_id]
+            resolved_status = (
+                "done" if target_row["type"] == "todo" else "resolved"
+            )
+            widened.append({
+                "id": target_id,
+                "type": target_row["type"],
+                "title": target_row["title"],
+                "status": resolved_status,
+                "driver_title": driver_by_id[driver_id],
+                "driver_id": driver_id,
+            })
 
         return widened
 

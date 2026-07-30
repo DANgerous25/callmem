@@ -36,15 +36,20 @@ class _StubJudge:
 
 class _SequencedJudge:
     """Returns a different canned response for each successive call --
-    used to test chunking, where each chunk gets its own LLM call."""
+    used to test chunking, where each chunk gets its own LLM call. An
+    entry that is an ``Exception`` instance is raised instead of
+    returned, for testing mid-sweep transport failures."""
 
-    def __init__(self, responses: list[str | None]) -> None:
+    def __init__(self, responses: list[str | None | Exception]) -> None:
         self.responses = responses
         self.calls: list[str] = []
 
     def extract(self, prompt: str) -> str | None:
         self.calls.append(prompt)
-        return self.responses[len(self.calls) - 1]
+        response = self.responses[len(self.calls) - 1]
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _make_engine(memory_db: Database) -> MemoryEngine:
@@ -362,3 +367,182 @@ class TestDryRun:
         assert records[0]["verdict"] == "CONFIRMED"
         row = repo.get_entity(todo_id)
         assert row["status"] == "open"
+
+
+class TestPromptCarriesEvidence:
+    """A judge that never sees the actual evidence can only guess -- this
+    guards against a refactor that silently drops driver source text or
+    target content from the prompt (the evidence-stripping mutant)."""
+
+    def test_prompt_includes_driver_source_text_and_target_content(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        repo = Repository(memory_db)
+        todo_id = _insert_todo(repo, engine.project_id, "Implement the selector")
+        driver_id = _insert_driver(
+            repo, engine.project_id, "Implemented the selector",
+        )
+        candidate = ResolutionCandidate(
+            driver_id=driver_id,
+            driver_title="Implemented the selector",
+            driver_content="Driver content marker XYZZY-CONTENT",
+            driver_source_text="Source evidence marker PLUGH-EVIDENCE",
+            target_id=todo_id,
+            target_type="todo",
+            target_title="Implement the selector",
+            target_content="Target content marker QUUX-CONTENT",
+        )
+
+        stub = _StubJudge(_verdict_response([(1, "UNCERTAIN")]))
+        judge = ResolutionJudge(memory_db, stub)
+        judge.run([candidate])
+
+        assert len(stub.calls) == 1
+        prompt = stub.calls[0]
+        assert "PLUGH-EVIDENCE" in prompt
+        assert "XYZZY-CONTENT" in prompt
+        assert "QUUX-CONTENT" in prompt
+
+    def test_long_titles_are_truncated_in_the_prompt(
+        self, memory_db: Database,
+    ) -> None:
+        """Titles are the one prompt input with no length bound upstream
+        (content/source text are already truncated) -- a pathologically
+        long title must not blow up the prompt."""
+        engine = _make_engine(memory_db)
+        repo = Repository(memory_db)
+        todo_id = _insert_todo(repo, engine.project_id, "short todo title")
+        driver_id = _insert_driver(
+            repo, engine.project_id, "short driver title",
+        )
+        long_title = "X" * 500
+        candidate = ResolutionCandidate(
+            driver_id=driver_id,
+            driver_title=long_title,
+            driver_content="content",
+            driver_source_text="evidence",
+            target_id=todo_id,
+            target_type="todo",
+            target_title=long_title,
+            target_content="content",
+        )
+
+        stub = _StubJudge(_verdict_response([(1, "UNCERTAIN")]))
+        judge = ResolutionJudge(memory_db, stub)
+        judge.run([candidate])
+
+        prompt = stub.calls[0]
+        assert long_title not in prompt
+        assert "X" * 200 in prompt
+
+
+class TestJudgeCallFailsOpen:
+    """A raised exception from the LLM client (not just a malformed/absent
+    response) must fail that chunk open without aborting the sweep --
+    earlier chunks may have already committed real closes."""
+
+    def test_exception_during_extract_leaves_chunk_uncertain(
+        self, memory_db: Database, caplog,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        repo = Repository(memory_db)
+        todo_id = _insert_todo(repo, engine.project_id, "Implement the selector")
+        driver_id = _insert_driver(
+            repo, engine.project_id, "Implemented the selector",
+        )
+        candidate = _candidate(driver_id, todo_id)
+
+        class _RaisingJudge:
+            def extract(self, prompt: str) -> str | None:
+                raise RuntimeError("boom: simulated RemoteProtocolError")
+
+        judge = ResolutionJudge(memory_db, _RaisingJudge())
+        with caplog.at_level(logging.WARNING):
+            records, stats = judge.run([candidate])
+
+        assert stats.uncertain == 1
+        assert stats.judge_failed is True
+        assert records[0]["verdict"] == "UNCERTAIN"
+        assert repo.get_entity(todo_id)["status"] == "open"
+        assert any(
+            "raised" in r.message.lower() or "fail-open" in r.message.lower()
+            for r in caplog.records
+        )
+
+    def test_exception_in_one_chunk_does_not_abort_later_chunks(
+        self, memory_db: Database,
+    ) -> None:
+        """The exact incident shape: a mid-sweep transport error must not
+        abort the whole run with earlier closes stuck half-applied --
+        here, a LATER chunk must still get its chance to run and close."""
+        engine = _make_engine(memory_db)
+        repo = Repository(memory_db)
+
+        candidates = []
+        for i in range(15):
+            todo_id = _insert_todo(repo, engine.project_id, f"todo {i}")
+            driver_id = _insert_driver(repo, engine.project_id, f"driver {i}")
+            candidates.append(_candidate(driver_id, todo_id))
+
+        # Chunk 1 (pairs 0-9) raises; chunk 2 (pairs 10-14) confirms all 5.
+        responses = [
+            RuntimeError("boom"),
+            _verdict_response([(i, "CONFIRMED") for i in range(1, 6)]),
+        ]
+        judge = ResolutionJudge(memory_db, _SequencedJudge(responses))
+        records, stats = judge.run(candidates)
+
+        assert len(judge.llm.calls) == 2
+        assert stats.uncertain == 10
+        assert stats.confirmed == 5
+        assert repo.get_entity(candidates[0].target_id)["status"] == "open"
+        assert repo.get_entity(candidates[10].target_id)["status"] == "done"
+
+
+class TestConfirmedOnlyWhenApplied:
+    """``stats.confirmed`` must reflect real closes, not judge verdicts --
+    a CONFIRMED verdict whose ``mark_resolved`` call was a no-op (already
+    at that status) or found nothing (entity vanished) did not actually
+    close anything."""
+
+    def test_unchanged_mark_resolved_does_not_count_as_confirmed(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        repo = Repository(memory_db)
+        # Already at the status CONFIRMED would set it to -- a race where
+        # something else closed it between candidate-gather and judging.
+        todo_id = _insert_todo(repo, engine.project_id, "Implement the selector")
+        repo.mark_resolved(todo_id, "done")
+        driver_id = _insert_driver(
+            repo, engine.project_id, "Implemented the selector",
+        )
+        candidate = _candidate(driver_id, todo_id)
+
+        judge = ResolutionJudge(
+            memory_db, _StubJudge(_verdict_response([(1, "CONFIRMED")])),
+        )
+        records, stats = judge.run([candidate])
+
+        assert stats.confirmed == 0
+        assert "status" not in records[0]
+        assert records[0]["verdict"] == "CONFIRMED"
+
+    def test_vanished_entity_does_not_count_as_confirmed(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        repo = Repository(memory_db)
+        driver_id = _insert_driver(
+            repo, engine.project_id, "Implemented the selector",
+        )
+        candidate = _candidate(driver_id, "does-not-exist-anymore")
+
+        judge = ResolutionJudge(
+            memory_db, _StubJudge(_verdict_response([(1, "CONFIRMED")])),
+        )
+        records, stats = judge.run([candidate])
+
+        assert stats.confirmed == 0
+        assert "status" not in records[0]

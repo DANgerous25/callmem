@@ -1144,16 +1144,20 @@ class TestWidenRecallWithEmbeddings:
 
     class _StubEmbedder:
         """Deterministic embedder stand-in -- returns the same fixed
-        vector for every text, so tests control similarity directly."""
+        vector for every text, so tests control similarity directly.
+        Records every ``embed()`` call's text batch so tests can assert
+        on chunking (or on it never being called at all)."""
 
         model = "stub-embed"
 
         def __init__(self, vector: list[float]) -> None:
             self._vector = vector
+            self.calls: list[list[str]] = []
 
         def embed(
             self, texts: list[str], timeout: float | None = None,
         ) -> list[list[float]] | None:
+            self.calls.append(list(texts))
             return [list(self._vector) for _ in texts]
 
         def is_available(self) -> bool:
@@ -1264,3 +1268,178 @@ class TestWidenRecallWithEmbeddings:
         )
         assert not any(c.target_id == todo_id for c in candidates)
         assert stats.get("skipped_by_guard") == 1
+
+    def test_disabled_with_stored_embeddings_never_calls_embedder(
+        self, memory_db: Database,
+    ) -> None:
+        """Vectors already exist for this project, but embeddings are
+        disabled in config -- widen must short-circuit before ever
+        touching the embedder (a project that turned embeddings off
+        should not pay for or use stale vector data)."""
+        from callmem.core.embeddings import embedding_model_key, pack_vector
+        from callmem.core.repository import Repository
+
+        config = Config(
+            sensitive_data={"enabled": False, "llm_scan": False},
+            embeddings={"enabled": False},
+        )
+        engine, extractor = self._setup(memory_db, config)
+        repo = Repository(memory_db)
+
+        todo_id = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Investigate login bug", status="open",
+        )
+        vector = [1.0, 0.0, 0.0]
+        model_key = embedding_model_key(config)
+        repo.upsert_embedding(
+            todo_id, model_key, len(vector), pack_vector(vector),
+        )
+        TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Refactored the auth module",
+        )
+
+        embedder = self._StubEmbedder(vector)
+        candidates = extractor.gather_resolution_candidates(
+            engine.project_id, embedder=embedder,
+        )
+        assert candidates == []
+        assert embedder.calls == []
+
+    def test_embed_call_is_chunked_by_batch_size(
+        self, memory_db: Database,
+    ) -> None:
+        config = Config(
+            sensitive_data={"enabled": False, "llm_scan": False},
+            embeddings={"batch_size": 2},
+        )
+        engine, extractor = self._setup(memory_db, config)
+
+        from callmem.core.embeddings import embedding_model_key, pack_vector
+        from callmem.core.repository import Repository
+
+        repo = Repository(memory_db)
+        vector = [1.0, 0.0, 0.0]
+        model_key = embedding_model_key(config)
+        todo_id = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Investigate login bug", status="open",
+        )
+        repo.upsert_embedding(
+            todo_id, model_key, len(vector), pack_vector(vector),
+        )
+        # 5 drivers, batch_size=2 -- must be embedded in ceil(5/2)=3 calls.
+        for i in range(5):
+            TestGatherResolutionCandidates._insert_entity(
+                memory_db, engine.project_id, "feature",
+                f"Unrelated driver number {i}",
+            )
+
+        embedder = self._StubEmbedder(vector)
+        extractor.gather_resolution_candidates(
+            engine.project_id, embedder=embedder,
+        )
+
+        assert len(embedder.calls) == 3
+        assert [len(c) for c in embedder.calls] == [2, 2, 1]
+        assert sum(len(c) for c in embedder.calls) == 5
+
+    def test_widen_threshold_stricter_than_global_search_floor(
+        self, memory_db: Database,
+    ) -> None:
+        """A vector match between the global search floor (0.45 default)
+        and the widen-specific floor must NOT widen -- widen candidates
+        cost judge calls, so the bar is deliberately higher than plain
+        retrieval."""
+        from callmem.core.embeddings import embedding_model_key, pack_vector
+        from callmem.core.repository import Repository
+
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        assert config.embeddings.min_similarity < 0.60
+        engine, extractor = self._setup(memory_db, config)
+        repo = Repository(memory_db)
+
+        todo_id = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Investigate login bug", status="open",
+        )
+        # cosine([1,0,0], [1,1.5,0]) == 1/sqrt(3.25) ~= 0.555 -- above the
+        # global search floor (0.45 default) but below the widen floor.
+        target_vector = [1.0, 1.5, 0.0]
+        model_key = embedding_model_key(config)
+        repo.upsert_embedding(
+            todo_id, model_key, len(target_vector), pack_vector(target_vector),
+        )
+        TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Refactored the auth module",
+        )
+
+        query_vector = [1.0, 0.0, 0.0]
+        import math
+
+        cosine = query_vector[0] * target_vector[0] / (
+            math.sqrt(sum(x * x for x in query_vector))
+            * math.sqrt(sum(x * x for x in target_vector))
+        )
+        assert config.embeddings.min_similarity < cosine < 0.60
+
+        candidates = extractor.gather_resolution_candidates(
+            engine.project_id, embedder=self._StubEmbedder(query_vector),
+        )
+        assert not any(c.target_id == todo_id for c in candidates)
+
+    def test_global_pair_cap_keeps_highest_similarity_first(
+        self, memory_db: Database, caplog,
+    ) -> None:
+        import logging
+
+        from callmem.core.embeddings import embedding_model_key, pack_vector
+        from callmem.core.repository import Repository
+
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        engine, extractor = self._setup(memory_db, config)
+        extractor._EMBED_WIDEN_MAX_PAIRS = 2  # instance override, don't need 50+ rows
+        repo = Repository(memory_db)
+        model_key = embedding_model_key(config)
+
+        # Three targets at descending similarity to the driver's query
+        # vector [1, 0, 0] -- all above the widen floor, so all three
+        # would qualify without the cap.
+        todo_high = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo", "Investigate login bug A",
+            status="open",
+        )
+        repo.upsert_embedding(
+            todo_high, model_key, 3, pack_vector([1.0, 0.0, 0.0]),
+        )
+        todo_mid = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo", "Investigate login bug B",
+            status="open",
+        )
+        repo.upsert_embedding(
+            todo_mid, model_key, 3, pack_vector([1.0, 0.3, 0.0]),
+        )
+        todo_low = TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "todo", "Investigate login bug C",
+            status="open",
+        )
+        repo.upsert_embedding(
+            todo_low, model_key, 3, pack_vector([1.0, 0.8, 0.0]),
+        )
+        TestGatherResolutionCandidates._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Refactored the auth module",
+        )
+
+        with caplog.at_level(logging.INFO):
+            candidates = extractor.gather_resolution_candidates(
+                engine.project_id,
+                embedder=self._StubEmbedder([1.0, 0.0, 0.0]),
+            )
+
+        target_ids = {c.target_id for c in candidates}
+        assert target_ids == {todo_high, todo_mid}
+        assert todo_low not in target_ids
+        assert any("capping" in r.message.lower() for r in caplog.records)
