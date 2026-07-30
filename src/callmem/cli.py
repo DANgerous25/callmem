@@ -2374,6 +2374,53 @@ def requeue_failed(project: Path, job_type: str | None) -> None:
     click.echo(f"Requeued {count} failed job(s).")
 
 
+@main.command("clear-failed")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--type", "job_type", default=None, help="Only clear jobs of this type.")
+@click.option(
+    "--yes", "-y", is_flag=True,
+    help="Skip the confirmation prompt (for non-interactive/automated use).",
+)
+def clear_failed(project: Path, job_type: str | None, yes: bool) -> None:
+    """Permanently delete `failed` jobs from the queue.
+
+    Disposal path for jobs whose work is no longer wanted — e.g. after a
+    full re-extract already covered the events those jobs would have
+    processed, so requeuing would just duplicate work. Failed jobs are
+    inert operational debris; events remain the source of truth and can
+    always be re-extracted, so deleting them is safe. Also useful to
+    clear historic failures that are tripping the briefing's pipeline
+    health banner even though the pipeline is healthy again. Use
+    'requeue-failed' instead when the work is still wanted.
+    """
+    from callmem.core.database import Database
+    from callmem.core.queue import JobQueue
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}")
+        click.echo("Run 'callmem init' first.")
+        return
+
+    db = Database(db_path)
+    db.initialize()
+    queue = JobQueue(db)
+
+    count = queue.get_failed_count(job_type)
+    if count == 0:
+        click.echo("No failed jobs to clear.")
+        return
+
+    click.echo(f"Clear {count} failed job(s)?")
+    proceed = yes or click.confirm("Proceed?", default=False)
+    if not proceed:
+        click.echo("Cancelled.")
+        return
+
+    deleted = queue.clear_failed(job_type)
+    click.echo(f"Cleared {deleted} failed job(s).")
+
+
 # ── Watch command ────────────────────────────────────────────────────
 
 

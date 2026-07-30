@@ -208,6 +208,34 @@ class JobQueue:
         finally:
             conn.close()
 
+    def clear_failed(self, job_type: str | None = None) -> int:
+        """Permanently delete `failed` jobs. Disposal path backing
+        `callmem clear-failed`.
+
+        Failed jobs are inert operational debris — events remain the
+        source of truth and can always be re-extracted — so deletion is
+        safe. Use this instead of `requeue_failed` when the failed jobs'
+        work has already been covered another way (e.g. a full
+        re-extract) and requeuing would just duplicate it.
+
+        Returns the number of rows deleted.
+        """
+        conn = self.db.connect()
+        try:
+            if job_type is not None:
+                cur = conn.execute(
+                    "DELETE FROM jobs WHERE status = 'failed' AND type = ?",
+                    (job_type,),
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM jobs WHERE status = 'failed'"
+                )
+            conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
+
     def auto_requeue_failed(
         self,
         job_type: str,
@@ -346,17 +374,25 @@ class JobQueue:
         finally:
             conn.close()
 
-    def get_failed_count(self) -> int:
-        """Return the total number of jobs currently in 'failed' status.
+    def get_failed_count(self, job_type: str | None = None) -> int:
+        """Return the number of jobs currently in 'failed' status.
 
         Used by the briefing's pipeline health check — a large failed
         count means a backend outage is silently piling up dead jobs.
+        Also used by `callmem clear-failed` to preview the count before
+        deleting.
         """
         conn = self.db.connect()
         try:
-            row = conn.execute(
-                "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed'"
-            ).fetchone()
+            if job_type is not None:
+                row = conn.execute(
+                    "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed' AND type = ?",
+                    (job_type,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed'"
+                ).fetchone()
             return row["c"]
         finally:
             conn.close()

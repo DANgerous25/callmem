@@ -308,6 +308,75 @@ class TestRequeueFailed:
         assert job.requeue_count == 0
 
 
+class TestClearFailed:
+    def test_clear_failed_deletes_failed_and_reports_count(
+        self, memory_db: Database
+    ) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "permanent error")
+        assert queue.get_job(job_id).status == "failed"  # type: ignore[union-attr]
+
+        count = queue.clear_failed()
+        assert count == 1
+        assert queue.get_job(job_id) is None
+
+    def test_clear_failed_leaves_other_statuses_untouched(
+        self, memory_db: Database
+    ) -> None:
+        queue = JobQueue(memory_db)
+
+        # Distinct types so dequeue's FIFO-within-type ordering can't pick
+        # up the wrong job — each dequeue call below is unambiguous.
+        pending_id = queue.enqueue("type_pending", {})
+
+        running_id = queue.enqueue("type_running", {})
+        queue.dequeue("type_running")
+
+        completed_id = queue.enqueue("type_completed", {})
+        queue.dequeue("type_completed")
+        queue.complete(completed_id)
+
+        failed_id = queue.enqueue("type_failed", {}, max_attempts=1)
+        queue.dequeue("type_failed")
+        queue.fail(failed_id, "x")
+        assert queue.get_job(failed_id).status == "failed"  # type: ignore[union-attr]
+
+        count = queue.clear_failed()
+        assert count == 1
+
+        assert queue.get_job(pending_id) is not None
+        assert queue.get_job(pending_id).status == "pending"  # type: ignore[union-attr]
+        assert queue.get_job(running_id) is not None
+        assert queue.get_job(running_id).status == "running"  # type: ignore[union-attr]
+        assert queue.get_job(completed_id) is not None
+        assert queue.get_job(completed_id).status == "completed"  # type: ignore[union-attr]
+        assert queue.get_job(failed_id) is None
+
+    def test_clear_failed_filters_by_type(self, memory_db: Database) -> None:
+        queue = JobQueue(memory_db)
+        j1 = queue.enqueue("extract_entities", {}, max_attempts=1)
+        j2 = queue.enqueue("generate_summary", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(j1, "x")
+        queue.dequeue("generate_summary")
+        queue.fail(j2, "x")
+
+        count = queue.clear_failed(job_type="extract_entities")
+        assert count == 1
+        assert queue.get_job(j1) is None
+        assert queue.get_job(j2) is not None
+        assert queue.get_job(j2).status == "failed"  # type: ignore[union-attr]
+
+    def test_clear_failed_zero_when_none_failed(
+        self, memory_db: Database
+    ) -> None:
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {})
+        assert queue.clear_failed() == 0
+
+
 class TestAutoRequeueFailed:
     def test_requeues_up_to_cap_for_matching_project_via_session(
         self, memory_db: Database

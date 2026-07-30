@@ -196,6 +196,125 @@ class TestRequeueFailed:
         assert "No callmem database" in result.output
 
 
+class TestClearFailed:
+    def _seed_failed_job(
+        self, tmp_path: Path, job_type: str = "extract_entities"
+    ) -> None:
+        import sqlite3
+
+        db_path = tmp_path / ".callmem" / "memory.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "INSERT INTO jobs (id, type, payload, status, attempts, max_attempts, "
+            "created_at) VALUES (?, ?, '{}', 'failed', 1, 1, datetime('now'))",
+            (f"job-{job_type}", job_type),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_prompts_for_confirmation_and_clears_on_yes(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_failed_job(tmp_path)
+
+        result = runner.invoke(
+            main, ["clear-failed", "--project", str(tmp_path)], input="y\n"
+        )
+        assert result.exit_code == 0
+        assert "1" in result.output
+        assert "Cleared 1 failed job(s)." in result.output
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        row = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?", ("job-extract_entities",)
+        ).fetchone()
+        conn.close()
+        assert row[0] == 0
+
+    def test_declining_confirmation_cancels(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_failed_job(tmp_path)
+
+        result = runner.invoke(
+            main, ["clear-failed", "--project", str(tmp_path)], input="n\n"
+        )
+        assert result.exit_code == 0
+        assert "Cancelled" in result.output
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        row = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?", ("job-extract_entities",)
+        ).fetchone()
+        conn.close()
+        assert row[0] == 1
+
+    def test_yes_flag_skips_confirmation_prompt(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_failed_job(tmp_path)
+
+        result = runner.invoke(
+            main,
+            ["clear-failed", "--project", str(tmp_path), "--yes"],
+            input="",
+        )
+        assert result.exit_code == 0
+        assert "Cancelled" not in result.output
+        assert "Cleared 1 failed job(s)." in result.output
+
+    def test_type_filter(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_failed_job(tmp_path, "extract_entities")
+        self._seed_failed_job(tmp_path, "generate_summary")
+
+        result = runner.invoke(
+            main,
+            [
+                "clear-failed", "--project", str(tmp_path),
+                "--type", "extract_entities", "--yes",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Cleared 1 failed job(s)." in result.output
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        statuses = dict(
+            conn.execute("SELECT id, status FROM jobs").fetchall()
+        )
+        conn.close()
+        assert "job-extract_entities" not in statuses
+        assert statuses["job-generate_summary"] == "failed"
+
+    def test_zero_failed_jobs_prints_message_and_exits_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+
+        result = runner.invoke(
+            main, ["clear-failed", "--project", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "No failed jobs to clear." in result.output
+
+    def test_no_db_shows_error(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["clear-failed", "--project", str(tmp_path)]
+        )
+        assert "No callmem database" in result.output
+
+
 class TestAudit:
     def test_clean_db_passes(self, tmp_path: Path) -> None:
         runner = CliRunner()
