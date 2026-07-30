@@ -1327,19 +1327,33 @@ class Repository:
     ) -> dict[str, Any] | None:
         """Reopen a previously closed entity: restore its per-type open
         status and clear ``resolved_at``. The symmetric inverse of
-        ``mark_resolved``. Todos reopen to ``open``; every other type
-        (failures included) reopens to ``unresolved``, mirroring the
-        per-type closing status used when resolving. An optional note is
-        recorded in metadata; any leftover ``resolution_note`` from a
-        previous close is removed, other metadata keys are left intact.
-        Unlike ``mark_resolved``, this never touches ``stale``/``pinned``
-        -- reopening is not a staleness judgment. A no-op when the entity
-        is already at its open status with ``resolved_at`` cleared: callers
-        check the ``unchanged`` key on the result instead of diffing
-        themselves. Also repairs the half-state where ``status`` was left
-        at a closed value with ``resolved_at`` already NULL. Returns None
-        if the entity does not exist.
+        ``mark_resolved``. Todos reopen to ``open``; failures reopen to
+        ``unresolved``, mirroring the per-type closing status used when
+        resolving. An optional note is recorded in metadata; any leftover
+        ``resolution_note`` from a previous close is removed, other
+        metadata keys are left intact. Unlike ``mark_resolved``, this
+        never touches ``stale``/``pinned`` -- reopening is not a
+        staleness judgment. A no-op when the entity is already at its
+        open status with ``resolved_at`` cleared, OR when its status is
+        ``None`` (never closed in the first place -- defense in depth
+        against fabricating a status for an entity with no evidenced
+        close): callers check the ``unchanged`` key on the result instead
+        of diffing themselves. Also repairs the half-state where
+        ``status`` was left at a closed value with ``resolved_at``
+        already NULL.
+
+        Only entity types with an evidenced open/closed lifecycle can be
+        reopened -- imported from ``EntityExtractor._RESOLVABLE_TYPES``
+        (extraction.py) rather than duplicated here, since that's the
+        source of truth for which types mem_resolve's auto-resolver
+        treats as closeable. Every other type's resting state is
+        ``status=None``; fabricating ``"unresolved"`` for e.g. a fact or
+        decision would have no undo path. For those, the result carries
+        ``unsupported_type: True`` instead of mutating anything.
+
+        Returns None if the entity does not exist.
         """
+        from callmem.core.extraction import EntityExtractor
         from callmem.models.entities import Entity
 
         conn = self.db.connect()
@@ -1351,8 +1365,17 @@ class Repository:
                 return None
             row = dict(row)
             old_status = row.get("status")
-            open_status = "open" if row.get("type") == "todo" else "unresolved"
-            unchanged = (
+            entity_type = row.get("type")
+
+            if entity_type not in EntityExtractor._RESOLVABLE_TYPES:
+                return {
+                    "unsupported_type": True,
+                    "type": entity_type,
+                    "old_status": old_status,
+                }
+
+            open_status = "open" if entity_type == "todo" else "unresolved"
+            unchanged = old_status is None or (
                 old_status == open_status and row.get("resolved_at") is None
             )
 

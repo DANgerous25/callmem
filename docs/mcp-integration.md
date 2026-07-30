@@ -146,7 +146,7 @@ Returns per-entity results (`{id, old_status, new_status, resolved_at}`, or `unc
 
 ### `mem_reopen`
 
-Reopen entities that were wrongly closed — the symmetric inverse of `mem_resolve`. Restores the per-type open status (`todo` → `open`, everything else → `unresolved`) and clears `resolved_at`. Also repairs half-closed records (e.g. `status` left at a closed value with `resolved_at` never set) so raw SQL is never needed to fix a bad close. Accepts full IDs or the 8-char short IDs shown in briefings.
+Reopen entities that were wrongly closed — the symmetric inverse of `mem_resolve`. Restores the per-type open status (`todo` → `open`, `failure` → `unresolved`) and clears `resolved_at`. Also repairs half-closed records (e.g. `status` left at a closed value with `resolved_at` never set) so raw SQL is never needed to fix a bad close. Only `todo`/`failure` have an evidenced open/closed lifecycle, so other entity types are rejected per-entity rather than guessed at. If the entity is still marked stale, reopening it doesn't surface it in briefings/Action Items — follow up with `mem_mark_current`. Accepts full IDs or the 8-char short IDs shown in briefings.
 
 ```json
 {
@@ -163,7 +163,7 @@ Reopen entities that were wrongly closed — the symmetric inverse of `mem_resol
 }
 ```
 
-Returns per-entity results (`{id, old_status, new_status}`, or `unchanged: true` for a no-op); a bad ID in the batch is reported per-entity, not fatal to the rest.
+Returns per-entity results (`{id, old_status, new_status, resolved_at}`, or `unchanged: true` for a no-op; `stale: true` if the entity is still marked stale after reopening); a bad ID or unsupported type in the batch is reported per-entity, not fatal to the rest.
 
 ### `mem_get_tasks`
 

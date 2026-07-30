@@ -611,10 +611,15 @@ class MemoryEngine:
         """Reopen a previously closed entity (TODO, failure, etc.): restore
         its per-type open status and clear ``resolved_at``. The symmetric
         inverse of ``resolve_entity``. Returns the updated entity row (with
-        an ``unchanged`` marker if it was already open), or None if the
-        entity does not exist."""
+        an ``unchanged`` marker if it was already open, or
+        ``unsupported_type`` if the entity's type has no evidenced
+        open/closed lifecycle), or None if the entity does not exist."""
         result = self.repo.mark_reopened(entity_id, note=note)
-        if result is not None and not result.get("unchanged"):
+        if (
+            result is not None
+            and not result.get("unchanged")
+            and not result.get("unsupported_type")
+        ):
             self._publish("entity_reopened", {
                 "entity_id": entity_id,
                 "status": result.get("status"),

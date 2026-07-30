@@ -466,11 +466,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Reopen entities (TODOs, failures) that were wrongly closed "
             "-- the symmetric inverse of mem_resolve. Restores the "
-            "correct per-type open status (todo -> 'open', everything "
-            "else -> 'unresolved') and clears resolved_at. Use this "
-            "instead of hand-editing status; it also repairs half-closed "
-            "records (status set but resolved_at left stale, or vice "
-            "versa). Accepts full ULIDs or the 8-char short IDs shown in "
+            "correct per-type open status (todo -> 'open', failure -> "
+            "'unresolved') and clears resolved_at. Use this instead of "
+            "hand-editing status; it also repairs half-closed records "
+            "(status set but resolved_at left stale, or vice versa). "
+            "Only todo/failure have an evidenced open/closed lifecycle, "
+            "so other entity types are rejected per-entity rather than "
+            "guessed at. If the reopened entity is still marked stale, "
+            "it stays hidden from briefings/Action Items until you also "
+            "call mem_mark_current -- reopening alone won't surface it. "
+            "Accepts full ULIDs or the 8-char short IDs shown in "
             "briefings."
         ),
         "inputSchema": {
@@ -1146,14 +1151,27 @@ def handle_reopen(
                 {"id": raw_id, "error": f"Entity not found: {raw_id}"}
             )
             continue
+        if entity.get("unsupported_type"):
+            results.append({
+                "id": resolved_id,
+                "error": (
+                    f"mem_reopen doesn't support type "
+                    f"'{entity.get('type')}' -- only todo/failure have "
+                    "an evidenced open/closed lifecycle"
+                ),
+            })
+            continue
 
         entry = {
             "id": resolved_id,
             "old_status": entity.get("old_status"),
             "new_status": entity.get("status"),
+            "resolved_at": entity.get("resolved_at"),
         }
         if entity.get("unchanged"):
             entry["unchanged"] = True
+        if entity.get("stale"):
+            entry["stale"] = True
         results.append(entry)
 
     return _make_result({"results": results, "count": len(results)})

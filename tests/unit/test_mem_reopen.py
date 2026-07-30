@@ -181,3 +181,109 @@ class TestMemReopenTool:
         row = engine.repo.get_entity(entity.id)
         assert row["stale"] == 1
         assert row["pinned"] == 1
+
+    def test_resolved_at_included_in_result(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="todo", status="done",
+            title="t", content="c",
+        )
+        engine.repo.create_entity(entity)
+
+        data = _parse(handle_reopen(engine, {"entity_ids": [entity.id]}))
+        entry = data["results"][0]
+        assert "resolved_at" in entry
+        assert entry["resolved_at"] is None
+
+    def test_stale_entity_flagged_in_result(self, memory_db: Database) -> None:
+        """Reopening a stale+closed entity restores status but the
+        entity stays suppressed from briefings until mem_mark_current is
+        also called. The result must disclose that, not just report
+        success."""
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="todo", status="done",
+            title="closed and stale", content="c",
+        )
+        engine.repo.create_entity(entity)
+        engine.repo.mark_stale(entity.id, reason="manual")
+
+        data = _parse(handle_reopen(engine, {"entity_ids": [entity.id]}))
+        entry = data["results"][0]
+        assert entry["stale"] is True
+
+    def test_non_stale_entity_omits_stale_key(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="todo", status="done",
+            title="closed, not stale", content="c",
+        )
+        engine.repo.create_entity(entity)
+
+        data = _parse(handle_reopen(engine, {"entity_ids": [entity.id]}))
+        entry = data["results"][0]
+        assert "stale" not in entry
+
+    def test_rejects_decision_type_per_entity(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="decision", status="done",
+            title="use postgres", content="c",
+        )
+        engine.repo.create_entity(entity)
+
+        data = _parse(handle_reopen(engine, {"entity_ids": [entity.id]}))
+        entry = data["results"][0]
+        assert "error" in entry
+        row = engine.repo.get_entity(entity.id)
+        assert row["status"] == "done"
+
+    def test_rejects_fact_type_per_entity(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="the API rate limit is 100rpm", content="c",
+        )
+        engine.repo.create_entity(entity)
+
+        data = _parse(handle_reopen(engine, {"entity_ids": [entity.id]}))
+        entry = data["results"][0]
+        assert "error" in entry
+
+    def test_unsupported_type_is_not_batch_fatal(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        good = Entity(
+            project_id=engine.project_id, type="todo", status="done",
+            title="good", content="c",
+        )
+        bad = Entity(
+            project_id=engine.project_id, type="decision", status="done",
+            title="bad", content="c",
+        )
+        engine.repo.create_entity(good)
+        engine.repo.create_entity(bad)
+
+        data = _parse(handle_reopen(
+            engine, {"entity_ids": [good.id, bad.id]},
+        ))
+        assert data["count"] == 2
+        ok_entry = next(r for r in data["results"] if r.get("id") == good.id)
+        assert ok_entry["new_status"] == "open"
+        bad_entry = next(r for r in data["results"] if r.get("id") == bad.id)
+        assert "error" in bad_entry
+
+    def test_never_closed_todo_is_unchanged(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        entity = Entity(
+            project_id=engine.project_id, type="todo",
+            title="never touched", content="c",
+        )
+        engine.repo.create_entity(entity)
+        assert entity.status is None
+
+        data = _parse(handle_reopen(engine, {"entity_ids": [entity.id]}))
+        entry = data["results"][0]
+        assert entry["unchanged"] is True
+        assert entry["old_status"] is None
+        row = engine.repo.get_entity(entity.id)
+        assert row["status"] is None

@@ -806,3 +806,64 @@ class TestMarkReopened:
         assert result["stale"] == 1
         assert result["staleness_reason"] == "manual"
         assert result["pinned"] == 1
+
+    def test_rejects_decision_type_without_mutating(
+        self, memory_db: Database,
+    ) -> None:
+        """A decision resolved via mem_resolve (which has no type
+        restriction) has no evidenced open status to restore -- reopening
+        it must not fabricate one."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="decision", status="done",
+            title="use postgres", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_reopened(entity.id)
+        assert result["unsupported_type"] is True
+        assert result["type"] == "decision"
+        row = repo.get_entity(entity.id)
+        assert row["status"] == "done"
+
+    def test_rejects_fact_type_never_closed(self, memory_db: Database) -> None:
+        """A fact's resting state is status=None -- it was never
+        'closed', so reopening it must not invent 'unresolved'."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="fact",
+            title="the API rate limit is 100rpm", content="content",
+        )
+        repo.create_entity(entity)
+        assert entity.status is None
+
+        result = repo.mark_reopened(entity.id)
+        assert result["unsupported_type"] is True
+        row = repo.get_entity(entity.id)
+        assert row["status"] is None
+
+    def test_never_closed_todo_with_null_status_is_unchanged(
+        self, memory_db: Database,
+    ) -> None:
+        """Defense in depth: even for an allowed type, a status=None
+        entity was never closed, so reopening it is a no-op rather than
+        fabricating status='open'."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo",
+            title="never touched", content="content",
+        )
+        repo.create_entity(entity)
+        assert entity.status is None
+
+        result = repo.mark_reopened(entity.id)
+        assert result["unchanged"] is True
+        assert result["old_status"] is None
+        row = repo.get_entity(entity.id)
+        assert row["status"] is None
