@@ -6,10 +6,21 @@
 //
 // Mechanism: `experimental.chat.system.transform` (see
 // @opencode-ai/plugin's Hooks type) lets a plugin append strings to the
-// system prompt sent with each chat completion. The briefing text is
-// fetched once (subprocess) and pushed into `output.system` on a session's
-// *first* transform call, so it lands in the model's context as ground
-// truth rather than something the model has to fetch and choose to relay.
+// system prompt sent with each chat completion. This hook is EXPERIMENTAL —
+// its name and shape carry no stability guarantee from OpenCode, and if a
+// future version removes/renames it, `hooks["experimental.chat.system..."]`
+// is simply never called, so the plugin degrades silently to no injection
+// (no crash) rather than failing loudly.
+//
+// The hook fires on every chat completion for a session (system prompt is
+// rebuilt per turn), not just the first. The briefing subprocess itself
+// still runs exactly once per session (single-flight, cached by sessionID),
+// but the RESOLVED TEXT is cached and re-pushed into `output.system` on
+// every turn for that session — otherwise the briefing would only appear in
+// the first LLM request and vanish from context on turn 2 onward. Caching
+// the resolved string (rather than recomputing it) also keeps the injected
+// system-prompt content byte-identical turn over turn, which matters for
+// providers that prompt-cache on a stable system-prompt prefix.
 //
 // Eligibility is tracked from `session.created` (see EventSessionCreated in
 // @opencode-ai/sdk's types.gen.d.ts): `properties.info.id` is the session
@@ -27,6 +38,13 @@ import { execFile } from "node:child_process"
 
 const BRIEFING_TIMEOUT_MS = 10_000
 
+// `callmem briefing` prints this (and exits 0) when the project has no
+// `.callmem/memory.db` yet — it is CLI *output*, not a failure, so it isn't
+// caught by the error/empty-stdout check below. Treat it as "no briefing
+// available" rather than injecting the sentinel text as if it were the
+// briefing (which is what "present verbatim" would otherwise do).
+const NO_DATABASE_SENTINEL = "No callmem database found"
+
 function runBriefing(cwd) {
   return new Promise((resolve) => {
     execFile(
@@ -34,7 +52,8 @@ function runBriefing(cwd) {
       ["briefing"],
       { cwd, timeout: BRIEFING_TIMEOUT_MS, killSignal: "SIGKILL", maxBuffer: 10 * 1024 * 1024 },
       (error, stdout) => {
-        if (error || !stdout || !stdout.trim()) {
+        const text = stdout ? stdout.trim() : ""
+        if (error || !text || text.startsWith(NO_DATABASE_SENTINEL)) {
           resolve(null)
           return
         }
@@ -46,12 +65,13 @@ function runBriefing(cwd) {
 
 /** @type {import('@opencode-ai/plugin').Plugin} */
 export default async ({ client, directory }) => {
-  // sessionID -> Promise<string|null>, for top-level sessions created this
-  // process lifetime and not yet injected.
-  const pending = new Map()
-  // sessionIDs that have already been injected (or definitively failed) —
-  // guards against double injection across turns and process-local resumes.
-  const injected = new Set()
+  // sessionID -> Promise<string|null>, single-flight per top-level session
+  // created this process lifetime. Resolves once and is awaited (not
+  // re-run) on every subsequent transform call for that session.
+  const briefings = new Map()
+  // sessionIDs for which the "briefing unavailable" line has already been
+  // logged — logs exactly once per session, not once per turn.
+  const loggedFailure = new Set()
 
   async function logQuiet(message, extra) {
     try {
@@ -68,20 +88,15 @@ export default async ({ client, directory }) => {
       if (event.type !== "session.created") return
       const info = event.properties?.info
       if (!info?.id || info.parentID) return // malformed event, or a sub-session
-      if (pending.has(info.id) || injected.has(info.id)) return
-      pending.set(info.id, runBriefing(directory).catch(() => null))
+      if (briefings.has(info.id)) return
+      briefings.set(info.id, runBriefing(directory).catch(() => null))
     },
 
     "experimental.chat.system.transform": async (input, output) => {
       const sessionID = input.sessionID
-      if (!sessionID || injected.has(sessionID)) return
-      const briefingPromise = pending.get(sessionID)
+      if (!sessionID) return
+      const briefingPromise = briefings.get(sessionID)
       if (!briefingPromise) return // not a tracked new top-level session
-
-      // Mark injected before awaiting so a concurrent call for the same
-      // session can't race past this guard and inject twice.
-      injected.add(sessionID)
-      pending.delete(sessionID)
 
       let text = null
       try {
@@ -91,7 +106,10 @@ export default async ({ client, directory }) => {
       }
 
       if (!text) {
-        await logQuiet("callmem briefing unavailable, skipping injection", { sessionID })
+        if (!loggedFailure.has(sessionID)) {
+          loggedFailure.add(sessionID)
+          await logQuiet("callmem briefing unavailable, skipping injection", { sessionID })
+        }
         return
       }
 

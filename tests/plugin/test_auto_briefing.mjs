@@ -6,12 +6,19 @@
 // session.created event shape (properties.info.id, per
 // @opencode-ai/sdk EventSessionCreated), and asserts:
 //   1. the briefing subprocess is invoked exactly once per new session
-//   2. injection into experimental.chat.system.transform's output happens
-//      exactly once
-//   3. a second event/transform call for the same session does not
-//      double-inject or re-run the subprocess
+//   2. the SAME cached briefing text is re-injected into
+//      experimental.chat.system.transform's output on every turn (turn 1,
+//      2, 3, ...) for that session — the hook rebuilds the system prompt
+//      per chat request, so injecting only once would make the briefing
+//      vanish from context after the first turn
+//   3. duplicate session.created events for the same session do not
+//      double-spawn the subprocess
 //   4. sub-sessions (parentID set) are never injected
-//   5. a failing/timing-out briefing logs quietly and never throws
+//   5. a failing/timing-out briefing logs quietly exactly once (not once
+//      per turn) and never throws
+//   6. an uninitialized project (`callmem briefing` exits 0 but prints the
+//      "No callmem database found" sentinel) is treated as unavailable,
+//      not injected as if it were real briefing content
 //
 // Runs with plain node assertions (no test framework dependency) so it can
 // be invoked directly or shelled out to from pytest.
@@ -99,7 +106,7 @@ async function test(name, fn) {
   }
 }
 
-await test("injects briefing text once into system.transform output", async () => {
+await test("re-injects the same cached briefing text on every turn, subprocess runs once", async () => {
   const binDir = mkdtempSync(path.join(tmpdir(), "callmem-bin-"))
   const countFile = path.join(binDir, "count")
   makeFakeCallmem(binDir, { text: "BRIEFING-CONTENT-1", countFile })
@@ -113,17 +120,25 @@ await test("injects briefing text once into system.transform output", async () =
 
     const output1 = { system: [] }
     await hooks["experimental.chat.system.transform"]({ sessionID: "sess-1" }, output1)
-
-    assert.equal(output1.system.length, 1, "should inject exactly one system entry")
+    assert.equal(output1.system.length, 1, "turn 1 should inject exactly one system entry")
     assert.ok(output1.system[0].includes("BRIEFING-CONTENT-1"), "injected text should contain briefing content")
 
-    // Second turn, same session: must not double-inject.
+    // Turn 2 and turn 3: the hook rebuilds `system` from scratch per chat
+    // request, so the plugin must re-push the SAME cached text each time —
+    // not skip injection (that would make the briefing vanish from
+    // context after turn 1) and not re-run the subprocess.
     const output2 = { system: [] }
     await hooks["experimental.chat.system.transform"]({ sessionID: "sess-1" }, output2)
-    assert.equal(output2.system.length, 0, "second turn must not re-inject")
+    assert.equal(output2.system.length, 1, "turn 2 must still contain the briefing")
+    assert.equal(output2.system[0], output1.system[0], "turn 2 text must be identical to turn 1 (cached)")
+
+    const output3 = { system: [] }
+    await hooks["experimental.chat.system.transform"]({ sessionID: "sess-1" }, output3)
+    assert.equal(output3.system.length, 1, "turn 3 must still contain the briefing")
+    assert.equal(output3.system[0], output1.system[0], "turn 3 text must be identical to turn 1 (cached)")
 
     const invocations = existsSync(countFile) ? readFileSync(countFile, "utf8").trim().split("\n").length : 0
-    assert.equal(invocations, 1, "briefing subprocess should run exactly once")
+    assert.equal(invocations, 1, "briefing subprocess should run exactly once across all three turns")
   })
 })
 
@@ -168,7 +183,7 @@ await test("sub-sessions (parentID set) are never injected", async () => {
   })
 })
 
-await test("briefing failure logs quietly and never throws or injects", async () => {
+await test("briefing failure logs quietly exactly once (not per turn) and never throws or injects", async () => {
   const binDir = mkdtempSync(path.join(tmpdir(), "callmem-bin-"))
   makeFakeCallmem(binDir, { text: "unused", exitCode: 1 })
 
@@ -179,12 +194,46 @@ await test("briefing failure logs quietly and never throws or injects", async ()
 
     await hooks.event(sessionCreatedEvent("sess-4"))
 
+    const output1 = { system: [] }
+    await assert.doesNotReject(
+      hooks["experimental.chat.system.transform"]({ sessionID: "sess-4" }, output1),
+    )
+    assert.equal(output1.system.length, 0, "failed briefing must not inject anything on turn 1")
+
+    // Turn 2: must not throw, must not inject, and must NOT log a second
+    // quiet line — logging is per-session, not per-turn.
+    const output2 = { system: [] }
+    await assert.doesNotReject(
+      hooks["experimental.chat.system.transform"]({ sessionID: "sess-4" }, output2),
+    )
+    assert.equal(output2.system.length, 0, "failed briefing must not inject anything on turn 2 either")
+
+    assert.equal(logs.length, 1, "failure should log exactly one quiet line across both turns")
+    assert.equal(logs[0].body.level, "info")
+  })
+})
+
+await test("uninitialized project (no-database sentinel) is treated as unavailable, not injected", async () => {
+  const binDir = mkdtempSync(path.join(tmpdir(), "callmem-bin-"))
+  // Mirrors src/callmem/cli.py's `briefing` command: exits 0 and prints
+  // this sentinel to stdout when .callmem/memory.db doesn't exist yet.
+  makeFakeCallmem(binDir, {
+    text: "No callmem database found at /tmp/some-project/.callmem/memory.db",
+  })
+
+  await withPath(binDir, async () => {
+    const factory = await loadPlugin()
+    const { ctx, logs } = makeCtx(mkdtempSync(path.join(tmpdir(), "callmem-proj-")))
+    const hooks = await factory(ctx)
+
+    await hooks.event(sessionCreatedEvent("sess-6"))
+
     const output = { system: [] }
     await assert.doesNotReject(
-      hooks["experimental.chat.system.transform"]({ sessionID: "sess-4" }, output),
+      hooks["experimental.chat.system.transform"]({ sessionID: "sess-6" }, output),
     )
-    assert.equal(output.system.length, 0, "failed briefing must not inject anything")
-    assert.equal(logs.length, 1, "failure should log exactly one quiet line")
+    assert.equal(output.system.length, 0, "sentinel stdout must not be injected as briefing content")
+    assert.equal(logs.length, 1, "should log exactly one quiet line")
     assert.equal(logs[0].body.level, "info")
   })
 })
