@@ -44,7 +44,7 @@ class TestToolDefinitions:
             "mem_search_by_file", "mem_file_context",
             "mem_check_context", "mem_compress_context",
             "mem_vault_review", "mem_mark_stale", "mem_mark_current",
-            "mem_resolve",
+            "mem_resolve", "mem_reopen",
             "mem_task_create", "mem_task_update", "mem_task_list",
             "mem_task_tree",
             "mem_eval", "mem_eval_summary",

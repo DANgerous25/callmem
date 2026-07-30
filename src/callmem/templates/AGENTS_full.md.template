@@ -102,6 +102,9 @@ This project uses callmem for persistent memory via MCP tools. The same
   (accepts full or short IDs). This is the closing verb — it sets status to
   `done`/`resolved`/`cancelled`, not `mem_mark_stale`, which only hides an
   entity without recording that it was completed.
+- When an entity was wrongly closed, call `mem_reopen` with its ID — the
+  symmetric inverse of `mem_resolve`. It restores the correct open status
+  and clears `resolved_at`; never hand-edit status via raw SQL.
 - To recall past context, call `mem_search` with keywords.
 - To see open tasks, call `mem_get_tasks`.
 - **Before re-reading a file you've worked on before**, call

@@ -1276,6 +1276,70 @@ class Repository:
         finally:
             conn.close()
 
+    def mark_reopened(
+        self, entity_id: str, note: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Reopen a previously closed entity: restore its per-type open
+        status and clear ``resolved_at``. The symmetric inverse of
+        ``mark_resolved``. Todos reopen to ``open``; every other type
+        (failures included) reopens to ``unresolved``, mirroring the
+        per-type closing status used when resolving. An optional note is
+        recorded in metadata; any leftover ``resolution_note`` from a
+        previous close is removed, other metadata keys are left intact.
+        Unlike ``mark_resolved``, this never touches ``stale``/``pinned``
+        -- reopening is not a staleness judgment. A no-op when the entity
+        is already at its open status with ``resolved_at`` cleared: callers
+        check the ``unchanged`` key on the result instead of diffing
+        themselves. Also repairs the half-state where ``status`` was left
+        at a closed value with ``resolved_at`` already NULL. Returns None
+        if the entity does not exist.
+        """
+        from callmem.models.entities import Entity
+
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM entities WHERE id = ?", (entity_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            row = dict(row)
+            old_status = row.get("status")
+            open_status = "open" if row.get("type") == "todo" else "unresolved"
+            unchanged = (
+                old_status == open_status and row.get("resolved_at") is None
+            )
+
+            if not unchanged:
+                metadata = (
+                    json.loads(row["metadata"]) if row.get("metadata") else {}
+                )
+                metadata.pop("resolution_note", None)
+                if note:
+                    metadata["resolution_note"] = note
+                now = datetime.now(UTC).isoformat()
+                conn.execute(
+                    "UPDATE entities SET status = ?, resolved_at = NULL, "
+                    "metadata = ?, updated_at = ? WHERE id = ?",
+                    (
+                        open_status,
+                        json.dumps(metadata) if metadata else None,
+                        now, entity_id,
+                    ),
+                )
+                conn.commit()
+                row = dict(conn.execute(
+                    "SELECT * FROM entities WHERE id = ?", (entity_id,),
+                ).fetchone())
+
+            entity = Entity.from_row(row)
+            result = dict(entity.to_row())
+            result["old_status"] = old_status
+            result["unchanged"] = unchanged
+            return result
+        finally:
+            conn.close()
+
     def find_open_entities_by_keywords(
         self,
         project_id: str,

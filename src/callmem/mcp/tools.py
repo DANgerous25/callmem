@@ -462,6 +462,37 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "mem_reopen",
+        "description": (
+            "Reopen entities (TODOs, failures) that were wrongly closed "
+            "-- the symmetric inverse of mem_resolve. Restores the "
+            "correct per-type open status (todo -> 'open', everything "
+            "else -> 'unresolved') and clears resolved_at. Use this "
+            "instead of hand-editing status; it also repairs half-closed "
+            "records (status set but resolved_at left stale, or vice "
+            "versa). Accepts full ULIDs or the 8-char short IDs shown in "
+            "briefings."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "required": ["entity_ids"],
+            "properties": {
+                "entity_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Entity IDs to reopen. Full ULIDs or the short "
+                        "form shown in briefings (e.g. 'F5AVDQ25')."
+                    ),
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional note about why it was reopened",
+                },
+            },
+        },
+    },
+    {
         "name": "mem_task_create",
         "description": (
             "Create a task (optionally with parent_id for subtasks). "
@@ -713,7 +744,7 @@ def _make_error(message: str) -> list[TextContent]:
 # callable, so the server is a safe, query-only view.
 _WRITE_TOOLS: frozenset[str] = frozenset({
     "mem_session_start", "mem_session_end", "mem_ingest", "mem_pin",
-    "mem_mark_stale", "mem_mark_current", "mem_resolve",
+    "mem_mark_stale", "mem_mark_current", "mem_resolve", "mem_reopen",
     "mem_task_create", "mem_task_update",
     "mem_compress_context", "mem_set_overview", "mem_rewind_create",
     "mem_rewind_restore", "mem_vault_review",
@@ -1091,6 +1122,43 @@ def handle_resolve(
     return _make_result({"results": results, "count": len(results)})
 
 
+def handle_reopen(
+    engine: MemoryEngine, args: dict[str, Any],
+) -> list[TextContent]:
+    entity_ids = args.get("entity_ids", [])
+    note = args.get("note")
+
+    results: list[dict[str, Any]] = []
+    for raw_id in entity_ids:
+        eid = (raw_id or "").lstrip("#").strip()
+        if not eid:
+            results.append({"id": raw_id, "error": "entity id is required"})
+            continue
+        try:
+            resolved_id = engine.resolve_entity_id(eid)
+        except ValueError as exc:
+            results.append({"id": raw_id, "error": str(exc)})
+            continue
+
+        entity = engine.reopen_entity(resolved_id, note=note)
+        if entity is None:
+            results.append(
+                {"id": raw_id, "error": f"Entity not found: {raw_id}"}
+            )
+            continue
+
+        entry = {
+            "id": resolved_id,
+            "old_status": entity.get("old_status"),
+            "new_status": entity.get("status"),
+        }
+        if entity.get("unchanged"):
+            entry["unchanged"] = True
+        results.append(entry)
+
+    return _make_result({"results": results, "count": len(results)})
+
+
 # ── Task graph handlers (A1) ────────────────────────────────────────
 
 
@@ -1277,6 +1345,7 @@ _HANDLERS: dict[str, Any] = {
     "mem_mark_stale": handle_mark_stale,
     "mem_mark_current": handle_mark_current,
     "mem_resolve": handle_resolve,
+    "mem_reopen": handle_reopen,
     "mem_task_create": handle_task_create,
     "mem_task_update": handle_task_update,
     "mem_task_list": handle_task_list,

@@ -670,3 +670,139 @@ class TestMarkResolved:
         # Pre-existing keys must survive the merge, not be clobbered.
         assert metadata["source"] == "auto-extraction"
         assert metadata["confidence"] == 0.9
+
+
+class TestMarkReopened:
+    """mark_reopened backs the mem_reopen MCP tool -- the symmetric inverse
+    of mem_resolve. Live-forensics defect: an agent reopening four wrongly
+    closed entities found no reopen verb, hand-rolled SQLite, and left one
+    entity in a half-state (status='done', resolved_at=NULL)."""
+
+    def test_sets_status_open_and_clears_resolved_at_for_todo(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="done",
+            title="wrongly closed", content="content",
+        )
+        repo.create_entity(entity)
+        repo.mark_resolved(entity.id, "done")
+
+        result = repo.mark_reopened(entity.id)
+        assert result is not None
+        assert result["status"] == "open"
+        assert result["old_status"] == "done"
+        assert result["resolved_at"] is None
+        assert result["unchanged"] is False
+
+    def test_sets_status_unresolved_for_failure(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="failure", status="resolved",
+            title="root cause turned out wrong", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_reopened(entity.id)
+        assert result["status"] == "unresolved"
+        assert result["old_status"] == "resolved"
+
+    def test_repairs_half_state_done_with_null_resolved_at(
+        self, memory_db: Database,
+    ) -> None:
+        """The exact incident state: status='done' but resolved_at was
+        never set (left by a hand-rolled SQL update). Reopening must
+        still normalize this to a coherent open state."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="done",
+            title="half-closed", content="content", resolved_at=None,
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_reopened(entity.id)
+        assert result["status"] == "open"
+        assert result["old_status"] == "done"
+        assert result["resolved_at"] is None
+        assert result["unchanged"] is False
+
+    def test_unchanged_when_already_open(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="never closed", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_reopened(entity.id)
+        assert result["unchanged"] is True
+        assert result["old_status"] == "open"
+        assert result["status"] == "open"
+
+    def test_unknown_entity_returns_none(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        assert repo.mark_reopened("nonexistent") is None
+
+    def test_removes_resolution_note_non_destructively(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="ship it", content="content",
+            metadata={"source": "auto-extraction", "confidence": 0.9},
+        )
+        repo.create_entity(entity)
+        repo.mark_resolved(entity.id, "done", note="shipped in v2")
+
+        result = repo.mark_reopened(entity.id)
+        metadata = json.loads(result["metadata"])
+        assert "resolution_note" not in metadata
+        # Pre-existing keys must survive removal, not be clobbered.
+        assert metadata["source"] == "auto-extraction"
+        assert metadata["confidence"] == 0.9
+
+    def test_note_is_stored_in_metadata(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="done",
+            title="ship the thing", content="content",
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_reopened(entity.id, note="reopened by mistake")
+        assert json.loads(result["metadata"])["resolution_note"] == "reopened by mistake"
+
+    def test_leaves_stale_and_pinned_untouched(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="done",
+            title="closed but stale/pinned", content="content",
+            pinned=True,
+        )
+        repo.create_entity(entity)
+        repo.mark_stale(entity.id, reason="manual")
+
+        result = repo.mark_reopened(entity.id)
+        assert result["stale"] == 1
+        assert result["staleness_reason"] == "manual"
+        assert result["pinned"] == 1

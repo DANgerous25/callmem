@@ -605,6 +605,23 @@ class MemoryEngine:
             })
         return result
 
+    def reopen_entity(
+        self, entity_id: str, note: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Reopen a previously closed entity (TODO, failure, etc.): restore
+        its per-type open status and clear ``resolved_at``. The symmetric
+        inverse of ``resolve_entity``. Returns the updated entity row (with
+        an ``unchanged`` marker if it was already open), or None if the
+        entity does not exist."""
+        result = self.repo.mark_reopened(entity_id, note=note)
+        if result is not None and not result.get("unchanged"):
+            self._publish("entity_reopened", {
+                "entity_id": entity_id,
+                "status": result.get("status"),
+                "note": note,
+            })
+        return result
+
     def list_stale_entities(self, limit: int = 200) -> list[dict[str, Any]]:
         return self.repo.list_stale_entities(self.project_id, limit=limit)
 

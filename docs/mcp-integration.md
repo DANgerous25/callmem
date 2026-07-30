@@ -144,6 +144,27 @@ Close out TODOs/failures by setting their status to done/resolved/cancelled — 
 
 Returns per-entity results (`{id, old_status, new_status, resolved_at}`, or `unchanged: true` for a no-op); a bad ID in the batch is reported per-entity, not fatal to the rest.
 
+### `mem_reopen`
+
+Reopen entities that were wrongly closed — the symmetric inverse of `mem_resolve`. Restores the per-type open status (`todo` → `open`, everything else → `unresolved`) and clears `resolved_at`. Also repairs half-closed records (e.g. `status` left at a closed value with `resolved_at` never set) so raw SQL is never needed to fix a bad close. Accepts full IDs or the 8-char short IDs shown in briefings.
+
+```json
+{
+  "name": "mem_reopen",
+  "description": "Reopen entities by restoring their per-type open status and clearing resolved_at.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "entity_ids": { "type": "array", "items": { "type": "string" } },
+      "note": { "type": "string", "description": "Optional note about why it was reopened" }
+    },
+    "required": ["entity_ids"]
+  }
+}
+```
+
+Returns per-entity results (`{id, old_status, new_status}`, or `unchanged: true` for a no-op); a bad ID in the batch is reported per-entity, not fatal to the rest.
+
 ### `mem_get_tasks`
 
 Get current TODOs and their status.
