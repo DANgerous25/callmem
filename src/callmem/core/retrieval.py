@@ -94,7 +94,7 @@ def _recency_factor(timestamp: str, now: str | None = None) -> float:
     except (ValueError, TypeError, AttributeError):
         return 1.0
     # SQLite's datetime('now') returns naive strings — treat naive as UTC
-    # so SET-queries (mark_stale, set_pinned, resolve_entity) can coexist
+    # so SET-queries (mark_stale, set_pinned, mark_resolved) can coexist
     # with timezone-aware timestamps written by Python.
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)

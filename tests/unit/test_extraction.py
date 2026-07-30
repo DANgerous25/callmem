@@ -525,10 +525,16 @@ class TestAutoResolution:
         assert entities[0].type == "bugfix"
 
         updated = conn.execute(
-            "SELECT status FROM entities WHERE id = ?", (todo.id,)
+            "SELECT status, resolved_at, stale FROM entities WHERE id = ?",
+            (todo.id,),
         ).fetchone()
         conn.close()
         assert updated["status"] == "done"
+        # Auto-resolve now shares Repository.mark_resolved with mem_resolve,
+        # so every close-out path -- automatic or manual -- stamps
+        # resolved_at and clears stale identically.
+        assert updated["resolved_at"] is not None
+        assert updated["stale"] == 0
 
     def test_feature_resolves_matching_todo(self, memory_db: Database) -> None:
         engine, extractor = _setup_engine_and_extractor(memory_db)

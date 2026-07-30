@@ -350,7 +350,8 @@ class EntityExtractor:
                     closed_ids.add(match["id"])
                     records.append(record)
                     continue
-                if repo.resolve_entity(match["id"], resolved_status):
+                result = repo.mark_resolved(match["id"], resolved_status)
+                if result is not None and not result.get("unchanged"):
                     closed_ids.add(match["id"])
                     count += 1
                     records.append(record)

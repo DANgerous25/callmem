@@ -650,3 +650,23 @@ class TestMarkResolved:
 
         result = repo.mark_resolved(entity.id, "done", note="shipped in v2")
         assert json.loads(result["metadata"])["resolution_note"] == "shipped in v2"
+
+    def test_note_merges_into_pre_existing_metadata(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = Entity(
+            project_id=project.id, type="todo", status="open",
+            title="ship the thing", content="content",
+            metadata={"source": "auto-extraction", "confidence": 0.9},
+        )
+        repo.create_entity(entity)
+
+        result = repo.mark_resolved(entity.id, "done", note="shipped in v2")
+        metadata = json.loads(result["metadata"])
+        assert metadata["resolution_note"] == "shipped in v2"
+        # Pre-existing keys must survive the merge, not be clobbered.
+        assert metadata["source"] == "auto-extraction"
+        assert metadata["confidence"] == 0.9

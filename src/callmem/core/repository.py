@@ -1220,20 +1220,6 @@ class Repository:
         finally:
             conn.close()
 
-    def resolve_entity(self, entity_id: str, status: str) -> bool:
-        """Update an entity's status. Returns True if updated."""
-        conn = self.db.connect()
-        try:
-            cursor = conn.execute(
-                "UPDATE entities SET status = ?, updated_at = datetime('now') "
-                "WHERE id = ? AND status != ?",
-                (status, entity_id, status),
-            )
-            conn.commit()
-            return cursor.rowcount > 0
-        finally:
-            conn.close()
-
     def mark_resolved(
         self, entity_id: str, status: str, note: str | None = None,
     ) -> dict[str, Any] | None:
