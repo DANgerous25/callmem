@@ -794,3 +794,197 @@ class TestSweepResolutions:
         )
         records = extractor.sweep_resolutions(engine.project_id)
         assert records == []
+
+
+class TestAutoResolveDiscussionGuard:
+    """Discussing a TODO must not be mistaken for completing it.
+
+    Reproduces the triage incident: an agent discussed 69 open todo/
+    failure entities by short ID. Extraction turned that discussion
+    into feature/change "driver" entities, and the auto-resolve sweep
+    keyword-matched those drivers against the very entities under
+    discussion -- closing several of them mid-triage. The guard: if a
+    driver's own source text quotes the target's short (or full) ID,
+    treat that as discussion, not completion, and skip the resolution.
+    """
+
+    @staticmethod
+    def _insert_entity(
+        db: Database,
+        project_id: str,
+        type: str,
+        title: str,
+        status: str | None = None,
+        stale: int = 0,
+        source_event_ids: list[str] | None = None,
+    ) -> str:
+        from callmem.models.entities import Entity
+
+        entity = Entity(
+            project_id=project_id, type=type, title=title, content=title,
+            status=status, source_event_ids=source_event_ids,
+        )
+        row = entity.to_row()
+        conn = db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO entities "
+                "(id, project_id, source_event_id, source_event_ids, type, "
+                "title, content, key_points, synopsis, status, priority, "
+                "pinned, created_at, updated_at, resolved_at, metadata, "
+                "archived_at, stale) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    row["id"], row["project_id"], row["source_event_id"],
+                    row["source_event_ids"], row["type"], row["title"],
+                    row["content"], row["key_points"], row["synopsis"],
+                    row["status"], row["priority"], row["pinned"],
+                    row["created_at"], row["updated_at"], row["resolved_at"],
+                    row["metadata"], row["archived_at"], stale,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return entity.id
+
+    def test_guard_blocks_resolution_when_driver_discusses_target_id(
+        self, memory_db: Database,
+    ) -> None:
+        """Driver's source event quotes the target's '#'+short-id -- a
+        triage discussion, not genuine completion work. Must survive."""
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+        short_id = todo_id[-8:]
+
+        discussion_event = engine.ingest_one(
+            "response",
+            f"Reviewing open items in triage: #{short_id} analysis "
+            "history selector is still outstanding, discussed with team.",
+        )
+        assert discussion_event is not None
+
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+            source_event_ids=[discussion_event.id],
+        )
+
+        records = extractor.sweep_resolutions(engine.project_id)
+        assert not any(r["id"] == todo_id for r in records)
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        assert row["status"] == "open"
+
+    def test_guard_allows_genuine_driver_without_id_mention(
+        self, memory_db: Database,
+    ) -> None:
+        """Driver's source event never quotes the target's ID -- genuine
+        completion work. Must still close as before."""
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+
+        completion_event = engine.ingest_one(
+            "response",
+            "Finished wiring up the analysis history selector component.",
+        )
+        assert completion_event is not None
+
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+            source_event_ids=[completion_event.id],
+        )
+
+        records = extractor.sweep_resolutions(engine.project_id)
+        assert any(r["id"] == todo_id for r in records)
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        assert row["status"] == "done"
+
+    def test_guard_skip_count_surfaces_in_stats(
+        self, memory_db: Database,
+    ) -> None:
+        """The skipped-by-guard count is observable via the ``stats``
+        dict, which the CLI's --dry-run output reports from."""
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+        short_id = todo_id[-8:]
+        discussion_event = engine.ingest_one(
+            "response",
+            f"Triage note: #{short_id} still open, discussed with team.",
+        )
+        assert discussion_event is not None
+        self._insert_entity(
+            memory_db, engine.project_id, "feature",
+            "Analysis history selector implemented",
+            source_event_ids=[discussion_event.id],
+        )
+
+        stats: dict[str, int] = {}
+        records = extractor.sweep_resolutions(
+            engine.project_id, dry_run=True, stats=stats,
+        )
+        assert records == []
+        assert stats.get("skipped_by_guard") == 1
+
+    def test_guard_applies_to_live_auto_resolve_path(
+        self, memory_db: Database,
+    ) -> None:
+        """The guard covers the in-session sweep (``_auto_resolve``,
+        run right after extraction), not just the CLI retroactive sweep
+        -- both share ``_resolve_by_drivers``, but this confirms it."""
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+
+        todo_id = self._insert_entity(
+            memory_db, engine.project_id, "todo",
+            "Implement analysis history selector", status="open",
+        )
+        short_id = todo_id[-8:]
+
+        event = engine.ingest_one(
+            "response",
+            f"Triage: #{short_id} analysis history selector still pending.",
+        )
+        assert event is not None
+
+        llm_response = (
+            '{"decisions": [], "todos": [], "facts": [], "failures": [], '
+            '"discoveries": [], "features": [], "bugfixes": [], '
+            '"research": [], "changes": [{"title": '
+            '"Analysis history selector implemented", '
+            '"content": "Closed out the selector work."}]}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            extractor.process_pending()
+
+        conn = memory_db.connect()
+        row = conn.execute(
+            "SELECT status FROM entities WHERE id = ?", (todo_id,),
+        ).fetchone()
+        conn.close()
+        assert row["status"] == "open"

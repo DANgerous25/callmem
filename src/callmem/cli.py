@@ -2766,10 +2766,17 @@ def resolve(project: Path, dry_run: bool) -> None:
         raise SystemExit(1)
 
     extractor = EntityExtractor(db, ollama=None)  # type: ignore[arg-type]
-    records = extractor.sweep_resolutions(project_id, dry_run=dry_run)
+    stats: dict[str, int] = {}
+    records = extractor.sweep_resolutions(
+        project_id, dry_run=dry_run, stats=stats,
+    )
+    skipped = stats.get("skipped_by_guard", 0)
 
     if not records:
-        click.echo("Nothing to resolve — all TODOs/failures already closed.")
+        suffix = f" ({skipped} skipped (discussion guard))" if skipped else ""
+        click.echo(
+            f"Nothing to resolve — all TODOs/failures already closed{suffix}."
+        )
         return
 
     prefix = "Would close" if dry_run else "Closed"
@@ -2781,6 +2788,8 @@ def resolve(project: Path, dry_run: bool) -> None:
             f"  #{short} [{r['type']}] {r['title'][:60]} {arrow}"
         )
         click.echo(f"      matched by: {r['driver_title'][:70]}")
+    if skipped:
+        click.echo(f"{skipped} skipped (discussion guard)")
 
 
 # ── Audit command (database integrity checks) ────────────────────────

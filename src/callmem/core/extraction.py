@@ -39,6 +39,26 @@ EXTRACTION_BATCH_SIZE = 10
 MAX_EVENTS_PER_JOB = 50
 
 
+def _mentions_entity_id(text: str, entity_id: str) -> bool:
+    """True if ``text`` quotes ``entity_id``'s short (last-8-char, with
+    or without a leading '#') or full form, case-insensitively.
+
+    This is the auto-resolve discussion guard's entire signal: genuine
+    completion work almost never quotes the todo's own ID, while
+    triage/review text nearly always does when discussing it. Cheap
+    substring check — no LLM involved.
+    """
+    if not text or not entity_id:
+        return False
+    text_lower = text.lower()
+    short_id = entity_id[-8:].lower()
+    return (
+        entity_id.lower() in text_lower
+        or short_id in text_lower
+        or f"#{short_id}" in text_lower
+    )
+
+
 class EntityExtractor:
     """Extracts structured entities from events using the local LLM."""
 
@@ -258,15 +278,23 @@ class EntityExtractor:
         helper to retroactively close items the live hook missed.
         """
         drivers = [
-            (e.title, e.type) for e in new_entities
+            (e.title, e.type, e.id) for e in new_entities
             if e.type in self._RESOLUTION_DRIVER_TYPES and e.title
         ]
-        return self._resolve_by_drivers(project_id, drivers)
+        stats: dict[str, int] = {}
+        count = self._resolve_by_drivers(project_id, drivers, stats=stats)
+        if stats.get("skipped_by_guard"):
+            logger.info(
+                "Auto-resolve: skipped %d resolution(s) (discussion guard)",
+                stats["skipped_by_guard"],
+            )
+        return count
 
     def sweep_resolutions(
         self,
         project_id: str,
         dry_run: bool = False,
+        stats: dict[str, int] | None = None,
     ) -> list[dict[str, Any]]:
         """Retroactively auto-resolve TODOs/failures against prior drivers.
 
@@ -276,37 +304,55 @@ class EntityExtractor:
         entity in the project against the current open pool. Returns
         a list of ``{id, type, title, status, driver_title}`` dicts
         describing what was (or would be) closed.
+
+        If ``stats`` is given, it is populated with sweep counters —
+        currently just ``skipped_by_guard``, the number of matches the
+        discussion guard held back (see ``_resolve_by_drivers``) — so
+        callers like the CLI's ``--dry-run`` output can report them.
         """
         conn = self.db.connect()
         try:
             rows = conn.execute(
-                "SELECT type, title FROM entities "
+                "SELECT id, type, title FROM entities "
                 "WHERE project_id = ? AND type IN (?, ?, ?) "
                 "AND stale = 0 AND title IS NOT NULL "
                 "ORDER BY created_at ASC",
                 (project_id, "bugfix", "feature", "change"),
             ).fetchall()
-            drivers = [(r["title"], r["type"]) for r in rows]
+            drivers = [(r["title"], r["type"], r["id"]) for r in rows]
         finally:
             conn.close()
 
         return self._resolve_by_drivers(
-            project_id, drivers, dry_run=dry_run, collect=True,
+            project_id, drivers, dry_run=dry_run, collect=True, stats=stats,
         )
 
     def _resolve_by_drivers(
         self,
         project_id: str,
-        drivers: list[tuple[str, str]],
+        drivers: list[tuple[str, str, str]],
         dry_run: bool = False,
         collect: bool = False,
+        stats: dict[str, int] | None = None,
     ) -> Any:
-        """Run resolution logic for a list of (title, type) driver pairs.
+        """Run resolution logic for a list of (title, type, id) driver triples.
 
         When ``collect`` is True, returns a list of resolution records
         suitable for CLI output; otherwise returns the count.
+
+        Discussion guard: before closing a candidate match, checks
+        whether the driver's own source text (fetched lazily, once per
+        driver) quotes the match's short or full ID. Genuine completion
+        work almost never quotes the todo's own ID; triage/review text
+        nearly always does when discussing it — so a hit means "this
+        driver is talking about the target, not resolving it," and the
+        match is skipped rather than closed. ``stats["skipped_by_guard"]``
+        tallies how many matches this held back.
         """
+        skipped_by_guard = 0
         if not drivers:
+            if stats is not None:
+                stats["skipped_by_guard"] = skipped_by_guard
             return [] if collect else 0
 
         from callmem.core.repository import Repository
@@ -317,7 +363,7 @@ class EntityExtractor:
         closed_ids: set[str] = set()
         count = 0
 
-        for title, _source_type in drivers:
+        for title, _source_type, driver_id in drivers:
             words = [
                 w for w in title.split()
                 if len(w) > 3 and w.lower() not in self._KEYWORD_STOPWORDS
@@ -332,10 +378,32 @@ class EntityExtractor:
                 keywords=words,
                 limit=3,
             )
+            if not matches:
+                continue
+
+            # Lazy + shared across this driver's matches: same source
+            # text answers the guard check for every candidate below.
+            driver_source_text: str | None = None
 
             for match in matches:
                 if match["id"] in closed_ids:
                     continue
+
+                if driver_source_text is None:
+                    driver_source_text = (
+                        repo.get_entity_source_text(driver_id)
+                        if driver_id else ""
+                    )
+                if _mentions_entity_id(driver_source_text, match["id"]):
+                    skipped_by_guard += 1
+                    logger.debug(
+                        "Auto-resolve guard: skipping %s '%s' -- driver "
+                        "'%s' source text quotes the target's own ID "
+                        "(likely discussion, not completion)",
+                        match["type"], match["title"][:60], title[:60],
+                    )
+                    continue
+
                 resolved_status = (
                     "done" if match["type"] == "todo" else "resolved"
                 )
@@ -362,6 +430,9 @@ class EntityExtractor:
                         resolved_status,
                         title[:60],
                     )
+
+        if stats is not None:
+            stats["skipped_by_guard"] = skipped_by_guard
 
         return records if collect else count
 

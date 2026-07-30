@@ -995,6 +995,52 @@ class Repository:
             ids = [source_event_id] if source_event_id else []
         return bool(ids) and all(eid in covered_event_ids for eid in ids)
 
+    def get_entity_source_text(self, entity_id: str) -> str:
+        """Return the concatenated content of an entity's own source events.
+
+        Used by the auto-resolve discussion guard (see
+        ``EntityExtractor._resolve_by_drivers``) to check whether a
+        driver entity was extracted from text that merely *discusses* a
+        target TODO/failure -- quoting its short ID -- rather than
+        genuinely completing it. Provenance is ``source_event_ids``
+        (JSON list), falling back to ``source_event_id`` for
+        pre-migration rows, same convention as ``_is_fully_covered``.
+        Bounded to this one entity's own events -- already a single
+        extraction batch, so cheap.
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT source_event_id, source_event_ids FROM entities "
+                "WHERE id = ?",
+                (entity_id,),
+            ).fetchone()
+            if row is None:
+                return ""
+
+            event_ids: list[str] = []
+            raw = row["source_event_ids"]
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    event_ids = [str(eid) for eid in parsed if eid]
+            if not event_ids and row["source_event_id"]:
+                event_ids = [row["source_event_id"]]
+            if not event_ids:
+                return ""
+
+            placeholders = ",".join("?" for _ in event_ids)
+            event_rows = conn.execute(
+                f"SELECT content FROM events WHERE id IN ({placeholders})",
+                event_ids,
+            ).fetchall()
+            return "\n".join(r["content"] for r in event_rows if r["content"])
+        finally:
+            conn.close()
+
     def mark_current(self, entity_id: str) -> bool:
         """Clear the stale flag on an entity. Returns True if modified."""
         conn = self.db.connect()
