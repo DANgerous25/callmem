@@ -1,0 +1,4 @@
+date,project,task,run_a_tokens,run_b_tokens,delta_pct,run_a_reads,run_b_reads,citations
+2026-07-30,llm-mem,extraction-retry-backoff,167083,455843,63.3,0,1,
+2026-07-30,llm-mem,dedupe-driver-resolution,182200,300372,39.3,2,3,
+2026-07-30,llm-mem,mcp-surface-audit,178983,432782,58.6,0,0,
