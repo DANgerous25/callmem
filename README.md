@@ -455,7 +455,7 @@ callmem was inspired by [claude-mem](https://github.com/anthropics/claude-mem) b
 ## Known Issues
 
 ### Auto-briefing plugin does not trigger on session start
-An OpenCode plugin (`.opencode/plugins/auto-briefing.js`) is installed during setup that should auto-display the briefing when a new session starts. However, due to an [upstream OpenCode bug](https://github.com/anomalyco/opencode/issues/14808) where `session.created` events do not fire for plugins, this does not currently work. Use the `/briefing` command in OpenCode as a workaround. The plugin will activate automatically when the bug is fixed upstream — no changes needed.
+An OpenCode plugin (`.opencode/plugins/auto-briefing.js`) is installed during setup that should inject the briefing directly into a new session's model context. However, due to an [upstream OpenCode bug](https://github.com/anomalyco/opencode/issues/14808) where `session.created` events do not fire for plugins, this does not currently work. Use the `/briefing` command in OpenCode as a workaround. The plugin will activate automatically when the bug is fixed upstream — no changes needed.
 
 ### Claude Code: tool results and thinking blocks are not ingested
 The Claude Code adapter maps user prompts, assistant text, and `tool_use` blocks into the memory feed. `tool_result` blocks (system-side responses to tool calls) and `thinking` blocks are skipped in the current release to keep signal-to-noise high. A follow-up will revisit this — until then, a tool call appears in the feed but its outcome does not.
