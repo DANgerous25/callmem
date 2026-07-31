@@ -948,6 +948,119 @@ class TestGetEntitiesSourceText:
         assert result.get("does-not-exist", "") == ""
 
 
+class TestTransferCitations:
+    """transfer_citations backs consolidation's citation-credit transfer
+    (Task 3): when consolidation archives or supersedes an entity, the
+    survivor must inherit its cited_count so briefing importance ranking
+    doesn't get demoted by consolidation's own cleanup."""
+
+    def _entity(self, repo: Repository, project_id: str, title: str) -> Entity:
+        entity = Entity(
+            project_id=project_id, type="fact", title=title, content="c",
+        )
+        repo.create_entity(entity)
+        return entity
+
+    def test_adds_source_count_onto_target(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        repo.set_citation_counts({source.id: (3, "2026-01-01T00:00:00")})
+        repo.set_citation_counts({target.id: (2, "2026-01-02T00:00:00")})
+
+        modified = repo.transfer_citations(source.id, target.id)
+
+        assert modified is True
+        assert repo.get_entity(target.id)["cited_count"] == 5
+
+    def test_last_cited_at_carries_forward_only_when_newer(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        repo.set_citation_counts({source.id: (1, "2026-01-05T00:00:00")})
+        repo.set_citation_counts({target.id: (1, "2026-01-02T00:00:00")})
+
+        repo.transfer_citations(source.id, target.id)
+
+        assert repo.get_entity(target.id)["last_cited_at"] == "2026-01-05T00:00:00"
+
+    def test_last_cited_at_not_regressed_when_target_already_newer(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        repo.set_citation_counts({source.id: (1, "2026-01-02T00:00:00")})
+        repo.set_citation_counts({target.id: (1, "2026-01-05T00:00:00")})
+
+        repo.transfer_citations(source.id, target.id)
+
+        assert repo.get_entity(target.id)["last_cited_at"] == "2026-01-05T00:00:00"
+
+    def test_source_zeroed_after_transfer(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        repo.set_citation_counts({source.id: (4, "2026-01-01T00:00:00")})
+
+        repo.transfer_citations(source.id, target.id)
+
+        assert repo.get_entity(source.id)["cited_count"] == 0
+
+    def test_repeat_call_is_idempotent(self, memory_db: Database) -> None:
+        """The exact 'processed twice' scenario the task calls out: a
+        second transfer_citations call for the same pair must not
+        double-count, because the source's own count was already zeroed
+        by the first call."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        repo.set_citation_counts({source.id: (4, "2026-01-01T00:00:00")})
+
+        repo.transfer_citations(source.id, target.id)
+        repo.transfer_citations(source.id, target.id)
+
+        assert repo.get_entity(target.id)["cited_count"] == 4
+
+    def test_zero_citation_source_is_a_noop(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        repo.set_citation_counts({target.id: (2, "2026-01-01T00:00:00")})
+
+        modified = repo.transfer_citations(source.id, target.id)
+
+        assert modified is True
+        assert repo.get_entity(target.id)["cited_count"] == 2
+        assert repo.get_entity(target.id)["last_cited_at"] == "2026-01-01T00:00:00"
+
+    def test_same_id_source_and_target_is_a_noop(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="solo")
+        repo.set_citation_counts({entity.id: (3, "2026-01-01T00:00:00")})
+
+        modified = repo.transfer_citations(entity.id, entity.id)
+
+        assert modified is False
+        assert repo.get_entity(entity.id)["cited_count"] == 3
+
+
 class TestUnarchiveProtected:
     """find_archived_protected_candidates / restore_archived_protected back
     `callmem unarchive-protected` -- a repair path for entities the

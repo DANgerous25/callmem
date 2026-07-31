@@ -1263,6 +1263,55 @@ class Repository:
         finally:
             conn.close()
 
+    def transfer_citations(self, source_id: str, target_id: str) -> bool:
+        """Move ``source_id``'s citation credit onto ``target_id`` (additive).
+
+        Used by consolidation when an entity stops being retrievable on its
+        own -- archived by a NOOP verdict, or superseded by an UPDATE --
+        so the citation credit it already earned doesn't strand there:
+        briefing importance ranking treats ``cited_count`` as a real
+        signal, so losing it would make consolidation demote the very
+        memory it chose to keep. ``last_cited_at`` on the target only
+        ever advances forward (kept as-is if the target's is already
+        newer or the source has none).
+
+        The source's own ``cited_count`` is zeroed in the same
+        transaction, which is what makes this safe to call more than
+        once for the same pair: a repeat call adds zero, so re-running
+        consolidation over an already-processed archival can never
+        double-count. Returns True if the target row was modified.
+        """
+        if source_id == target_id:
+            return False
+        conn = self.db.connect()
+        try:
+            cursor = conn.execute(
+                "UPDATE entities SET "
+                "cited_count = cited_count + COALESCE("
+                "  (SELECT cited_count FROM entities WHERE id = ?), 0"
+                "), "
+                "last_cited_at = CASE "
+                "  WHEN (SELECT last_cited_at FROM entities WHERE id = ?) "
+                "       IS NULL THEN last_cited_at "
+                "  WHEN last_cited_at IS NULL "
+                "       OR (SELECT last_cited_at FROM entities WHERE id = ?) "
+                "           > last_cited_at "
+                "    THEN (SELECT last_cited_at FROM entities WHERE id = ?) "
+                "  ELSE last_cited_at "
+                "END "
+                "WHERE id = ?",
+                (source_id, source_id, source_id, source_id, target_id),
+            )
+            modified = cursor.rowcount > 0
+            conn.execute(
+                "UPDATE entities SET cited_count = 0 WHERE id = ?",
+                (source_id,),
+            )
+            conn.commit()
+            return modified
+        finally:
+            conn.close()
+
     def log_consolidation_run(
         self,
         project_id: str,

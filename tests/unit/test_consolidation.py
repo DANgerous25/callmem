@@ -558,6 +558,154 @@ class TestNoopVerdict:
         assert entity_c_row["updated_at"] != entity_c_before["updated_at"]
 
 
+class TestCitationTransfer:
+    """Task 3: consolidation must not strand cited_count on an entity it
+    archives or supersedes -- briefing importance ranking treats
+    cited_count as a real signal, so losing it would make consolidation
+    demote the very memory it chose to keep."""
+
+    def test_noop_transfers_archived_duplicates_citations_to_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "todo",
+            "Add pagination tests", "Write integration tests",
+        )
+        engine.repo.set_citation_counts({old_id: (2, "2026-01-01T00:00:00")})
+
+        new_entity = Entity(
+            project_id=engine.project_id, type="todo",
+            title="Add pagination tests", content="Write integration tests",
+        )
+        _insert_new(engine.repo, new_entity)
+        engine.repo.set_citation_counts({
+            new_entity.id: (5, "2026-01-10T00:00:00"),
+        })
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(engine.project_id, [new_entity])
+
+        assert stats.noop == 1
+        survivor_row = engine.repo.get_entity(old_id)
+        assert survivor_row["cited_count"] == 7
+        assert survivor_row["last_cited_at"] == "2026-01-10T00:00:00"
+
+        # The archived duplicate's own count is zeroed, not left to be
+        # double-counted if this entity were ever processed again.
+        archived_row = engine.repo.get_entity(new_entity.id)
+        assert archived_row["cited_count"] == 0
+
+    def test_noop_zero_citation_duplicate_does_not_change_survivors_count(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "todo", "dup title", "content",
+        )
+        engine.repo.set_citation_counts({old_id: (3, "2026-01-01T00:00:00")})
+
+        new_entity = Entity(
+            project_id=engine.project_id, type="todo",
+            title="dup title", content="content",
+        )
+        _insert_new(engine.repo, new_entity)  # never cited: cited_count == 0
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        consolidator.consolidate(engine.project_id, [new_entity])
+
+        survivor_row = engine.repo.get_entity(old_id)
+        assert survivor_row["cited_count"] == 3
+        assert survivor_row["last_cited_at"] == "2026-01-01T00:00:00"
+
+    def test_update_transfers_old_entitys_citations_to_new_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "decision",
+            "Use Redis for caching", "Chose Redis because it is fast",
+        )
+        engine.repo.set_citation_counts({old_id: (4, "2026-02-01T00:00:00")})
+
+        new_entity = Entity(
+            project_id=engine.project_id, type="decision",
+            title="Use Redis for caching",
+            content="Chose Redis with a 1-hour TTL after benchmarking",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("UPDATE", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(engine.project_id, [new_entity])
+
+        assert stats.updated == 1
+        new_row = engine.repo.get_entity(new_entity.id)
+        assert new_row["cited_count"] == 4
+        assert new_row["last_cited_at"] == "2026-02-01T00:00:00"
+
+        # The superseded entity's own count is zeroed.
+        old_row = engine.repo.get_entity(old_id)
+        assert old_row["cited_count"] == 0
+
+    def test_entity_with_zero_citations_is_a_noop_transfer(
+        self, memory_db: Database,
+    ) -> None:
+        """Neither side has ever been cited -- transfer must not error
+        and must leave both sides at zero."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "decision", "Use Postgres", "x",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="decision",
+            title="Use Postgres", content="x, with pgbouncer",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("UPDATE", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        consolidator.consolidate(engine.project_id, [new_entity])
+
+        assert engine.repo.get_entity(new_entity.id)["cited_count"] == 0
+        assert engine.repo.get_entity(old_id)["cited_count"] == 0
+
+    def test_reprocessing_the_same_decisions_does_not_double_count(
+        self, memory_db: Database,
+    ) -> None:
+        """Guards the idempotency requirement directly: if _apply were
+        ever somehow invoked twice over the same batch/decisions (a bug
+        elsewhere, a retried job, ...), the citation transfer must not
+        double-count -- transfer_citations zeroes the source as part of
+        its own statement, so a repeat transfer adds zero."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "todo", "dup title", "content",
+        )
+        engine.repo.set_citation_counts({old_id: (2, "2026-01-01T00:00:00")})
+
+        new_entity = Entity(
+            project_id=engine.project_id, type="todo",
+            title="dup title", content="content",
+        )
+        _insert_new(engine.repo, new_entity)
+        engine.repo.set_citation_counts({
+            new_entity.id: (5, "2026-01-10T00:00:00"),
+        })
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        decisions = {new_entity.id: ("NOOP", old_id)}
+
+        consolidator._apply([new_entity], decisions)
+        consolidator._apply([new_entity], decisions)  # simulated re-run
+
+        survivor_row = engine.repo.get_entity(old_id)
+        assert survivor_row["cited_count"] == 7
+
+
 class TestApplyOrderIndependence:
     """_apply must resolve every UPDATE/CONTRADICTS supersession before any
     NOOP redirect is resolved, regardless of the order entities happen to

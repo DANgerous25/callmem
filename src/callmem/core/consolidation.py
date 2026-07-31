@@ -22,7 +22,11 @@ Verdicts are applied through the existing non-destructive staleness verbs
   - ADD:         the default. No action.
   - UPDATE:      the new entity refines an existing one. The existing entity
                  is marked stale + superseded_by=new (reason "consolidated");
-                 the new entity is kept as-is.
+                 the new entity is kept as-is. The existing entity's
+                 cited_count/last_cited_at transfer onto the new entity --
+                 it is the one that will be retrieved going forward, and
+                 briefing importance ranking must not forget the credit
+                 the old entity earned.
   - NOOP:        the new entity duplicates an existing one with nothing new.
                  The new entity is archived immediately; the existing
                  entity's updated_at is bumped so it surfaces as current. If
@@ -32,7 +36,8 @@ Verdicts are applied through the existing non-destructive staleness verbs
                  live. This redirect is resolved only after every
                  UPDATE/CONTRADICTS decision in the batch has been applied,
                  so it does not depend on which order entities were judged
-                 or listed in.
+                 or listed in. The archived entity's cited_count/
+                 last_cited_at transfer onto whichever entity survives.
   - CONTRADICTS: the new entity conflicts with an existing one rather than
                  refining it. BOTH entities are kept, but the existing
                  entity is marked stale + superseded_by=new (reason
@@ -405,6 +410,18 @@ class EntityConsolidator:
         changes nothing, and falls back to ADD -- ``stats`` and the
         survivor map end up reflecting exactly what the DB recorded, never
         more.
+
+        Citation transfer (``Repository.transfer_citations``) is gated on
+        the same ``acted``/archived return values as the survivor map and
+        stats above: it only runs the run that actually flips the row in
+        the DB, and it is itself idempotent (the source's cited_count is
+        zeroed as part of the same statement), so a duplicate claim or a
+        re-run over already-processed entities can never double-count a
+        citation. UPDATE transfers old -> new (the new entity is kept and
+        inherits the credit); NOOP transfers new -> survivor (the new
+        entity is the one being archived). CONTRADICTS does not transfer:
+        the old entity is kept as a distinct, conflicting fact rather than
+        being subsumed by the new one, so its citation credit is its own.
         """
         stats = ConsolidationStats()
         # (entity, existing_id) for every NOOP, deferred to phase 2 below.
@@ -431,6 +448,10 @@ class EntityConsolidator:
                 if acted:
                     survivors[existing_id] = entity.id
                     stats.updated += 1
+                    # The old entity's citations belong to its
+                    # replacement -- only on the run that actually
+                    # superseded it, never on a checked no-op.
+                    self.repo.transfer_citations(existing_id, entity.id)
                 else:
                     # Checked no-op: another decision in this same batch
                     # already claimed this existing_id (duplicate
@@ -466,8 +487,14 @@ class EntityConsolidator:
         # hop through `survivors` is ever possible.
         for entity, existing_id in noop_pending:
             survivor_id = survivors.get(existing_id, existing_id)
-            self.repo.archive_entity(entity.id)
+            archived = self.repo.archive_entity(entity.id)
             self.repo.touch_entity(survivor_id)
+            if archived:
+                # The archived duplicate's citation credit belongs to the
+                # survivor -- gated on `archived` so a re-run over an
+                # entity this same id already archived (its `WHERE
+                # archived_at IS NULL` guard) never transfers twice.
+                self.repo.transfer_citations(entity.id, survivor_id)
             stats.noop += 1
 
         return stats
