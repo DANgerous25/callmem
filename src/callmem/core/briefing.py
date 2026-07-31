@@ -36,6 +36,7 @@ _OVERVIEW_MAX_TOKENS = 500
 
 # Pipeline health thresholds (see _compute_pipeline_health).
 _PIPELINE_FAILED_JOBS_THRESHOLD = 20
+_PIPELINE_FAILED_JOBS_WINDOW_HOURS = 48
 _PIPELINE_STALE_EXTRACTION_DAYS = 3
 
 
@@ -733,7 +734,10 @@ class BriefingGenerator:
 
         No network or LLM calls — this only reads job/event timestamps and
         counts. Unhealthy when either:
-          - more than _PIPELINE_FAILED_JOBS_THRESHOLD jobs are 'failed', or
+          - more than _PIPELINE_FAILED_JOBS_THRESHOLD jobs have failed in
+            the last _PIPELINE_FAILED_JOBS_WINDOW_HOURS hours (all-time
+            debris from a since-resolved outage must not permanently trip
+            the banner), or
           - events are still arriving (newest event less than
             _PIPELINE_STALE_EXTRACTION_DAYS days old) while extraction isn't
             keeping up — either a completed extract_entities job exists but
@@ -751,6 +755,9 @@ class BriefingGenerator:
 
         queue = JobQueue(self.repo.db)
         failed_jobs = queue.get_failed_count()
+        failed_jobs_recent = queue.get_failed_count(
+            since_hours=_PIPELINE_FAILED_JOBS_WINDOW_HOURS
+        )
         last_extraction_at = queue.get_last_completed_at("extract_entities")
         has_extraction_jobs = queue.has_any_jobs("extract_entities")
         newest_event_at = self.repo.get_newest_event_timestamp(project_id)
@@ -771,7 +778,8 @@ class BriefingGenerator:
                     extraction_stalled = True
 
         unhealthy = (
-            failed_jobs > _PIPELINE_FAILED_JOBS_THRESHOLD or extraction_stalled
+            failed_jobs_recent > _PIPELINE_FAILED_JOBS_THRESHOLD
+            or extraction_stalled
         )
 
         days_since_last_extraction: int | None
@@ -787,6 +795,7 @@ class BriefingGenerator:
         return {
             "status": "unhealthy" if unhealthy else "healthy",
             "failed_jobs": failed_jobs,
+            "failed_jobs_recent": failed_jobs_recent,
             "days_since_last_extraction": days_since_last_extraction,
         }
 
@@ -796,8 +805,10 @@ class BriefingGenerator:
             return None
         days = health.get("days_since_last_extraction")
         extraction_desc = "never" if days is None else f"{days}d ago"
+        failed_jobs_recent = health.get("failed_jobs_recent", health["failed_jobs"])
         return (
-            f"⚠ MEMORY PIPELINE UNHEALTHY: {health['failed_jobs']} failed jobs; "
+            f"⚠ MEMORY PIPELINE UNHEALTHY: {failed_jobs_recent} failed jobs "
+            f"in {_PIPELINE_FAILED_JOBS_WINDOW_HOURS}h; "
             f"last successful extraction {extraction_desc} "
             "(events still being captured). Fix: check backend config, then run "
             "'callmem requeue-failed'."

@@ -374,25 +374,35 @@ class JobQueue:
         finally:
             conn.close()
 
-    def get_failed_count(self, job_type: str | None = None) -> int:
+    def get_failed_count(
+        self, job_type: str | None = None, since_hours: int | None = None,
+    ) -> int:
         """Return the number of jobs currently in 'failed' status.
 
         Used by the briefing's pipeline health check — a large failed
         count means a backend outage is silently piling up dead jobs.
         Also used by `callmem clear-failed` to preview the count before
         deleting.
+
+        `since_hours`, when given, restricts the count to jobs created in
+        the last N hours (used by the briefing to avoid all-time debris
+        permanently tripping the health banner). Default `None` counts
+        all-time, unchanged from prior behaviour.
         """
         conn = self.db.connect()
         try:
+            clauses = ["status = 'failed'"]
+            params: list[Any] = []
             if job_type is not None:
-                row = conn.execute(
-                    "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed' AND type = ?",
-                    (job_type,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT COUNT(*) as c FROM jobs WHERE status = 'failed'"
-                ).fetchone()
+                clauses.append("type = ?")
+                params.append(job_type)
+            if since_hours is not None:
+                clauses.append("created_at >= datetime('now', ?)")
+                params.append(f"-{since_hours} hours")
+            where = " AND ".join(clauses)
+            row = conn.execute(
+                f"SELECT COUNT(*) as c FROM jobs WHERE {where}", params
+            ).fetchone()
             return row["c"]
         finally:
             conn.close()

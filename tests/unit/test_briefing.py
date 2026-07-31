@@ -309,6 +309,24 @@ class TestPipelineHealth:
             queue.dequeue("extract_entities")
             queue.fail(job_id, "backend unreachable")
 
+    def _seed_failed_jobs_created_at(
+        self, memory_db: Database, count: int, created_at: str,
+    ) -> None:
+        queue = JobQueue(memory_db)
+        for _ in range(count):
+            job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+            queue.dequeue("extract_entities")
+            queue.fail(job_id, "backend unreachable")
+            conn = memory_db.connect()
+            try:
+                conn.execute(
+                    "UPDATE jobs SET created_at = ? WHERE id = ?",
+                    (created_at, job_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def _complete_job_at(
         self, memory_db: Database, job_type: str, completed_at: str,
     ) -> None:
@@ -422,6 +440,79 @@ class TestPipelineHealth:
         assert "MEMORY PIPELINE UNHEALTHY" not in briefing.content
         assert briefing.pipeline_health["status"] == "healthy"
         assert briefing.pipeline_health["failed_jobs"] == 0
+
+    def test_old_failures_alone_do_not_trigger_banner(
+        self, memory_db: Database,
+    ) -> None:
+        """Pins the live llm-mem/dj-mix-track-breaker state: dozens of
+        all-time failed jobs, none created in the last 48h, extraction
+        otherwise healthy. All-time debris must not cry wolf forever.
+        """
+        from datetime import datetime, timedelta
+
+        from callmem.compat import UTC
+
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        old_created_at = (
+            datetime.now(UTC) - timedelta(hours=72)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        self._seed_failed_jobs_created_at(memory_db, 46, old_created_at)
+        self._complete_job_at(
+            memory_db, "extract_entities",
+            datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" not in briefing.content
+        assert briefing.pipeline_health["status"] == "healthy"
+        assert briefing.pipeline_health["failed_jobs"] == 46
+        assert briefing.pipeline_health["failed_jobs_recent"] == 0
+
+    def test_recent_failures_over_threshold_trigger_banner_with_recent_count(
+        self, memory_db: Database,
+    ) -> None:
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        self._seed_failed_jobs(memory_db, 25)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" in briefing.content
+        assert "25 failed jobs in 48h" in briefing.content
+        assert briefing.pipeline_health["status"] == "unhealthy"
+        assert briefing.pipeline_health["failed_jobs"] == 25
+        assert briefing.pipeline_health["failed_jobs_recent"] == 25
+
+    def test_mixed_old_and_recent_under_threshold_stays_healthy(
+        self, memory_db: Database,
+    ) -> None:
+        """Old failures push the all-time total over threshold, but only a
+        handful are recent — the recent count alone must decide health.
+        """
+        from datetime import datetime, timedelta
+
+        from callmem.compat import UTC
+
+        project_id = _seed_with_entities(memory_db)
+        repo = Repository(memory_db)
+        old_created_at = (
+            datetime.now(UTC) - timedelta(hours=72)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        self._seed_failed_jobs_created_at(memory_db, 30, old_created_at)
+        self._seed_failed_jobs(memory_db, 5)
+        self._complete_job_at(
+            memory_db, "extract_entities",
+            datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "MEMORY PIPELINE UNHEALTHY" not in briefing.content
+        assert briefing.pipeline_health["status"] == "healthy"
+        assert briefing.pipeline_health["failed_jobs"] == 35
+        assert briefing.pipeline_health["failed_jobs_recent"] == 5
 
 
 class TestParseDbTimestamp:

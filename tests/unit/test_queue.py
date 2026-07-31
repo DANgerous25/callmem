@@ -554,6 +554,53 @@ class TestGetFailedCount:
         assert queue.get_failed_count() == 0
         assert job.id == completed_id
 
+    def test_since_hours_excludes_old_failures(
+        self, memory_db: Database,
+    ) -> None:
+        from datetime import timedelta
+
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "boom")
+        old_created_at = (
+            datetime.now(UTC) - timedelta(hours=72)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE jobs SET created_at = ? WHERE id = ?",
+                (old_created_at, job_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert queue.get_failed_count() == 1
+        assert queue.get_failed_count(since_hours=48) == 0
+
+    def test_since_hours_includes_recent_failures(
+        self, memory_db: Database,
+    ) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "boom")
+
+        assert queue.get_failed_count(since_hours=48) == 1
+
+    def test_since_hours_none_is_byte_identical_to_default(
+        self, memory_db: Database,
+    ) -> None:
+        queue = JobQueue(memory_db)
+        job_id = queue.enqueue("extract_entities", {}, max_attempts=1)
+        queue.dequeue("extract_entities")
+        queue.fail(job_id, "boom")
+
+        assert (
+            queue.get_failed_count(since_hours=None) == queue.get_failed_count()
+        )
+
 
 class TestGetLastCompletedAt:
     def test_none_when_never_completed(self, memory_db: Database) -> None:
