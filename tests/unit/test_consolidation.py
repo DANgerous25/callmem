@@ -7,7 +7,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
-from callmem.core.consolidation import EntityConsolidator
+from callmem.core.consolidation import ConsolidationStats, EntityConsolidator
 from callmem.core.database import Database
 from callmem.core.embeddings import Embedder, embedding_model_key, pack_vector
 from callmem.core.engine import MemoryEngine
@@ -383,11 +383,13 @@ class TestContradictsVerdict:
         assert stats.contradicted == 0
 
     def test_contradicts_on_already_stale_target_is_checked_noop(
-        self, memory_db: Database,
+        self, memory_db: Database, caplog,
     ) -> None:
         """Two new entities both CONTRADICT the same existing entity.
         Only the first invalidation actually happens (mark_stale's
-        WHERE stale=0 guard); the second must not be double-counted."""
+        WHERE stale=0 guard); the second must not be double-counted, and
+        the collision must be logged (the CONTRADICTS branch uses the
+        same _log_duplicate_claim as UPDATE)."""
         engine = _make_engine(memory_db)
         old_id = _insert_entity(
             engine.repo, engine.project_id, "fact", "Region is us-east", "x",
@@ -416,14 +418,20 @@ class TestContradictsVerdict:
         judge = _StubJudge(response=response)
         consolidator = EntityConsolidator(memory_db, judge, engine.config)
 
-        stats = consolidator.consolidate(
-            engine.project_id, [entity_a, entity_b],
-        )
+        with caplog.at_level(logging.WARNING):
+            stats = consolidator.consolidate(
+                engine.project_id, [entity_a, entity_b],
+            )
 
         # Only one actual invalidation happened -- the second CONTRADICTS
         # found the target already stale and is a checked no-op.
         assert stats.contradicted == 1
         assert stats.added == 1
+        collision_logs = [
+            r.message for r in caplog.records
+            if entity_b.id in r.message and old_id in r.message
+        ]
+        assert collision_logs, caplog.records
 
         old_row = engine.repo.get_entity(old_id)
         assert old_row["stale"] == 1
@@ -588,6 +596,7 @@ class TestCitationTransfer:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.noop == 1
+        assert stats.transferred == 1
         survivor_row = engine.repo.get_entity(old_id)
         assert survivor_row["cited_count"] == 7
         assert survivor_row["last_cited_at"] == "2026-01-10T00:00:00"
@@ -642,6 +651,7 @@ class TestCitationTransfer:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.updated == 1
+        assert stats.transferred == 1
         new_row = engine.repo.get_entity(new_entity.id)
         assert new_row["cited_count"] == 4
         assert new_row["last_cited_at"] == "2026-02-01T00:00:00"
@@ -649,6 +659,41 @@ class TestCitationTransfer:
         # The superseded entity's own count is zeroed.
         old_row = engine.repo.get_entity(old_id)
         assert old_row["cited_count"] == 0
+
+    def test_contradicts_transfers_old_entitys_citations_to_new_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        """CONTRADICTS retires the old entity via `stale` the same as
+        UPDATE -- it's excluded from briefings either way, so its
+        citation credit belongs to the entity that replaces it rather
+        than staying stranded on a fact `callmem stale` now lists as
+        contradicted."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "DB is SQLite", "x",
+        )
+        engine.repo.set_citation_counts({old_id: (6, "2026-03-01T00:00:00")})
+
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="DB is SQLite", content="Actually Postgres now",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("CONTRADICTS", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(engine.project_id, [new_entity])
+
+        assert stats.contradicted == 1
+        assert stats.transferred == 1
+        new_row = engine.repo.get_entity(new_entity.id)
+        assert new_row["cited_count"] == 6
+        assert new_row["last_cited_at"] == "2026-03-01T00:00:00"
+
+        old_row = engine.repo.get_entity(old_id)
+        assert old_row["cited_count"] == 0
+        assert old_row["stale"] == 1
+        assert old_row["invalidated_at"] is not None
 
     def test_entity_with_zero_citations_is_a_noop_transfer(
         self, memory_db: Database,
@@ -699,11 +744,20 @@ class TestCitationTransfer:
         consolidator = EntityConsolidator(memory_db, judge, engine.config)
         decisions = {new_entity.id: ("NOOP", old_id)}
 
-        consolidator._apply([new_entity], decisions)
-        consolidator._apply([new_entity], decisions)  # simulated re-run
+        first = consolidator._apply([new_entity], decisions)
+        second = consolidator._apply([new_entity], decisions)  # simulated re-run
 
         survivor_row = engine.repo.get_entity(old_id)
         assert survivor_row["cited_count"] == 7
+
+        # The gating layer: archive_entity's guard means the second pass
+        # sees entity.id already archived and never re-runs the transfer
+        # at all (belt to transfer_citations' own self-zeroing braces).
+        assert first.noop == 1
+        assert first.transferred == 1
+        assert second.noop == 0
+        assert second.transferred == 0
+        assert second.added == 1
 
 
 class TestApplyOrderIndependence:
@@ -758,7 +812,10 @@ class TestApplyOrderIndependence:
         entity_c_row = engine.repo.get_entity(entity_c.id)
         entity_d_row = engine.repo.get_entity(entity_d.id)
         return {
-            "stats": (stats.updated, stats.noop, stats.added),
+            # The whole dataclass, not just a few hand-picked fields --
+            # any stat the two orders disagree on should fail this
+            # comparison, not just the ones someone remembered to list.
+            "stats": stats,
             "old_x_stale": old_x_row["stale"],
             "old_x_superseded_by_is_entity_c": (
                 old_x_row["superseded_by"] == entity_c.id
@@ -776,7 +833,12 @@ class TestApplyOrderIndependence:
         rev = self._run_update_noop_pair("noop_first")
 
         expected = {
-            "stats": (1, 1, 0),
+            # transferred=2: the UPDATE transfer (old_x -> entity_c) and
+            # the NOOP transfer (entity_d -> entity_c).
+            "stats": ConsolidationStats(
+                added=0, updated=1, noop=1, contradicted=0,
+                judge_failed=False, transferred=2,
+            ),
             "old_x_stale": 1,
             "old_x_superseded_by_is_entity_c": True,
             "entity_d_archived": True,
@@ -784,6 +846,81 @@ class TestApplyOrderIndependence:
             # "noop_first" order the old code redirected the touch to
             # old_x itself (already doomed to go stale a moment later)
             # instead of entity_c, the live successor.
+            "entity_c_was_touched": True,
+        }
+        assert fwd == expected
+        assert rev == expected
+
+    def _run_contradicts_noop_pair(self, entities_order: str) -> dict[str, Any]:
+        """Same shape as ``_run_update_noop_pair`` but with CONTRADICTS in
+        entity_c's role instead of UPDATE -- the same order-dependence bug
+        (2a) applies to any verdict that can populate the survivor map,
+        not just UPDATE, and it was previously untested for CONTRADICTS."""
+        db = Database(":memory:")
+        db.initialize()
+        engine = _make_engine(db)
+        old_x = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Region is us-east", "primary region",
+        )
+        entity_c = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="Moved to eu-west",
+        )
+        entity_d = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="primary region",
+        )
+        _insert_new(engine.repo, entity_c)
+        _insert_new(engine.repo, entity_d)
+        entity_c_before = engine.repo.get_entity(entity_c.id)
+
+        response = json.dumps([
+            {"new_id": entity_c.id, "verdict": "CONTRADICTS", "existing_id": old_x},
+            {"new_id": entity_d.id, "verdict": "NOOP", "existing_id": old_x},
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(db, judge, engine.config)
+
+        ordered = (
+            [entity_c, entity_d] if entities_order == "contradicts_first"
+            else [entity_d, entity_c]
+        )
+        stats = consolidator.consolidate(engine.project_id, ordered)
+
+        old_x_row = engine.repo.get_entity(old_x)
+        entity_c_row = engine.repo.get_entity(entity_c.id)
+        entity_d_row = engine.repo.get_entity(entity_d.id)
+        return {
+            "stats": stats,
+            "old_x_stale": old_x_row["stale"],
+            "old_x_invalidated": old_x_row["invalidated_at"] is not None,
+            "old_x_superseded_by_is_entity_c": (
+                old_x_row["superseded_by"] == entity_c.id
+            ),
+            "entity_d_archived": entity_d_row["archived_at"] is not None,
+            "entity_c_was_touched": (
+                entity_c_row["updated_at"] != entity_c_before["updated_at"]
+            ),
+        }
+
+    def test_contradicts_then_noop_and_noop_then_contradicts_produce_identical_state(
+        self,
+    ) -> None:
+        fwd = self._run_contradicts_noop_pair("contradicts_first")
+        rev = self._run_contradicts_noop_pair("noop_first")
+
+        expected = {
+            # transferred=2: the CONTRADICTS transfer (old_x -> entity_c)
+            # and the NOOP transfer (entity_d -> entity_c).
+            "stats": ConsolidationStats(
+                added=0, updated=0, noop=1, contradicted=1,
+                judge_failed=False, transferred=2,
+            ),
+            "old_x_stale": 1,
+            "old_x_invalidated": True,
+            "old_x_superseded_by_is_entity_c": True,
+            "entity_d_archived": True,
             "entity_c_was_touched": True,
         }
         assert fwd == expected
@@ -845,14 +982,18 @@ class TestApplyOrderIndependence:
         assert entity_c_row["updated_at"] != entity_c_before["updated_at"]
 
     def test_duplicate_existing_id_across_two_updates_counts_one_supersession(
-        self, memory_db: Database,
+        self, memory_db: Database, caplog,
     ) -> None:
         """Two different new entities both UPDATE the SAME existing_id.
         Only the first supersession actually happens in the DB (mark_stale's
         WHERE stale=0 guard); stats.updated must reflect that -- not double
         count -- and a later NOOP on the same target must redirect to
         whichever entity the DB actually recorded as the supersessor, not
-        whichever entity happened to be processed last."""
+        whichever entity happened to be processed last. The collision must
+        also be logged -- an incoherent judge response naming two new
+        entities as superseding the same memory is exactly the signal
+        Task 4's calibration harness needs, and it must not vanish
+        silently into ``stats.added``."""
         engine = _make_engine(memory_db)
         old_id = _insert_entity(
             engine.repo, engine.project_id, "fact",
@@ -884,9 +1025,10 @@ class TestApplyOrderIndependence:
         judge = _StubJudge(response=response)
         consolidator = EntityConsolidator(memory_db, judge, engine.config)
 
-        stats = consolidator.consolidate(
-            engine.project_id, [entity_a, entity_b, entity_e],
-        )
+        with caplog.at_level(logging.WARNING):
+            stats = consolidator.consolidate(
+                engine.project_id, [entity_a, entity_b, entity_e],
+            )
 
         # Exactly one supersession happened; the second UPDATE's target
         # was already stale, so it falls back to ADD rather than being
@@ -894,6 +1036,16 @@ class TestApplyOrderIndependence:
         assert stats.updated == 1
         assert stats.added == 1
         assert stats.noop == 1
+
+        # The collision is logged, naming the losing entity, the target
+        # it contested, and the winner (entity_a) that beat it there.
+        collision_logs = [
+            r.message for r in caplog.records
+            if entity_b.id in r.message
+            and old_id in r.message
+            and entity_a.id in r.message
+        ]
+        assert collision_logs, caplog.records
 
         old_row = engine.repo.get_entity(old_id)
         assert old_row["stale"] == 1
@@ -917,6 +1069,105 @@ class TestApplyOrderIndependence:
         assert entity_b_row["updated_at"] == entity_b_before["updated_at"]
 
 
+class TestNoopLiveSurvivorGuard:
+    """A NOOP's survivor must be re-verified live immediately before its
+    duplicate is archived. Candidate lookup and the judge call both
+    happen before ``_apply`` runs, so a concurrent process outside this
+    batch (staleness detection, a manual resolve, another consolidation
+    run) could archive or stale the survivor in between -- archiving the
+    duplicate against a dead survivor would remove the fact from the
+    visible corpus entirely, with no live copy left."""
+
+    def test_archived_survivor_skips_the_archive_and_counts_as_add(
+        self, memory_db: Database, caplog,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "dup title", "content",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="dup title", content="content",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        # Simulate a concurrent process archiving the survivor between
+        # the judge call and _apply -- nothing in this batch does this.
+        engine.repo.archive_entity(old_id)
+
+        consolidator = EntityConsolidator(
+            memory_db, _StubJudge(response=None), engine.config,
+        )
+        decisions = {new_entity.id: ("NOOP", old_id)}
+
+        with caplog.at_level(logging.WARNING):
+            stats = consolidator._apply([new_entity], decisions)
+
+        assert stats.noop == 0
+        assert stats.added == 1
+        assert any(
+            "no longer live" in r.message for r in caplog.records
+        )
+
+        # Both entities left untouched -- the duplicate was NOT archived.
+        assert engine.repo.get_entity(new_entity.id)["archived_at"] is None
+
+    def test_staled_not_archived_survivor_also_skips_the_archive(
+        self, memory_db: Database,
+    ) -> None:
+        """The liveness check is archived OR stale, not just archived."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "dup title", "content",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="dup title", content="content",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        # A manual stale mark from outside this batch -- not a
+        # consolidation supersession, just any other staleness path.
+        engine.repo.mark_stale(old_id, reason="manual")
+
+        consolidator = EntityConsolidator(
+            memory_db, _StubJudge(response=None), engine.config,
+        )
+        decisions = {new_entity.id: ("NOOP", old_id)}
+
+        stats = consolidator._apply([new_entity], decisions)
+
+        assert stats.noop == 0
+        assert stats.added == 1
+        assert engine.repo.get_entity(new_entity.id)["archived_at"] is None
+
+    def test_live_survivor_still_archives_normally(
+        self, memory_db: Database,
+    ) -> None:
+        """Control: an untouched, live survivor still gets the normal
+        NOOP treatment -- the guard must not block the ordinary path."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "dup title", "content",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="dup title", content="content",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        consolidator = EntityConsolidator(
+            memory_db, _StubJudge(response=None), engine.config,
+        )
+        decisions = {new_entity.id: ("NOOP", old_id)}
+
+        stats = consolidator._apply([new_entity], decisions)
+
+        assert stats.noop == 1
+        assert stats.added == 0
+        assert engine.repo.get_entity(new_entity.id)["archived_at"] is not None
+
+
 class TestFailOpen:
     def test_malformed_judge_output_keeps_everything_as_add(
         self, memory_db: Database, caplog,
@@ -926,11 +1177,15 @@ class TestFailOpen:
             engine.repo, engine.project_id, "fact",
             "Queue backend is Redis", "used for background jobs",
         )
+        engine.repo.set_citation_counts({old_id: (3, "2026-01-01T00:00:00")})
         new_entity = Entity(
             project_id=engine.project_id, type="fact",
             title="Queue backend is Redis", content="used for background jobs",
         )
         _insert_new(engine.repo, new_entity)
+        engine.repo.set_citation_counts({
+            new_entity.id: (2, "2026-01-02T00:00:00"),
+        })
 
         judge = _StubJudge(response="not valid json at all")
         consolidator = EntityConsolidator(memory_db, judge, engine.config)
@@ -941,27 +1196,33 @@ class TestFailOpen:
         assert stats.added == 1
         assert stats.updated == 0
         assert stats.noop == 0
+        assert stats.transferred == 0
         assert stats.judge_failed is True
         assert any(
             "malformed" in r.message.lower() or "fail-open" in r.message.lower()
             for r in caplog.records
         )
 
-        # Nothing destroyed or altered on either side.
+        # Nothing destroyed or altered on either side -- including
+        # citation credit: fail-open must mean zero mutations, and that
+        # includes zero citation transfers.
         old_row = engine.repo.get_entity(old_id)
         assert old_row["stale"] == 0
         assert old_row["archived_at"] is None
+        assert old_row["cited_count"] == 3
         new_row = engine.repo.get_entity(new_entity.id)
         assert new_row["archived_at"] is None
+        assert new_row["cited_count"] == 2
 
     def test_absent_judge_response_keeps_everything_as_add(
         self, memory_db: Database,
     ) -> None:
         engine = _make_engine(memory_db)
-        _insert_entity(
+        old_id = _insert_entity(
             engine.repo, engine.project_id, "fact",
             "Queue backend is Redis", "used for background jobs",
         )
+        engine.repo.set_citation_counts({old_id: (5, "2026-01-01T00:00:00")})
         new_entity = Entity(
             project_id=engine.project_id, type="fact",
             title="Queue backend is Redis", content="used for background jobs",
@@ -973,7 +1234,11 @@ class TestFailOpen:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.added == 1
+        assert stats.transferred == 0
         assert stats.judge_failed is True
+        # Fail-open means zero mutations, including zero citation
+        # transfers -- the cited old entity's count must be untouched.
+        assert engine.repo.get_entity(old_id)["cited_count"] == 5
 
     def test_partial_response_missing_an_entity_fails_open(
         self, memory_db: Database,

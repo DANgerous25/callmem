@@ -47,7 +47,22 @@ Verdicts are applied through the existing non-destructive staleness verbs
                  checked-no-op guard as every other staleness verb: if the
                  existing entity is already stale (e.g. another entity in
                  this same batch already contradicted or updated it), the
-                 mark is skipped and NOT double-counted.
+                 mark is skipped and NOT double-counted. Its cited_count/
+                 last_cited_at transfer onto the new entity too: `stale`
+                 excludes it from briefings either way, and cited_count is
+                 a topical-attention signal, not a correctness signal, so
+                 a correction to a heavily-cited fact must not start cold.
+
+A collision between two decisions naming the same ``existing_id`` (two
+UPDATEs, an UPDATE and a CONTRADICTS, etc.) is resolved by position in
+``entities`` -- first claim wins, everything after it degrades to ADD
+-- and logged as a warning, since it means the judge response itself is
+incoherent (two new entities disputing one memory). A NOOP's survivor is
+also re-verified live immediately before its duplicate is archived: if a
+concurrent process (outside this batch) staled or archived it between the
+judge call and here, the archive is skipped (both entities left
+untouched, counted as ADD) rather than stranding the fact with no live
+copy left.
 
 Fail-open is the hard requirement here: any judge response that isn't
 exactly the expected JSON shape -- covering every candidate entity with a
@@ -96,13 +111,19 @@ _Decision = tuple[str, "str | None"]
 
 @dataclass
 class ConsolidationStats:
-    """Per-run counters, persisted to ``consolidation_log``."""
+    """Per-run counters, persisted to ``consolidation_log``.
+
+    ``transferred`` is in-memory only (not persisted): the number of
+    citation-credit transfers ``_apply`` actually performed this run --
+    a diagnostic for calibration, not a DB-backed count.
+    """
 
     added: int = 0
     updated: int = 0
     noop: int = 0
     contradicted: int = 0
     judge_failed: bool = False
+    transferred: int = 0
 
 
 class EntityConsolidator:
@@ -389,7 +410,7 @@ class EntityConsolidator:
         self, entities: list[Entity], decisions: dict[str, _Decision],
     ) -> ConsolidationStats:
         """Plan every decision, then mutate in two ordered phases so the
-        result never depends on ``entities`` iteration order.
+        NOOP redirect never depends on ``entities`` iteration order.
 
         Phase 1 resolves every UPDATE/CONTRADICTS supersession. Phase 2
         resolves every NOOP redirect against the *complete* survivor map
@@ -407,21 +428,46 @@ class EntityConsolidator:
         first one to actually flip the row (its ``WHERE stale = 0`` guard)
         counts as a supersession and enters the survivor map. Every
         subsequent claim on that same target finds it already stale,
-        changes nothing, and falls back to ADD -- ``stats`` and the
-        survivor map end up reflecting exactly what the DB recorded, never
-        more.
+        changes nothing, and falls back to ADD -- ``stats`` end up
+        reflecting exactly what the DB recorded, never more. That is what
+        is actually order-independent here: the *counts*. The *identity*
+        of who wins a duplicate claim is NOT -- if UPDATE(a) and
+        CONTRADICTS(b) both target the same existing_id, whichever comes
+        first in ``entities`` decides whether the existing entity ends up
+        superseded_by=a/reason="consolidated" or
+        superseded_by=b/reason="contradicted"+invalidated_at. That is
+        inherent to first-claim-wins tie-breaking, not a bug: the judge
+        response itself is incoherent (two new entities disputing one
+        memory), so there is no order-independent "correct" winner to
+        pick. What matters is that exactly one claim wins, ``stats``
+        reflects that, and the collision is logged rather than silently
+        decided (see ``_log_duplicate_claim``).
 
         Citation transfer (``Repository.transfer_citations``) is gated on
         the same ``acted``/archived return values as the survivor map and
-        stats above: it only runs the run that actually flips the row in
-        the DB, and it is itself idempotent (the source's cited_count is
-        zeroed as part of the same statement), so a duplicate claim or a
-        re-run over already-processed entities can never double-count a
-        citation. UPDATE transfers old -> new (the new entity is kept and
-        inherits the credit); NOOP transfers new -> survivor (the new
-        entity is the one being archived). CONTRADICTS does not transfer:
-        the old entity is kept as a distinct, conflicting fact rather than
-        being subsumed by the new one, so its citation credit is its own.
+        stats above: it only runs on the run that actually flips the row
+        in the DB, and it is itself idempotent (the source's cited_count
+        is zeroed as part of the same statement), so a duplicate claim or
+        a re-run over already-processed entities can never double-count a
+        citation. UPDATE and CONTRADICTS both transfer old -> new (the
+        existing entity is superseded either way -- refined or
+        contradicted, its citation credit belongs to whichever entity
+        replaces it in the visible corpus now that `stale` excludes it
+        from briefings regardless of which verdict retired it; cited_count
+        is a topical-attention signal, not a correctness signal, so a
+        correction to a heavily-cited fact must not start cold). NOOP
+        transfers new -> survivor (the new entity is the one being
+        archived).
+
+        Phase 2 also re-verifies each NOOP's survivor is still live
+        (neither archived nor stale) immediately before archiving its
+        duplicate: everything upstream of ``_apply`` -- candidate lookup,
+        the judge call -- ran earlier, so a concurrent process outside
+        this batch could have staled or archived the survivor in the
+        meantime. Archiving the duplicate against a dead survivor would
+        remove the fact from the visible corpus entirely, so that case
+        degrades to ADD instead (both entities left untouched) and is
+        logged.
         """
         stats = ConsolidationStats()
         # (entity, existing_id) for every NOOP, deferred to phase 2 below.
@@ -451,13 +497,15 @@ class EntityConsolidator:
                     # The old entity's citations belong to its
                     # replacement -- only on the run that actually
                     # superseded it, never on a checked no-op.
-                    self.repo.transfer_citations(existing_id, entity.id)
+                    if self.repo.transfer_citations(existing_id, entity.id):
+                        stats.transferred += 1
                 else:
                     # Checked no-op: another decision in this same batch
                     # already claimed this existing_id (duplicate
                     # existing_id across two UPDATE/CONTRADICTS
                     # decisions). Nothing changed in the DB, so this new
                     # entity is only ADDed, never counted as an update.
+                    self._log_duplicate_claim(entity, existing_id, verdict, survivors)
                     stats.added += 1
             elif verdict == "CONTRADICTS" and existing_id is not None:
                 acted = self.repo.mark_stale(
@@ -467,12 +515,19 @@ class EntityConsolidator:
                 if acted:
                     survivors[existing_id] = entity.id
                     stats.contradicted += 1
+                    # See the phase-1 docstring note above: `stale`
+                    # excludes the contradicted entity from briefings
+                    # regardless, so its citation credit transfers to
+                    # its replacement the same as UPDATE's.
+                    if self.repo.transfer_citations(existing_id, entity.id):
+                        stats.transferred += 1
                 else:
                     # Checked no-op: the target was already stale (e.g. a
                     # sibling in this same batch already contradicted or
                     # updated it moments ago). Nothing was invalidated, so
                     # don't count a contradiction that didn't happen -- the
                     # new entity is still kept, same disposition as ADD.
+                    self._log_duplicate_claim(entity, existing_id, verdict, survivors)
                     stats.added += 1
             else:
                 # ADD, or an UPDATE/NOOP/CONTRADICTS somehow missing its
@@ -487,17 +542,72 @@ class EntityConsolidator:
         # hop through `survivors` is ever possible.
         for entity, existing_id in noop_pending:
             survivor_id = survivors.get(existing_id, existing_id)
+            if not self.repo.is_entity_live(survivor_id):
+                # The survivor went stale/archived after the judge call --
+                # nothing in THIS batch can do that to a NOOP's survivor
+                # (phase 1 already ran; a survivor redirected via the map
+                # is by construction the entity phase 1 just marked as
+                # the successor, and an un-redirected survivor was never
+                # touched by this run at all), so this can only be an
+                # external, concurrent change. Archiving the duplicate
+                # now would strand the fact with no live copy left.
+                logger.warning(
+                    "Consolidation NOOP: %s named survivor %s, which is "
+                    "no longer live (archived or stale) at apply time -- "
+                    "skipping the archive to avoid losing the fact from "
+                    "the visible corpus; treating as ADD instead.",
+                    entity.id, survivor_id,
+                )
+                stats.added += 1
+                continue
+
             archived = self.repo.archive_entity(entity.id)
-            self.repo.touch_entity(survivor_id)
             if archived:
+                self.repo.touch_entity(survivor_id)
                 # The archived duplicate's citation credit belongs to the
                 # survivor -- gated on `archived` so a re-run over an
                 # entity this same id already archived (its `WHERE
                 # archived_at IS NULL` guard) never transfers twice.
-                self.repo.transfer_citations(entity.id, survivor_id)
-            stats.noop += 1
+                if self.repo.transfer_citations(entity.id, survivor_id):
+                    stats.transferred += 1
+                stats.noop += 1
+            else:
+                # Checked no-op: entity.id was already archived before
+                # this run reached it -- an external race today (every
+                # entity here started this run with archived_at NULL, so
+                # something else archived it in the meantime), and more
+                # directly reachable once Task 4's dry-run starts judging
+                # pre-existing entities. Nothing changed in the DB, so
+                # it's not a fresh NOOP.
+                stats.added += 1
 
         return stats
+
+    def _log_duplicate_claim(
+        self,
+        entity: Entity,
+        existing_id: str,
+        verdict: str,
+        survivors: dict[str, str],
+    ) -> None:
+        """An UPDATE/CONTRADICTS claim found its target already stale --
+        logged so an incoherent judge response (two new entities naming
+        the same existing_id) doesn't vanish without a trace. This is
+        exactly the signal Task 4's calibration harness needs to surface,
+        and today it's the only record: ``consolidation_log`` has no
+        per-collision column.
+        """
+        winner = survivors.get(existing_id)
+        logger.warning(
+            "Consolidation: %s's %s claim on existing_id %s lost -- the "
+            "target was already stale when this claim was applied (%s). "
+            "%s stays ADD, not counted as %s.",
+            entity.id, verdict, existing_id,
+            f"already superseded by {winner} earlier in this batch"
+            if winner is not None
+            else "superseded outside this batch, or a race",
+            entity.id, verdict.lower(),
+        )
 
     def _log_run(self, project_id: str, stats: ConsolidationStats) -> None:
         self.repo.log_consolidation_run(
