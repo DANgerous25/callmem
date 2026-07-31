@@ -1082,6 +1082,71 @@ class TestTransferCitations:
         assert repo.get_entity(entity.id)["cited_count"] == 3
 
 
+class TestArchiveEntitySupersededBy:
+    """archive_entity's optional ``superseded_by`` param (added alongside
+    the citation-stranding fix): consolidation's NOOP verdict passes the
+    survivor id so a citation landing on the archived duplicate after
+    the fact still has a link to follow. The param must default to no
+    -op for every other caller -- nothing else may start writing
+    superseded_by just because this parameter exists."""
+
+    def _entity(self, repo: Repository, project_id: str, title: str) -> Entity:
+        entity = Entity(
+            project_id=project_id, type="fact", title=title, content="c",
+        )
+        repo.create_entity(entity)
+        return entity
+
+    def test_default_call_leaves_superseded_by_unset(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="orphan")
+
+        modified = repo.archive_entity(entity.id)
+
+        assert modified is True
+        row = repo.get_entity(entity.id)
+        assert row["archived_at"] is not None
+        assert row["superseded_by"] is None
+
+    def test_superseded_by_param_records_the_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        duplicate = self._entity(repo, project.id, title="dup")
+        survivor = self._entity(repo, project.id, title="survivor")
+
+        modified = repo.archive_entity(duplicate.id, superseded_by=survivor.id)
+
+        assert modified is True
+        row = repo.get_entity(duplicate.id)
+        assert row["archived_at"] is not None
+        assert row["superseded_by"] == survivor.id
+
+    def test_already_archived_entity_guard_still_applies(
+        self, memory_db: Database,
+    ) -> None:
+        """The ``WHERE archived_at IS NULL`` guard is unchanged by the
+        new parameter -- a second archive attempt (with or without
+        superseded_by) is still a checked no-op."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="dup")
+        survivor = self._entity(repo, project.id, title="survivor")
+        repo.archive_entity(entity.id)
+
+        modified = repo.archive_entity(entity.id, superseded_by=survivor.id)
+
+        assert modified is False
+        assert repo.get_entity(entity.id)["superseded_by"] is None
+
+
 class TestIncrementCitationCountsRedirectsThroughSupersession:
     """increment_citation_counts backs the session-end citation hook. A
     session can end after consolidation has already archived/superseded
@@ -1284,6 +1349,25 @@ class TestIncrementCitationCountsRedirectsThroughSupersession:
         row = repo.get_entity(survivor.id)
         assert row["cited_count"] == 5
         assert row["last_cited_at"] == "2026-01-03T00:00:00"
+
+    def test_none_last_cited_at_does_not_write_empty_string(
+        self, memory_db: Database,
+    ) -> None:
+        """Not reachable through any caller today (nothing passes a None
+        timestamp), but the merge must stay correct if one ever does:
+        substituting "" for a missing last_cited_at would compare as
+        newer than any real timestamp and get persisted as a literal
+        empty string where a NULL belongs."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="entity")
+
+        repo.increment_citation_counts({entity.id: (1, None)})  # type: ignore[dict-item]
+
+        row = repo.get_entity(entity.id)
+        assert row["cited_count"] == 1
+        assert row["last_cited_at"] is None
 
     def test_missing_superseded_by_target_credits_last_real_entity(
         self, memory_db: Database,

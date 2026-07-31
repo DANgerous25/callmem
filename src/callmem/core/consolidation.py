@@ -37,7 +37,10 @@ Verdicts are applied through the existing non-destructive staleness verbs
                  UPDATE/CONTRADICTS decision in the batch has been applied,
                  so it does not depend on which order entities were judged
                  or listed in. The archived entity's cited_count/
-                 last_cited_at transfer onto whichever entity survives.
+                 last_cited_at transfer onto whichever entity survives, and
+                 its own superseded_by is set to that survivor too, so a
+                 citation landing on it after this run still finds the
+                 live entity to credit instead of stranding on a dead row.
   - CONTRADICTS: the new entity conflicts with an existing one rather than
                  refining it. BOTH entities are kept, but the existing
                  entity is marked stale + superseded_by=new (reason
@@ -148,9 +151,16 @@ class ConsolidationDecision:
 class ConsolidationStats:
     """Per-run counters, persisted to ``consolidation_log``.
 
-    ``transferred`` is in-memory only (not persisted): the number of
-    citation-credit transfers ``_apply`` actually performed this run --
-    a diagnostic for calibration, not a DB-backed count.
+    ``transfer_attempts`` is in-memory only (not persisted): the number
+    of times ``_apply`` called ``Repository.transfer_citations`` and the
+    target row matched (``UPDATE ... WHERE id = ?`` found the row), a
+    diagnostic for calibration, not a DB-backed count. This counts
+    *attempts*, not credit actually moved: ``transfer_citations`` reports
+    a row as modified whenever the target exists, even when the source
+    had zero citations to give -- so this is closer to
+    ``updated + contradicted + noop`` than to a citation-movement metric.
+    Named for what it verifiably measures rather than what it might
+    suggest.
 
     ``decisions`` is likewise in-memory only, and only ever populated by
     a ``dry_run=True`` call -- see ``ConsolidationDecision``.
@@ -161,7 +171,7 @@ class ConsolidationStats:
     noop: int = 0
     contradicted: int = 0
     judge_failed: bool = False
-    transferred: int = 0
+    transfer_attempts: int = 0
     decisions: list[ConsolidationDecision] | None = None
 
 
@@ -512,7 +522,7 @@ class EntityConsolidator:
         writes, so that value cannot go stale mid-run the way a
         concurrent process could still change it). ``touch_entity`` and
         ``transfer_citations`` are real mutations with no read-only
-        equivalent, so they simply don't run -- ``stats.transferred``
+        equivalent, so they simply don't run -- ``stats.transfer_attempts``
         stays 0 on a dry run.
 
         Phase 1 resolves every UPDATE/CONTRADICTS supersession. Phase 2
@@ -532,19 +542,30 @@ class EntityConsolidator:
         counts as a supersession and enters the survivor map. Every
         subsequent claim on that same target finds it already stale,
         changes nothing, and falls back to ADD -- ``stats`` end up
-        reflecting exactly what the DB recorded, never more. That is what
-        is actually order-independent here: the *counts*. The *identity*
-        of who wins a duplicate claim is NOT -- if UPDATE(a) and
-        CONTRADICTS(b) both target the same existing_id, whichever comes
-        first in ``entities`` decides whether the existing entity ends up
-        superseded_by=a/reason="consolidated" or
-        superseded_by=b/reason="contradicted"+invalidated_at. That is
-        inherent to first-claim-wins tie-breaking, not a bug: the judge
-        response itself is incoherent (two new entities disputing one
-        memory), so there is no order-independent "correct" winner to
+        reflecting exactly what the DB recorded, never more. What IS
+        order-independent here is coarser than "the counts" as a whole:
+        the *total* of ``added + updated + noop + contradicted`` (always
+        ``len(entities)``) and the *number of supersessions* a colliding
+        pair produces (always exactly one) hold regardless of order. The
+        *individual* ``updated``/``contradicted`` split, and the
+        *identity* of who wins, are NOT order-independent -- if UPDATE(a)
+        and CONTRADICTS(b) both target the same existing_id, whichever
+        comes first in ``entities`` decides both which entity the
+        existing one ends up superseded by
+        (superseded_by=a/reason="consolidated" vs.
+        superseded_by=b/reason="contradicted"+invalidated_at) and which
+        counter records the single supersession: order ``[a, b]`` yields
+        ``stats.updated == 1, stats.contradicted == 0``; order ``[b, a]``
+        yields the reverse. That is inherent to first-claim-wins
+        tie-breaking, not a bug: the judge response itself is incoherent
+        (two new entities disputing one memory), so there is no
+        order-independent "correct" winner -- or "correct" counter -- to
         pick. What matters is that exactly one claim wins, ``stats``
-        reflects that, and the collision is logged rather than silently
-        decided (see ``_log_duplicate_claim``).
+        reflects what the DB actually recorded, and the collision is
+        logged rather than silently decided (see ``_log_duplicate_claim``).
+        A caller reordering or parallelising a batch for this reason alone
+        will still see identical DB state and identical *totals*, just
+        not necessarily the same updated/contradicted split.
 
         Citation transfer (``Repository.transfer_citations``) is gated on
         the same ``acted``/archived return values as the survivor map and
@@ -570,7 +591,11 @@ class EntityConsolidator:
         meantime. Archiving the duplicate against a dead survivor would
         remove the fact from the visible corpus entirely, so that case
         degrades to ADD instead (both entities left untouched) and is
-        logged.
+        logged. ``is_entity_live`` and the ``archive_entity`` call that
+        follows it are two separate connections/statements, not one
+        transaction, so this only narrows the TOCTOU window between the
+        check and the archive -- it is not a lock, and a change landing
+        in that narrower window is still possible in principle.
         """
         stats = ConsolidationStats()
         # (entity, existing_id) for every NOOP, deferred to phase 2 below.
@@ -613,7 +638,7 @@ class EntityConsolidator:
                     # replacement -- only on the run that actually
                     # superseded it, never on a checked no-op.
                     if apply and self.repo.transfer_citations(existing_id, entity.id):
-                        stats.transferred += 1
+                        stats.transfer_attempts += 1
                 else:
                     # Checked no-op: another decision in this same batch
                     # already claimed this existing_id (duplicate
@@ -641,7 +666,7 @@ class EntityConsolidator:
                     # regardless, so its citation credit transfers to
                     # its replacement the same as UPDATE's.
                     if apply and self.repo.transfer_citations(existing_id, entity.id):
-                        stats.transferred += 1
+                        stats.transfer_attempts += 1
                 else:
                     # Checked no-op: the target was already stale (e.g. a
                     # sibling in this same batch already contradicted or
@@ -685,9 +710,16 @@ class EntityConsolidator:
             # archive_entity's guard only cares whether archived_at was
             # already set -- and nothing in a dry run writes, so the
             # entity's own pre-run state still answers that question
-            # correctly (see the class-level docstring).
+            # correctly (see the class-level docstring). superseded_by is
+            # recorded on the archived duplicate too (survivor_id, the
+            # same entity touch_entity below bumps), not just its own
+            # citation transfer: a citation that lands on this row AFTER
+            # this run -- the post-hoc case _resolve_live_citation_target
+            # exists for -- has to find that link to avoid stranding the
+            # credit on a dead row.
             archived = (
-                self.repo.archive_entity(entity.id) if apply
+                self.repo.archive_entity(entity.id, superseded_by=survivor_id)
+                if apply
                 else entity.archived_at is None
             )
             if archived:
@@ -699,7 +731,7 @@ class EntityConsolidator:
                     # `WHERE archived_at IS NULL` guard) never transfers
                     # twice.
                     if self.repo.transfer_citations(entity.id, survivor_id):
-                        stats.transferred += 1
+                        stats.transfer_attempts += 1
                 stats.noop += 1
             else:
                 # Checked no-op: entity.id was already archived before

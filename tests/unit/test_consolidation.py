@@ -596,7 +596,7 @@ class TestCitationTransfer:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.noop == 1
-        assert stats.transferred == 1
+        assert stats.transfer_attempts == 1
         survivor_row = engine.repo.get_entity(old_id)
         assert survivor_row["cited_count"] == 7
         assert survivor_row["last_cited_at"] == "2026-01-10T00:00:00"
@@ -605,6 +605,41 @@ class TestCitationTransfer:
         # double-counted if this entity were ever processed again.
         archived_row = engine.repo.get_entity(new_entity.id)
         assert archived_row["cited_count"] == 0
+
+    def test_noop_archive_links_superseded_by_so_post_hoc_citations_are_not_stranded(
+        self, memory_db: Database,
+    ) -> None:
+        """Completes the citation-stranding fix: before this, archive_entity
+        never set superseded_by, so a NOOP-archived duplicate had no link
+        for `_resolve_live_citation_target` to follow -- a citation
+        arriving AFTER the archival (the post-hoc case that fix targets)
+        stayed stranded on the dead row forever instead of crediting the
+        survivor."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "todo", "dup title", "content",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="todo",
+            title="dup title", content="content",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(engine.project_id, [new_entity])
+        assert stats.noop == 1
+
+        archived_row = engine.repo.get_entity(new_entity.id)
+        assert archived_row["superseded_by"] == old_id
+
+        # A citation lands on the archived duplicate after the fact.
+        engine.repo.increment_citation_counts(
+            {new_entity.id: (4, "2026-01-15T00:00:00")},
+        )
+
+        assert engine.repo.get_entity(old_id)["cited_count"] == 4
+        assert engine.repo.get_entity(new_entity.id)["cited_count"] == 0
 
     def test_noop_zero_citation_duplicate_does_not_change_survivors_count(
         self, memory_db: Database,
@@ -651,7 +686,7 @@ class TestCitationTransfer:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.updated == 1
-        assert stats.transferred == 1
+        assert stats.transfer_attempts == 1
         new_row = engine.repo.get_entity(new_entity.id)
         assert new_row["cited_count"] == 4
         assert new_row["last_cited_at"] == "2026-02-01T00:00:00"
@@ -685,7 +720,7 @@ class TestCitationTransfer:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.contradicted == 1
-        assert stats.transferred == 1
+        assert stats.transfer_attempts == 1
         new_row = engine.repo.get_entity(new_entity.id)
         assert new_row["cited_count"] == 6
         assert new_row["last_cited_at"] == "2026-03-01T00:00:00"
@@ -754,9 +789,9 @@ class TestCitationTransfer:
         # sees entity.id already archived and never re-runs the transfer
         # at all (belt to transfer_citations' own self-zeroing braces).
         assert first.noop == 1
-        assert first.transferred == 1
+        assert first.transfer_attempts == 1
         assert second.noop == 0
-        assert second.transferred == 0
+        assert second.transfer_attempts == 0
         assert second.added == 1
 
 
@@ -833,11 +868,11 @@ class TestApplyOrderIndependence:
         rev = self._run_update_noop_pair("noop_first")
 
         expected = {
-            # transferred=2: the UPDATE transfer (old_x -> entity_c) and
+            # transfer_attempts=2: the UPDATE transfer (old_x -> entity_c) and
             # the NOOP transfer (entity_d -> entity_c).
             "stats": ConsolidationStats(
                 added=0, updated=1, noop=1, contradicted=0,
-                judge_failed=False, transferred=2,
+                judge_failed=False, transfer_attempts=2,
             ),
             "old_x_stale": 1,
             "old_x_superseded_by_is_entity_c": True,
@@ -911,11 +946,11 @@ class TestApplyOrderIndependence:
         rev = self._run_contradicts_noop_pair("noop_first")
 
         expected = {
-            # transferred=2: the CONTRADICTS transfer (old_x -> entity_c)
+            # transfer_attempts=2: the CONTRADICTS transfer (old_x -> entity_c)
             # and the NOOP transfer (entity_d -> entity_c).
             "stats": ConsolidationStats(
                 added=0, updated=0, noop=1, contradicted=1,
-                judge_failed=False, transferred=2,
+                judge_failed=False, transfer_attempts=2,
             ),
             "old_x_stale": 1,
             "old_x_invalidated": True,
@@ -1196,7 +1231,7 @@ class TestFailOpen:
         assert stats.added == 1
         assert stats.updated == 0
         assert stats.noop == 0
-        assert stats.transferred == 0
+        assert stats.transfer_attempts == 0
         assert stats.judge_failed is True
         assert any(
             "malformed" in r.message.lower() or "fail-open" in r.message.lower()
@@ -1234,7 +1269,7 @@ class TestFailOpen:
         stats = consolidator.consolidate(engine.project_id, [new_entity])
 
         assert stats.added == 1
-        assert stats.transferred == 0
+        assert stats.transfer_attempts == 0
         assert stats.judge_failed is True
         # Fail-open means zero mutations, including zero citation
         # transfers -- the cited old entity's count must be untouched.
@@ -2074,10 +2109,10 @@ class TestDryRun:
             _consolidation_log_row_count(memory_db, engine.project_id)
             == before_log_count
         )
-        # Reports what it WOULD do, without touching stats.transferred
+        # Reports what it WOULD do, without touching stats.transfer_attempts
         # (no real transfer happened).
         assert stats.noop == 1
-        assert stats.transferred == 0
+        assert stats.transfer_attempts == 0
 
     def test_update_dry_run_writes_nothing(self, memory_db: Database) -> None:
         engine = _make_engine(memory_db)

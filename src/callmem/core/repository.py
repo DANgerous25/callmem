@@ -1226,20 +1226,38 @@ class Repository:
         finally:
             conn.close()
 
-    def archive_entity(self, entity_id: str) -> bool:
+    def archive_entity(
+        self, entity_id: str, superseded_by: str | None = None,
+    ) -> bool:
         """Archive a single entity (non-destructive: sets archived_at only).
 
         Used by consolidation's NOOP verdict to retire a duplicate new
         entity while leaving its row -- and provenance -- intact.
-        Returns True if a row was modified.
+        ``superseded_by``, when given, records the entity that made this
+        one redundant -- consolidation passes the NOOP's survivor, so a
+        citation that lands on the archived duplicate after the fact can
+        still be redirected to the live survivor by
+        ``_resolve_live_citation_target`` instead of being stranded on a
+        dead row. Omitted by default: most callers archive with no
+        successor to record, and leaving the column untouched then
+        preserves prior behaviour exactly. Returns True if a row was
+        modified.
         """
         conn = self.db.connect()
         try:
-            cursor = conn.execute(
-                "UPDATE entities SET archived_at = datetime('now') "
-                "WHERE id = ? AND archived_at IS NULL",
-                (entity_id,),
-            )
+            if superseded_by is not None:
+                cursor = conn.execute(
+                    "UPDATE entities SET archived_at = datetime('now'), "
+                    "superseded_by = ? "
+                    "WHERE id = ? AND archived_at IS NULL",
+                    (superseded_by, entity_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "UPDATE entities SET archived_at = datetime('now') "
+                    "WHERE id = ? AND archived_at IS NULL",
+                    (entity_id,),
+                )
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1519,15 +1537,28 @@ class Repository:
     ) -> dict[str, tuple[int, str]]:
         """Remap each cited entity_id to its live citation target and
         merge counts for any two ids that resolve to the same survivor
-        (counts summed, ``last_cited_at`` the max of the contributors)."""
-        merged: dict[str, tuple[int, str]] = {}
+        (counts summed, ``last_cited_at`` the max of the contributors).
+
+        ``last_cited_at`` is compared with a plain ``None``-aware max
+        rather than substituting ``""`` for a missing value: the merged
+        result feeds straight into ``increment_citation_counts``'s SQL,
+        whose ``CASE`` only treats an actual ``NULL`` as "nothing to
+        compare against" -- a written empty string would compare as
+        "newer" than a real timestamp and get persisted as one. No
+        caller passes a ``None`` timestamp today, but merging must not
+        silently corrupt the column if one ever does.
+        """
+        merged: dict[str, tuple[int, str | None]] = {}
         for entity_id, (count, last_cited_at) in citations.items():
             target = self._resolve_live_citation_target(conn, entity_id)
-            prev_count, prev_last = merged.get(target, (0, ""))
-            merged[target] = (
-                prev_count + count,
-                max(prev_last, last_cited_at or ""),
-            )
+            prev_count, prev_last = merged.get(target, (0, None))
+            if prev_last is None:
+                newest = last_cited_at
+            elif last_cited_at is None:
+                newest = prev_last
+            else:
+                newest = max(prev_last, last_cited_at)
+            merged[target] = (prev_count + count, newest)
         return merged
 
     def increment_citation_counts(
