@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from callmem import __version__ as _CALLMEM_VERSION
 from callmem.compat import UTC
+from callmem.core.repository import CLOSED_ENTITY_STATUSES
 from callmem.core.retrieval import _estimate_tokens
 
 if TYPE_CHECKING:
@@ -62,7 +63,8 @@ LEGEND_ORDER = [
 _OPEN_ITEM_PRIORITY_RANK: dict[str, int] = {"high": 3, "medium": 2, "low": 1}
 
 # Statuses that mean an item is no longer "open" for floor purposes.
-_CLOSED_STATUSES = ("done", "cancelled", "resolved")
+# Shared with compaction's archival protection — see CLOSED_ENTITY_STATUSES.
+_CLOSED_STATUSES = CLOSED_ENTITY_STATUSES
 
 # Box-drawing characters for visual structure
 _BOX_H = "\u2500"  # ─

@@ -98,6 +98,16 @@ def build_fts_match_query(
     return sep.join(f'"{t}"' for t in tokens)
 
 
+# Statuses that mean a lifecycle entity (todo/failure/...) is closed —
+# i.e. no longer "open" work. Any other non-NULL status (e.g. 'open',
+# 'unresolved') is an open lifecycle state and must be protected the same
+# way everywhere: briefing's open-items floor, compaction's archival
+# protection, etc. Entities with status IS NULL (facts/changes/decisions)
+# have no lifecycle at all and are unaffected by this set. Shared here so
+# the vocabulary can't drift between consumers again.
+CLOSED_ENTITY_STATUSES = ("done", "cancelled", "resolved")
+
+
 class Repository:
     """Data access layer for callmem.
 

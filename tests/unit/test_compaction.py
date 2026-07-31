@@ -320,6 +320,106 @@ class TestCompactionProtection:
         assert stats.entities_archived > 0
 
 
+def _seed_entity_with_status(
+    memory_db: Database,
+    project_id: str,
+    entity_type: str,
+    status: str | None,
+    updated_at: str,
+) -> str:
+    """Insert a single old entity of `entity_type`/`status` for compaction
+    protection tests. Returns the entity id."""
+    from callmem.models.entities import Entity
+
+    entity = Entity(
+        project_id=project_id,
+        type=entity_type,  # type: ignore[arg-type]
+        title=f"{entity_type} entity",
+        content="Test content",
+        status=status,  # type: ignore[arg-type]
+        updated_at=updated_at,
+    )
+    conn = memory_db.connect()
+    try:
+        row = entity.to_row()
+        conn.execute(
+            "INSERT INTO entities "
+            "(id, project_id, source_event_id, type, title, content, "
+            "status, priority, pinned, created_at, updated_at, "
+            "resolved_at, metadata, archived_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["id"], row["project_id"], row["source_event_id"],
+                row["type"], row["title"], row["content"],
+                row["status"], row["priority"], row["pinned"],
+                row["created_at"], row["updated_at"],
+                row["resolved_at"], row["metadata"], row["archived_at"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return entity.id
+
+
+class TestCompactionStatusVocabulary:
+    """Compaction must protect ANY non-closed lifecycle status, not just
+    the todo type's 'open' — the same vocabulary-gap bug class as the
+    mem_reopen fix. Statuses: done/cancelled/resolved are closed; open and
+    unresolved are open lifecycle states; NULL means no lifecycle at all.
+    """
+
+    def _run_and_fetch(self, memory_db: Database, entity_id: str) -> str | None:
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM entities WHERE id = ?", (entity_id,)
+            ).fetchone()
+            return row["archived_at"]
+        finally:
+            conn.close()
+
+    def test_old_unresolved_failure_survives(self, memory_db: Database) -> None:
+        project_id = _seed_old_events(memory_db)
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+        entity_id = _seed_entity_with_status(
+            memory_db, project_id, "failure", "unresolved", old_ts
+        )
+        compactor = Compactor(memory_db, Config())
+        compactor.run(project_id)
+        assert self._run_and_fetch(memory_db, entity_id) is None
+
+    def test_old_open_todo_survives(self, memory_db: Database) -> None:
+        project_id = _seed_old_events(memory_db)
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+        entity_id = _seed_entity_with_status(
+            memory_db, project_id, "todo", "open", old_ts
+        )
+        compactor = Compactor(memory_db, Config())
+        compactor.run(project_id)
+        assert self._run_and_fetch(memory_db, entity_id) is None
+
+    def test_old_done_todo_archived(self, memory_db: Database) -> None:
+        project_id = _seed_old_events(memory_db)
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+        entity_id = _seed_entity_with_status(
+            memory_db, project_id, "todo", "done", old_ts
+        )
+        compactor = Compactor(memory_db, Config())
+        compactor.run(project_id)
+        assert self._run_and_fetch(memory_db, entity_id) is not None
+
+    def test_old_status_null_fact_archived(self, memory_db: Database) -> None:
+        project_id = _seed_old_events(memory_db)
+        old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+        entity_id = _seed_entity_with_status(
+            memory_db, project_id, "fact", None, old_ts
+        )
+        compactor = Compactor(memory_db, Config())
+        compactor.run(project_id)
+        assert self._run_and_fetch(memory_db, entity_id) is not None
+
+
 def _seed_multi_event_todo(memory_db: Database) -> tuple[str, str, str]:
     """Two old, summarized events; a todo whose source_event_id is the
     first but whose source_event_ids covers both. Returns
