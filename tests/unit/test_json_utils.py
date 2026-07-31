@@ -22,6 +22,7 @@ all, without ever attempting to repair genuinely broken JSON.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -107,6 +108,56 @@ class TestNoFenceBalancedScan:
         }
 
 
+class TestBalancedScanRetriesCandidates:
+    """Round-1 review fix: the balanced scan must not give up (or
+    silently return the wrong value) just because the first '{'/'['
+    in the text doesn't turn out to be the real payload. It tries
+    every candidate start position (bounded) and picks the longest
+    one that both balances and parses as JSON on its own -- "longest",
+    not "first", because incidental prose brackets like "[1]" in a
+    numbered list are themselves valid JSON and would otherwise win
+    by mere position."""
+
+    def test_first_bracket_span_invalid_later_one_valid(self) -> None:
+        # "{1,2,3}" balances but isn't valid JSON (bare numeric keys);
+        # the real payload comes after it.
+        raw = (
+            "Looking at steps {1,2,3} in the analysis, the verdict "
+            'is: {"resolved": true, "reason": "done"}'
+        )
+        assert parse_json(raw) == {"resolved": True, "reason": "done"}
+
+    def test_first_bracket_span_trivially_valid_but_not_the_payload(
+        self,
+    ) -> None:
+        # "[1]" and "[2]" are each independently valid JSON (a
+        # single-element array), so a naive "first candidate that
+        # parses" would wrongly return [1]. The real payload is the
+        # longer object later in the text.
+        raw = (
+            "See references [1] and [2] for details. "
+            'Final answer: {"resolved": true}'
+        )
+        assert parse_json(raw) == {"resolved": True}
+
+    def test_nothing_parses_still_raises(self) -> None:
+        raw = "Looking at steps {1,2,3} and refs [a, b] with no real JSON."
+        with pytest.raises(json.JSONDecodeError):
+            parse_json(raw)
+
+    def test_bracket_heavy_payload_bounded_by_candidate_cap(self) -> None:
+        # 20000 unmatched '{' characters: each candidate attempt scans
+        # to the end of the text without balancing. Without a cap on
+        # the number of candidate starts tried, this is quadratic;
+        # with the cap it must stay fast and still raise (nothing
+        # balances, so nothing parses).
+        raw = "{" * 20_000
+        start = time.monotonic()
+        with pytest.raises(json.JSONDecodeError):
+            parse_json(raw)
+        assert time.monotonic() - start < 2.0
+
+
 class TestUnchangedBehaviour:
     """Requirements 3 and the "don't guess" boundary."""
 
@@ -123,8 +174,13 @@ class TestUnchangedBehaviour:
             parse_json("this is not json at all, no braces here")
 
     def test_unbalanced_braces_still_raise(self) -> None:
+        # No nested candidate exists here to fall back to (unlike a
+        # payload with a truncated outer object around a complete
+        # inner array/object, which legitimately yields that inner
+        # value under the multi-candidate scan) -- this is truncated
+        # with nothing else parseable, so it must still raise.
         with pytest.raises(json.JSONDecodeError):
-            parse_json('{"a": 1, "b": [1, 2, 3]')
+            parse_json('{"a": 1, "b": 2')
 
     def test_empty_string_still_raises(self) -> None:
         with pytest.raises(json.JSONDecodeError):
