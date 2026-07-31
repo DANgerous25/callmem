@@ -26,10 +26,13 @@ Verdicts are applied through the existing non-destructive staleness verbs
   - NOOP:        the new entity duplicates an existing one with nothing new.
                  The new entity is archived immediately; the existing
                  entity's updated_at is bumped so it surfaces as current. If
-                 that existing entity was itself superseded earlier in the
+                 that existing entity was itself superseded elsewhere in the
                  same batch, the touch (and the "duplicate of") redirects to
                  its still-active successor instead -- the survivor must be
-                 live.
+                 live. This redirect is resolved only after every
+                 UPDATE/CONTRADICTS decision in the batch has been applied,
+                 so it does not depend on which order entities were judged
+                 or listed in.
   - CONTRADICTS: the new entity conflicts with an existing one rather than
                  refining it. BOTH entities are kept, but the existing
                  entity is marked stale + superseded_by=new (reason
@@ -380,38 +383,68 @@ class EntityConsolidator:
     def _apply(
         self, entities: list[Entity], decisions: dict[str, _Decision],
     ) -> ConsolidationStats:
+        """Plan every decision, then mutate in two ordered phases so the
+        result never depends on ``entities`` iteration order.
+
+        Phase 1 resolves every UPDATE/CONTRADICTS supersession. Phase 2
+        resolves every NOOP redirect against the *complete* survivor map
+        phase 1 produced. Splitting into phases (rather than interleaving,
+        as a single pass over ``entities`` would) is what makes the NOOP
+        redirect order-independent: a NOOP appearing before its target's
+        UPDATE in ``entities`` now sees exactly the same survivor map as
+        one appearing after, because phase 1 always finishes first
+        regardless of where either decision sits in the batch.
+
+        Within phase 1, two decisions naming the same ``existing_id`` (two
+        UPDATEs, two CONTRADICTS, or one of each) are resolved
+        deterministically by their position in ``entities``: each call
+        into ``mark_stale`` is checked via its return value, so only the
+        first one to actually flip the row (its ``WHERE stale = 0`` guard)
+        counts as a supersession and enters the survivor map. Every
+        subsequent claim on that same target finds it already stale,
+        changes nothing, and falls back to ADD -- ``stats`` and the
+        survivor map end up reflecting exactly what the DB recorded, never
+        more.
+        """
         stats = ConsolidationStats()
-        # old_id -> new_id for every UPDATE applied earlier in this same
-        # loop. A NOOP whose existing_id shows up here targets an entity
-        # that this very run just marked stale -- redirect the touch (and
-        # the "duplicate of") to its still-active successor so the
-        # survivor of a NOOP is never a just-superseded entity.
-        superseded_this_run: dict[str, str] = {}
+        # (entity, existing_id) for every NOOP, deferred to phase 2 below.
+        noop_pending: list[tuple[Entity, str]] = []
+        # existing_id -> new_id, but only for supersessions the DB
+        # actually applied this run (see mark_stale's return-value checks
+        # below) -- an overwritten/no-op claim never enters this map.
+        survivors: dict[str, str] = {}
+
+        # Phase 1: every UPDATE/CONTRADICTS decision, in `entities` order.
         for entity in entities:
             decision = decisions.get(entity.id)
             if decision is None:
                 stats.added += 1
                 continue
             verdict, existing_id = decision
-            if verdict == "UPDATE" and existing_id is not None:
-                self.repo.mark_stale(
+            if verdict == "NOOP" and existing_id is not None:
+                noop_pending.append((entity, existing_id))
+            elif verdict == "UPDATE" and existing_id is not None:
+                acted = self.repo.mark_stale(
                     existing_id, reason="consolidated",
                     superseded_by=entity.id,
                 )
-                superseded_this_run[existing_id] = entity.id
-                stats.updated += 1
-            elif verdict == "NOOP" and existing_id is not None:
-                survivor_id = superseded_this_run.get(existing_id, existing_id)
-                self.repo.archive_entity(entity.id)
-                self.repo.touch_entity(survivor_id)
-                stats.noop += 1
+                if acted:
+                    survivors[existing_id] = entity.id
+                    stats.updated += 1
+                else:
+                    # Checked no-op: another decision in this same batch
+                    # already claimed this existing_id (duplicate
+                    # existing_id across two UPDATE/CONTRADICTS
+                    # decisions). Nothing changed in the DB, so this new
+                    # entity is only ADDed, never counted as an update.
+                    stats.added += 1
             elif verdict == "CONTRADICTS" and existing_id is not None:
                 acted = self.repo.mark_stale(
                     existing_id, reason="contradicted",
                     superseded_by=entity.id, invalidated=True,
                 )
                 if acted:
-                    superseded_this_run[existing_id] = entity.id
+                    survivors[existing_id] = entity.id
                     stats.contradicted += 1
                 else:
                     # Checked no-op: the target was already stale (e.g. a
@@ -426,6 +459,17 @@ class EntityConsolidator:
                 # happen, but falling back to ADD here costs nothing and
                 # never deletes.
                 stats.added += 1
+
+        # Phase 2: every NOOP, redirected against the now-final survivor
+        # map. A NOOP's existing_id names a pre-existing entity (never
+        # another batch entity -- _parse rejects that), so at most one
+        # hop through `survivors` is ever possible.
+        for entity, existing_id in noop_pending:
+            survivor_id = survivors.get(existing_id, existing_id)
+            self.repo.archive_entity(entity.id)
+            self.repo.touch_entity(survivor_id)
+            stats.noop += 1
+
         return stats
 
     def _log_run(self, project_id: str, stats: ConsolidationStats) -> None:

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 from callmem.core.consolidation import EntityConsolidator
+from callmem.core.database import Database
 from callmem.core.embeddings import Embedder, embedding_model_key, pack_vector
 from callmem.core.engine import MemoryEngine
 from callmem.core.extraction import EntityExtractor
@@ -16,7 +17,6 @@ from callmem.models.config import Config
 from callmem.models.entities import Entity
 
 if TYPE_CHECKING:
-    from callmem.core.database import Database
     from callmem.core.repository import Repository
 
 
@@ -556,6 +556,217 @@ class TestNoopVerdict:
         # old_x, is the one that got bumped by the NOOP.
         entity_c_row = engine.repo.get_entity(entity_c.id)
         assert entity_c_row["updated_at"] != entity_c_before["updated_at"]
+
+
+class TestApplyOrderIndependence:
+    """_apply must resolve every UPDATE/CONTRADICTS supersession before any
+    NOOP redirect is resolved, regardless of the order entities happen to
+    appear in the batch -- and duplicate `existing_id` claims across two
+    UPDATE (or CONTRADICTS) decisions must not overcount or desync stats
+    from what the DB actually recorded."""
+
+    def _run_update_noop_pair(self, entities_order: str) -> dict[str, Any]:
+        """Same UPDATE+NOOP pair on the same target, run on a fresh DB in
+        either entities order. Returns a role-keyed, id-normalized summary
+        of the outcome so the two orders can be compared for equality
+        without relying on cross-run timestamp equality (SQLite's
+        ``datetime('now')`` has only second resolution, so comparing two
+        independent runs' raw timestamps would be flaky; instead each run
+        compares its own before/after)."""
+        db = Database(":memory:")
+        db.initialize()
+        engine = _make_engine(db)
+        old_x = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT tokens", "signed with RS256",
+        )
+        entity_c = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT tokens",
+            content="signed with RS256, rotated quarterly",
+        )
+        entity_d = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT tokens", content="signed with RS256",
+        )
+        _insert_new(engine.repo, entity_c)
+        _insert_new(engine.repo, entity_d)
+        entity_c_before = engine.repo.get_entity(entity_c.id)
+
+        response = json.dumps([
+            {"new_id": entity_c.id, "verdict": "UPDATE", "existing_id": old_x},
+            {"new_id": entity_d.id, "verdict": "NOOP", "existing_id": old_x},
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(db, judge, engine.config)
+
+        ordered = (
+            [entity_c, entity_d] if entities_order == "update_first"
+            else [entity_d, entity_c]
+        )
+        stats = consolidator.consolidate(engine.project_id, ordered)
+
+        old_x_row = engine.repo.get_entity(old_x)
+        entity_c_row = engine.repo.get_entity(entity_c.id)
+        entity_d_row = engine.repo.get_entity(entity_d.id)
+        return {
+            "stats": (stats.updated, stats.noop, stats.added),
+            "old_x_stale": old_x_row["stale"],
+            "old_x_superseded_by_is_entity_c": (
+                old_x_row["superseded_by"] == entity_c.id
+            ),
+            "entity_d_archived": entity_d_row["archived_at"] is not None,
+            "entity_c_was_touched": (
+                entity_c_row["updated_at"] != entity_c_before["updated_at"]
+            ),
+        }
+
+    def test_update_then_noop_and_noop_then_update_produce_identical_state(
+        self,
+    ) -> None:
+        fwd = self._run_update_noop_pair("update_first")
+        rev = self._run_update_noop_pair("noop_first")
+
+        expected = {
+            "stats": (1, 1, 0),
+            "old_x_stale": 1,
+            "old_x_superseded_by_is_entity_c": True,
+            "entity_d_archived": True,
+            # This is the assertion that fails pre-fix: in the
+            # "noop_first" order the old code redirected the touch to
+            # old_x itself (already doomed to go stale a moment later)
+            # instead of entity_c, the live successor.
+            "entity_c_was_touched": True,
+        }
+        assert fwd == expected
+        assert rev == expected
+
+    def test_noop_first_order_still_redirects_to_the_live_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        """Reverse of test_noop_touches_the_still_active_successor_not_a_
+        stale_target: the NOOP appears BEFORE the UPDATE in `entities`.
+        Pre-fix, this order silently lost the redirect (it touched old_x,
+        which the very next step marked stale) -- the survivor of a NOOP
+        must never end up being an entity this same run marked stale,
+        no matter which order the batch lists them in."""
+        engine = _make_engine(memory_db)
+        old_x = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT tokens", "signed with RS256",
+        )
+        entity_c = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT tokens",
+            content="signed with RS256, rotated quarterly",
+        )
+        entity_d = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT tokens", content="signed with RS256",
+        )
+        _insert_new(engine.repo, entity_c)
+        _insert_new(engine.repo, entity_d)
+        entity_c_before = engine.repo.get_entity(entity_c.id)
+
+        response = json.dumps([
+            {"new_id": entity_c.id, "verdict": "UPDATE", "existing_id": old_x},
+            {"new_id": entity_d.id, "verdict": "NOOP", "existing_id": old_x},
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+
+        # NOOP entity listed FIRST -- the reverse of the passing test above.
+        stats = consolidator.consolidate(
+            engine.project_id, [entity_d, entity_c],
+        )
+
+        assert stats.updated == 1
+        assert stats.noop == 1
+
+        old_x_row = engine.repo.get_entity(old_x)
+        assert old_x_row["stale"] == 1
+        assert old_x_row["superseded_by"] == entity_c.id
+
+        entity_d_row = engine.repo.get_entity(entity_d.id)
+        assert entity_d_row["archived_at"] is not None
+
+        # The redirect must land on entity_c (the live successor), not on
+        # old_x (which this same run marked stale) -- entity_c's
+        # updated_at must have moved from its pre-run value.
+        entity_c_row = engine.repo.get_entity(entity_c.id)
+        assert entity_c_row["updated_at"] != entity_c_before["updated_at"]
+
+    def test_duplicate_existing_id_across_two_updates_counts_one_supersession(
+        self, memory_db: Database,
+    ) -> None:
+        """Two different new entities both UPDATE the SAME existing_id.
+        Only the first supersession actually happens in the DB (mark_stale's
+        WHERE stale=0 guard); stats.updated must reflect that -- not double
+        count -- and a later NOOP on the same target must redirect to
+        whichever entity the DB actually recorded as the supersessor, not
+        whichever entity happened to be processed last."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Region is us-east", "primary region",
+        )
+        entity_a = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="Moved to eu-west",
+        )
+        entity_b = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="Moved to ap-south",
+        )
+        entity_e = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Region is us-east", content="primary region",
+        )
+        _insert_new(engine.repo, entity_a)
+        _insert_new(engine.repo, entity_b)
+        _insert_new(engine.repo, entity_e)
+        entity_a_before = engine.repo.get_entity(entity_a.id)
+        entity_b_before = engine.repo.get_entity(entity_b.id)
+
+        response = json.dumps([
+            {"new_id": entity_a.id, "verdict": "UPDATE", "existing_id": old_id},
+            {"new_id": entity_b.id, "verdict": "UPDATE", "existing_id": old_id},
+            {"new_id": entity_e.id, "verdict": "NOOP", "existing_id": old_id},
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+
+        stats = consolidator.consolidate(
+            engine.project_id, [entity_a, entity_b, entity_e],
+        )
+
+        # Exactly one supersession happened; the second UPDATE's target
+        # was already stale, so it falls back to ADD rather than being
+        # double-counted as updated.
+        assert stats.updated == 1
+        assert stats.added == 1
+        assert stats.noop == 1
+
+        old_row = engine.repo.get_entity(old_id)
+        assert old_row["stale"] == 1
+        # First writer wins -- the DB's superseded_by is entity_a, never
+        # entity_b (which the pre-fix code would have overwritten it with
+        # even though its mark_stale call was a no-op).
+        assert old_row["superseded_by"] == entity_a.id
+
+        # Neither UPDATE candidate is archived (non-destructive).
+        assert engine.repo.get_entity(entity_a.id)["archived_at"] is None
+        assert engine.repo.get_entity(entity_b.id)["archived_at"] is None
+
+        # The NOOP archived entity_e and redirected the touch to the
+        # entity the DB actually recorded as old_id's supersessor
+        # (entity_a) -- NOT entity_b, which never actually superseded
+        # anything.
+        assert engine.repo.get_entity(entity_e.id)["archived_at"] is not None
+        entity_a_row = engine.repo.get_entity(entity_a.id)
+        entity_b_row = engine.repo.get_entity(entity_b.id)
+        assert entity_a_row["updated_at"] != entity_a_before["updated_at"]
+        assert entity_b_row["updated_at"] == entity_b_before["updated_at"]
 
 
 class TestFailOpen:
