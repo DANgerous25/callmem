@@ -742,7 +742,7 @@ class TestCitationTransfer:
 
         judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
         consolidator = EntityConsolidator(memory_db, judge, engine.config)
-        decisions = {new_entity.id: ("NOOP", old_id)}
+        decisions = {new_entity.id: ("NOOP", old_id, "stubbed")}
 
         first = consolidator._apply([new_entity], decisions)
         second = consolidator._apply([new_entity], decisions)  # simulated re-run
@@ -1098,7 +1098,7 @@ class TestNoopLiveSurvivorGuard:
         consolidator = EntityConsolidator(
             memory_db, _StubJudge(response=None), engine.config,
         )
-        decisions = {new_entity.id: ("NOOP", old_id)}
+        decisions = {new_entity.id: ("NOOP", old_id, "stubbed")}
 
         with caplog.at_level(logging.WARNING):
             stats = consolidator._apply([new_entity], decisions)
@@ -1133,7 +1133,7 @@ class TestNoopLiveSurvivorGuard:
         consolidator = EntityConsolidator(
             memory_db, _StubJudge(response=None), engine.config,
         )
-        decisions = {new_entity.id: ("NOOP", old_id)}
+        decisions = {new_entity.id: ("NOOP", old_id, "stubbed")}
 
         stats = consolidator._apply([new_entity], decisions)
 
@@ -1159,7 +1159,7 @@ class TestNoopLiveSurvivorGuard:
         consolidator = EntityConsolidator(
             memory_db, _StubJudge(response=None), engine.config,
         )
-        decisions = {new_entity.id: ("NOOP", old_id)}
+        decisions = {new_entity.id: ("NOOP", old_id, "stubbed")}
 
         stats = consolidator._apply([new_entity], decisions)
 
@@ -2021,3 +2021,390 @@ class TestExtractionIntegration:
             entities = extractor.process_pending()
 
         assert len(entities) == 1
+
+
+def _snapshot(repo: Repository, *entity_ids: str) -> list[dict[str, Any]]:
+    """Full row state for a set of entities -- used to assert dry-run
+    writes nothing, byte-for-byte."""
+    return [repo.get_entity(eid) for eid in entity_ids]
+
+
+def _consolidation_log_row_count(db: Database, project_id: str) -> int:
+    conn = db.connect()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM consolidation_log WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        return row["n"]
+    finally:
+        conn.close()
+
+
+class TestDryRun:
+    """Task 4: the shadow-mode calibration harness. ``dry_run=True`` must
+    run through the identical candidate-selection/judging/apply-planning
+    code the live path uses, and must never write to the DB."""
+
+    def test_noop_dry_run_writes_nothing(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256 tokens",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256 tokens",
+        )
+        _insert_new(engine.repo, new_entity)
+        engine.repo.set_citation_counts({old_id: (3, "2026-01-01T00:00:00")})
+
+        before = _snapshot(engine.repo, old_id, new_entity.id)
+        before_log_count = _consolidation_log_row_count(memory_db, engine.project_id)
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        after = _snapshot(engine.repo, old_id, new_entity.id)
+        assert after == before
+        assert (
+            _consolidation_log_row_count(memory_db, engine.project_id)
+            == before_log_count
+        )
+        # Reports what it WOULD do, without touching stats.transferred
+        # (no real transfer happened).
+        assert stats.noop == 1
+        assert stats.transferred == 0
+
+    def test_update_dry_run_writes_nothing(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256, rotated quarterly",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        before = _snapshot(engine.repo, old_id, new_entity.id)
+
+        judge = _StubJudge(_judge_response("UPDATE", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        after = _snapshot(engine.repo, old_id, new_entity.id)
+        assert after == before
+        assert stats.updated == 1
+        # In particular: superseded_by/stale must still be unset -- the
+        # exact thing a calibration run must never assert falsely.
+        assert after[0]["stale"] == 0
+        assert after[0]["superseded_by"] is None
+
+    def test_contradicts_dry_run_writes_nothing(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="Actually mTLS now",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        before = _snapshot(engine.repo, old_id, new_entity.id)
+
+        judge = _StubJudge(_judge_response("CONTRADICTS", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        after = _snapshot(engine.repo, old_id, new_entity.id)
+        assert after == before
+        assert stats.contradicted == 1
+
+    def test_dry_run_works_even_when_consolidation_disabled(
+        self, memory_db: Database,
+    ) -> None:
+        """The whole point of shadow mode: a project calibrating a
+        threshold has consolidation.enabled=False. dry_run must bypass
+        that gate -- it is the ONLY way to see real behaviour before
+        flipping the switch."""
+        config = Config(sensitive_data={"enabled": False, "llm_scan": False})
+        assert config.consolidation.enabled is False
+        engine = MemoryEngine(memory_db, config)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        assert judge.calls != []
+        assert stats.noop == 1
+        assert engine.repo.get_entity(new_entity.id)["archived_at"] is None
+
+    def test_dry_run_decision_carries_similarity_and_reason(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(json.dumps([{
+            "new_id": new_entity.id, "verdict": "NOOP", "existing_id": old_id,
+            "reason": "identical fact, no new information",
+        }]))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        assert stats.decisions is not None
+        [decision] = stats.decisions
+        assert decision.entity_id == new_entity.id
+        assert decision.verdict == "NOOP"
+        assert decision.existing_id == old_id
+        assert decision.reason == "identical fact, no new information"
+        assert decision.similarity is not None
+        assert 0.0 < decision.similarity <= 1.0
+
+    def test_dry_run_below_threshold_entity_reports_add_with_near_miss_similarity(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT tokens", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            # Shares "Auth uses" with the candidate above (~0.67
+            # SequenceMatcher ratio) -- an FTS hit exists, it's just
+            # below the threshold below, unlike a totally unrelated
+            # title, which would find no FTS candidate at all.
+            title="Auth uses session cookies", content="cookie-backed",
+        )
+        config = engine.config.model_copy(deep=True)
+        config.consolidation.threshold = 0.99  # unreachable
+        judge = _StubJudge(response=None)
+        consolidator = EntityConsolidator(memory_db, judge, config)
+
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        assert judge.calls == []
+        assert stats.added == 1
+        assert stats.decisions is not None
+        [decision] = stats.decisions
+        assert decision.verdict == "ADD"
+        assert decision.reason is None
+        # Never sent to the judge, but the near-miss score is still
+        # surfaced -- this is exactly the data a threshold sweep needs.
+        assert decision.similarity is not None
+
+    def test_dry_run_threshold_override_changes_qualifying_set(
+        self, memory_db: Database,
+    ) -> None:
+        """Same corpus, two thresholds: a loose one routes the pair to
+        the judge, a strict one doesn't -- proving --threshold actually
+        changes the candidate gate, not just cosmetics."""
+        engine = _make_engine(memory_db)
+        _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT tokens", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses session cookies", content="cookie-backed",
+        )
+
+        strict = engine.config.model_copy(deep=True)
+        strict.consolidation.threshold = 0.99
+        judge_strict = _StubJudge(response=None)
+        strict_stats = EntityConsolidator(
+            memory_db, judge_strict, strict,
+        ).consolidate(engine.project_id, [new_entity], dry_run=True)
+        assert judge_strict.calls == []
+        assert strict_stats.decisions[0].verdict == "ADD"
+
+        loose = engine.config.model_copy(deep=True)
+        loose.consolidation.threshold = 0.1
+        judge_loose = _StubJudge(_judge_response("ADD", new_entity.id, None))
+        loose_stats = EntityConsolidator(
+            memory_db, judge_loose, loose,
+        ).consolidate(engine.project_id, [new_entity], dry_run=True)
+        assert len(judge_loose.calls) == 1
+        assert loose_stats.decisions[0].similarity is not None
+
+    def test_judge_failure_in_dry_run_reports_add_never_a_would_archive(
+        self, memory_db: Database,
+    ) -> None:
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+        before = _snapshot(engine.repo, old_id, new_entity.id)
+
+        judge = _StubJudge(response="not valid json")
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        assert stats.judge_failed is True
+        assert stats.updated == 0
+        assert stats.noop == 0
+        assert stats.contradicted == 0
+        assert stats.added == 1
+        assert stats.decisions is not None
+        [decision] = stats.decisions
+        assert decision.verdict == "ADD"
+        assert decision.reason == "judge_failed"
+        assert _snapshot(engine.repo, old_id, new_entity.id) == before
+
+    def test_duplicate_existing_id_collision_resolved_same_as_live(
+        self, memory_db: Database,
+    ) -> None:
+        """Dry-run must reuse `_apply`'s collision-resolution logic, not
+        just its candidate-selection/judging half -- otherwise its
+        counts would overstate what a live run would actually do."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact", "dup title", "content",
+        )
+        new_a = Entity(
+            project_id=engine.project_id, type="fact",
+            title="dup title", content="content v2",
+        )
+        new_b = Entity(
+            project_id=engine.project_id, type="fact",
+            title="dup title", content="content v3",
+        )
+        _insert_new(engine.repo, new_a)
+        _insert_new(engine.repo, new_b)
+
+        response = json.dumps([
+            {"new_id": new_a.id, "verdict": "UPDATE", "existing_id": old_id,
+             "reason": "refines"},
+            {"new_id": new_b.id, "verdict": "UPDATE", "existing_id": old_id,
+             "reason": "also refines"},
+        ])
+        judge = _StubJudge(response=response)
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+        stats = consolidator.consolidate(
+            engine.project_id, [new_a, new_b], dry_run=True,
+        )
+
+        # Exactly one of the two duplicate claims wins -- same guarantee
+        # Task 2 established for the live path.
+        assert stats.updated == 1
+        assert stats.added == 1
+        assert engine.repo.get_entity(old_id)["stale"] == 0
+
+    def test_dry_run_and_live_path_share_the_same_apply_method(
+        self, memory_db: Database,
+    ) -> None:
+        """Structural assertion for Task 4's core requirement: the
+        dry-run harness must be the SAME candidate-selection/judging/
+        apply-planning code as the live path, not a parallel
+        reimplementation. Spy on the real, bound `_apply`/`_find_similar`
+        /`_parse` methods (wraps=..., so they still run for real) and
+        confirm dry_run=True routes straight through them, with only the
+        `apply` flag differing from a live call."""
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator = EntityConsolidator(memory_db, judge, engine.config)
+
+        with (
+            patch.object(
+                consolidator, "_find_similar",
+                wraps=consolidator._find_similar,
+            ) as spy_find,
+            patch.object(
+                consolidator, "_parse", wraps=consolidator._parse,
+            ) as spy_parse,
+            patch.object(
+                consolidator, "_apply", wraps=consolidator._apply,
+            ) as spy_apply,
+        ):
+            stats = consolidator.consolidate(
+                engine.project_id, [new_entity], dry_run=True,
+            )
+
+        assert spy_find.called
+        assert spy_parse.called
+        spy_apply.assert_called_once()
+        assert spy_apply.call_args.kwargs.get("apply") is False
+        # And it genuinely ran (wraps=..., not a stub) -- the dry-run
+        # verdict is real, not fabricated by the spy.
+        assert stats.noop == 1
+        assert engine.repo.get_entity(new_entity.id)["archived_at"] is None
+
+        # Same corpus, live call: the identical `_apply` method, only
+        # `apply` flips to True (its default) and it actually writes.
+        judge2 = _StubJudge(_judge_response("NOOP", new_entity.id, old_id))
+        consolidator2 = EntityConsolidator(memory_db, judge2, engine.config)
+        with patch.object(
+            consolidator2, "_apply", wraps=consolidator2._apply,
+        ) as spy_apply_live:
+            consolidator2.consolidate(engine.project_id, [new_entity])
+        assert spy_apply_live.call_args.kwargs.get("apply") is True
+        assert engine.repo.get_entity(new_entity.id)["archived_at"] is not None
+
+    def test_no_parallel_apply_reimplementation_exists(self) -> None:
+        """Belt-and-braces on the structural requirement above: `_apply`
+        is the single method with an `apply` flag: no second
+        dry-run-flavoured "apply the plan" method exists on the class
+        for a dry run to have drifted into using instead."""
+        import inspect
+
+        sig = inspect.signature(EntityConsolidator._apply)
+        assert "apply" in sig.parameters
+
+        apply_like = [
+            name for name in dir(EntityConsolidator)
+            if name != "_apply" and "apply" in name.lower()
+        ]
+        assert apply_like == []

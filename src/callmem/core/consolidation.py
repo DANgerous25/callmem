@@ -74,6 +74,18 @@ recorded in ``consolidation_log`` with ``judge_failed=True``.
 Ships disabled by default (see ``ConsolidationConfig``): the similarity
 threshold is uncalibrated and this feature archives user memory, so it is
 opt-in per project until tuned against real data.
+
+``consolidate(..., dry_run=True)`` (see ``callmem consolidate --dry-run``
+in cli.py) runs this exact same candidate-selection and judging path --
+``_find_similar``, the batched judge call, ``_parse`` -- over a batch of
+already-persisted entities and reports what it WOULD do, mutating
+nothing: ``_apply`` takes an ``apply`` flag that swaps every write
+(``mark_stale``/``archive_entity``/``touch_entity``/``transfer_citations``)
+for the equivalent read (or, where the entity's own pre-run state already
+answers the question, nothing at all), while walking the identical
+plan-then-mutate control flow described above. This is deliberate: the
+calibration harness is only trustworthy if it is measuring the real
+decision logic, not a second reimplementation of it.
 """
 
 from __future__ import annotations
@@ -105,8 +117,31 @@ logger = logging.getLogger(__name__)
 _VALID_VERDICTS = {"ADD", "UPDATE", "NOOP", "CONTRADICTS"}
 _MAX_CONTENT_CHARS = 300
 
-# What the judge is asked to return per new entity: (verdict, existing_id).
-_Decision = tuple[str, "str | None"]
+# What the judge is asked to return per new entity:
+# (verdict, existing_id, reason).
+_Decision = tuple[str, "str | None", "str | None"]
+
+
+@dataclass
+class ConsolidationDecision:
+    """One entity's outcome, for the ``dry_run=True`` calibration report.
+
+    Only populated on ``consolidate(..., dry_run=True)`` -- the live path
+    has no use for it and leaves ``ConsolidationStats.decisions`` as
+    None. ``verdict``/``existing_id``/``reason`` are exactly what the
+    judge returned for entities that reached it; entities that never
+    qualified (below threshold) or were never reached (judge failure)
+    report verdict "ADD" with ``reason`` set to ``None`` or
+    ``"judge_failed"`` respectively -- see ``EntityConsolidator._decision_report``.
+    """
+
+    entity_id: str
+    entity_title: str
+    verdict: str
+    existing_id: str | None
+    existing_title: str | None
+    similarity: float | None
+    reason: str | None
 
 
 @dataclass
@@ -116,6 +151,9 @@ class ConsolidationStats:
     ``transferred`` is in-memory only (not persisted): the number of
     citation-credit transfers ``_apply`` actually performed this run --
     a diagnostic for calibration, not a DB-backed count.
+
+    ``decisions`` is likewise in-memory only, and only ever populated by
+    a ``dry_run=True`` call -- see ``ConsolidationDecision``.
     """
 
     added: int = 0
@@ -124,6 +162,7 @@ class ConsolidationStats:
     contradicted: int = 0
     judge_failed: bool = False
     transferred: int = 0
+    decisions: list[ConsolidationDecision] | None = None
 
 
 class EntityConsolidator:
@@ -144,7 +183,7 @@ class EntityConsolidator:
         self._embedder_resolved = embedder is not None
 
     def consolidate(
-        self, project_id: str, entities: list[Entity],
+        self, project_id: str, entities: list[Entity], dry_run: bool = False,
     ) -> ConsolidationStats:
         """Run one consolidation pass over a just-created entity batch.
 
@@ -152,9 +191,23 @@ class EntityConsolidator:
         "new" side; candidates are read-only until a verdict says
         otherwise, and no entity in ``entities`` can ever be a candidate
         for another entity also in ``entities``.
+
+        ``dry_run=True`` (see the module docstring, and ``callmem
+        consolidate --dry-run`` in cli.py) runs every step below
+        completely unchanged -- candidate lookup, the threshold gate,
+        the batched judge call, ``_parse`` -- so a calibration run is
+        judged by the exact same logic a live run would use. Only two
+        things differ: the ``settings.enabled`` gate is bypassed (a
+        project doing shadow-mode calibration has consolidation off by
+        definition), and ``_apply`` is called with ``apply=False`` so it
+        classifies every decision without writing to the DB.
+        ``stats.decisions`` is populated with a per-entity report
+        (similarity + judge reason) that only a dry run has any use for.
         """
         settings = self.config.consolidation
-        if not settings.enabled or not entities or self.llm is None:
+        if not entities or self.llm is None:
+            return ConsolidationStats()
+        if not dry_run and not settings.enabled:
             return ConsolidationStats()
 
         batch_ids = {e.id for e in entities}
@@ -162,6 +215,12 @@ class EntityConsolidator:
         vectors_by_id = self._embed_batch(project_id, entities) or {}
 
         qualifying: dict[str, tuple[Entity, list[dict[str, Any]]]] = {}
+        # Only collected when dry_run: (entity, hits) for entities whose
+        # best match never cleared the threshold, so the report can show
+        # their near-miss similarity too -- useful for picking a
+        # threshold. The live path has no use for this, so it isn't
+        # built there.
+        below_threshold: list[tuple[Entity, list[dict[str, Any]]]] = []
         for entity in entities:
             hits = self._find_similar(
                 project_id, entity, settings.top_k, batch_ids,
@@ -169,10 +228,17 @@ class EntityConsolidator:
             )
             if hits and hits[0]["_similarity"] >= settings.threshold:
                 qualifying[entity.id] = (entity, hits)
+            elif dry_run:
+                below_threshold.append((entity, hits))
 
         if not qualifying:
             stats = ConsolidationStats(added=len(entities))
-            self._log_run(project_id, stats)
+            if dry_run:
+                stats.decisions = self._decision_report(
+                    entities, qualifying, below_threshold, None,
+                )
+            else:
+                self._log_run(project_id, stats)
             return stats
 
         prompt = CONSOLIDATION_PROMPT.format(
@@ -190,17 +256,28 @@ class EntityConsolidator:
                 len(entities), (raw or "")[:200],
             )
             stats = ConsolidationStats(added=len(entities), judge_failed=True)
-            self._log_run(project_id, stats)
+            if dry_run:
+                stats.decisions = self._decision_report(
+                    entities, qualifying, below_threshold, None,
+                    fallback_reason="judge_failed",
+                )
+            else:
+                self._log_run(project_id, stats)
             return stats
 
-        stats = self._apply(entities, decisions)
+        stats = self._apply(entities, decisions, apply=not dry_run)
         logger.info(
-            "Consolidation run for project %s: %d added, %d updated, "
+            "Consolidation %srun for project %s: %d added, %d updated, "
             "%d noop, %d contradicted",
-            project_id, stats.added, stats.updated, stats.noop,
-            stats.contradicted,
+            "dry-" if dry_run else "", project_id, stats.added,
+            stats.updated, stats.noop, stats.contradicted,
         )
-        self._log_run(project_id, stats)
+        if dry_run:
+            stats.decisions = self._decision_report(
+                entities, qualifying, below_threshold, decisions,
+            )
+        else:
+            self._log_run(project_id, stats)
         return stats
 
     # -- similarity lookup ------------------------------------------------
@@ -397,7 +474,15 @@ class EntityConsolidator:
                     return None
             else:
                 existing_id = None
-            decisions[new_id] = (verdict, existing_id)
+
+            reason = item.get("reason")
+            if not isinstance(reason, str):
+                # Cosmetic-only: the judge's one-sentence rationale is
+                # not part of the decision's validity, only its
+                # calibration report line, so a missing/malformed reason
+                # degrades to None rather than failing the whole batch.
+                reason = None
+            decisions[new_id] = (verdict, existing_id, reason)
 
         # A partial response -- some qualifying entity never judged -- is
         # exactly as dangerous as a malformed one: fail open on the whole
@@ -407,10 +492,28 @@ class EntityConsolidator:
         return decisions
 
     def _apply(
-        self, entities: list[Entity], decisions: dict[str, _Decision],
+        self,
+        entities: list[Entity],
+        decisions: dict[str, _Decision],
+        apply: bool = True,
     ) -> ConsolidationStats:
         """Plan every decision, then mutate in two ordered phases so the
         NOOP redirect never depends on ``entities`` iteration order.
+
+        ``apply=False`` (Task 4's dry-run) walks this exact same
+        plan-then-mutate control flow -- same phase split, same
+        collision resolution, same live-survivor recheck -- but swaps
+        every write for the read (or already-known fact) that answers
+        the same question the write's return value would have:
+        ``mark_stale``'s ``WHERE stale = 0`` guard becomes
+        ``is_entity_live``, and ``archive_entity``'s ``WHERE archived_at
+        IS NULL`` guard becomes the entity's own ``archived_at`` as it
+        stood when this batch was loaded (nothing in a dry run ever
+        writes, so that value cannot go stale mid-run the way a
+        concurrent process could still change it). ``touch_entity`` and
+        ``transfer_citations`` are real mutations with no read-only
+        equivalent, so they simply don't run -- ``stats.transferred``
+        stays 0 on a dry run.
 
         Phase 1 resolves every UPDATE/CONTRADICTS supersession. Phase 2
         resolves every NOOP redirect against the *complete* survivor map
@@ -483,21 +586,33 @@ class EntityConsolidator:
             if decision is None:
                 stats.added += 1
                 continue
-            verdict, existing_id = decision
+            verdict, existing_id, _reason = decision
             if verdict == "NOOP" and existing_id is not None:
                 noop_pending.append((entity, existing_id))
             elif verdict == "UPDATE" and existing_id is not None:
-                acted = self.repo.mark_stale(
-                    existing_id, reason="consolidated",
-                    superseded_by=entity.id,
-                )
+                if apply:
+                    acted = self.repo.mark_stale(
+                        existing_id, reason="consolidated",
+                        superseded_by=entity.id,
+                    )
+                else:
+                    # Same question mark_stale's guard answers (is the
+                    # target still live?), without writing -- and
+                    # `existing_id not in survivors` reproduces "did an
+                    # earlier decision THIS run already claim it" the
+                    # same way the real guard would (that claim already
+                    # flipped stale=1 by the time this one runs).
+                    acted = (
+                        existing_id not in survivors
+                        and self.repo.is_entity_live(existing_id)
+                    )
                 if acted:
                     survivors[existing_id] = entity.id
                     stats.updated += 1
                     # The old entity's citations belong to its
                     # replacement -- only on the run that actually
                     # superseded it, never on a checked no-op.
-                    if self.repo.transfer_citations(existing_id, entity.id):
+                    if apply and self.repo.transfer_citations(existing_id, entity.id):
                         stats.transferred += 1
                 else:
                     # Checked no-op: another decision in this same batch
@@ -508,10 +623,16 @@ class EntityConsolidator:
                     self._log_duplicate_claim(entity, existing_id, verdict, survivors)
                     stats.added += 1
             elif verdict == "CONTRADICTS" and existing_id is not None:
-                acted = self.repo.mark_stale(
-                    existing_id, reason="contradicted",
-                    superseded_by=entity.id, invalidated=True,
-                )
+                if apply:
+                    acted = self.repo.mark_stale(
+                        existing_id, reason="contradicted",
+                        superseded_by=entity.id, invalidated=True,
+                    )
+                else:
+                    acted = (
+                        existing_id not in survivors
+                        and self.repo.is_entity_live(existing_id)
+                    )
                 if acted:
                     survivors[existing_id] = entity.id
                     stats.contradicted += 1
@@ -519,7 +640,7 @@ class EntityConsolidator:
                     # excludes the contradicted entity from briefings
                     # regardless, so its citation credit transfers to
                     # its replacement the same as UPDATE's.
-                    if self.repo.transfer_citations(existing_id, entity.id):
+                    if apply and self.repo.transfer_citations(existing_id, entity.id):
                         stats.transferred += 1
                 else:
                     # Checked no-op: the target was already stale (e.g. a
@@ -561,15 +682,24 @@ class EntityConsolidator:
                 stats.added += 1
                 continue
 
-            archived = self.repo.archive_entity(entity.id)
+            # archive_entity's guard only cares whether archived_at was
+            # already set -- and nothing in a dry run writes, so the
+            # entity's own pre-run state still answers that question
+            # correctly (see the class-level docstring).
+            archived = (
+                self.repo.archive_entity(entity.id) if apply
+                else entity.archived_at is None
+            )
             if archived:
-                self.repo.touch_entity(survivor_id)
-                # The archived duplicate's citation credit belongs to the
-                # survivor -- gated on `archived` so a re-run over an
-                # entity this same id already archived (its `WHERE
-                # archived_at IS NULL` guard) never transfers twice.
-                if self.repo.transfer_citations(entity.id, survivor_id):
-                    stats.transferred += 1
+                if apply:
+                    self.repo.touch_entity(survivor_id)
+                    # The archived duplicate's citation credit belongs to
+                    # the survivor -- gated on `archived` so a re-run
+                    # over an entity this same id already archived (its
+                    # `WHERE archived_at IS NULL` guard) never transfers
+                    # twice.
+                    if self.repo.transfer_citations(entity.id, survivor_id):
+                        stats.transferred += 1
                 stats.noop += 1
             else:
                 # Checked no-op: entity.id was already archived before
@@ -582,6 +712,56 @@ class EntityConsolidator:
                 stats.added += 1
 
         return stats
+
+    def _decision_report(
+        self,
+        entities: list[Entity],
+        qualifying: dict[str, tuple[Entity, list[dict[str, Any]]]],
+        below_threshold: list[tuple[Entity, list[dict[str, Any]]]],
+        decisions: dict[str, _Decision] | None,
+        fallback_reason: str | None = None,
+    ) -> list[ConsolidationDecision]:
+        """Build the calibration report row for every entity in this
+        dry-run batch, purely by reading the same ``qualifying``/
+        ``below_threshold``/``decisions`` structures ``consolidate``
+        already produced -- no candidate lookup or judging happens here.
+
+        ``decisions`` is None for the two fail-open exits (nothing
+        cleared the threshold, or the judge response was malformed):
+        every entity reports verdict "ADD" with similarity/candidate
+        info still shown when it exists, and any entity that DID reach
+        the judge (i.e. is in ``qualifying``) is tagged with
+        ``fallback_reason`` (e.g. "judge_failed") so the harness can
+        tell "never sent to the judge" apart from "the judge failed" --
+        never a would-archive either way.
+        """
+        below_hits = {e.id: hits for e, hits in below_threshold}
+        rows = []
+        for entity in entities:
+            _, q_hits = qualifying.get(entity.id, (None, None))
+            hits = q_hits if q_hits is not None else below_hits.get(entity.id, [])
+
+            verdict, existing_id, reason = "ADD", None, None
+            if decisions is not None and entity.id in decisions:
+                verdict, existing_id, reason = decisions[entity.id]
+            elif entity.id in qualifying:
+                reason = fallback_reason
+
+            existing_title = None
+            similarity = hits[0]["_similarity"] if hits else None
+            if existing_id is not None:
+                match = next((h for h in hits if h["id"] == existing_id), None)
+                if match is not None:
+                    existing_title = match.get("title")
+                    similarity = match["_similarity"]
+
+            rows.append(ConsolidationDecision(
+                entity_id=entity.id, entity_title=entity.title,
+                verdict=verdict, existing_id=existing_id,
+                existing_title=existing_title, similarity=similarity,
+                reason=reason,
+            ))
+        return rows
 
     def _log_duplicate_claim(
         self,

@@ -3352,6 +3352,195 @@ def dedupe(
     click.echo(f"\nMarked {marked} entit{'y' if marked == 1 else 'ies'} stale.")
 
 
+# ── Consolidation calibration ───────────────────────────────────────
+
+
+@main.command("consolidate")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--dry-run", is_flag=True,
+              help="Report what consolidation would do, writing nothing. "
+                   "Required — this command is a calibration preview, not "
+                   "a way to run consolidation live outside the normal "
+                   "extraction pipeline.")
+@click.option("--threshold", type=float, default=None,
+              help="Override config.toml's [consolidation] threshold for "
+                   "this run only, so the same corpus can be swept at "
+                   "several thresholds without editing config.")
+@click.option("--limit", type=int, default=50, show_default=True,
+              help="Cap on how many entities are judged this run "
+                   "(most-recently-updated first).")
+@click.option("--type", "entity_type", default=None,
+              help="Restrict to one entity type (decision, todo, fact, "
+                   "failure, discovery, feature, bugfix, research, "
+                   "change). Default: all types.")
+def consolidate_cmd(
+    project: Path,
+    dry_run: bool,
+    threshold: float | None,
+    limit: int,
+    entity_type: str | None,
+) -> None:
+    """Preview what LLM-routed consolidation would do to a project's
+    existing entities, without writing anything.
+
+    This is the calibration harness for Task 4 of
+    docs/plans/consolidation-enable.md: it runs the same
+    candidate-selection and judging code the live path uses
+    (``EntityConsolidator.consolidate(..., dry_run=True)``) over a batch
+    of already-persisted entities and reports what it would do — per
+    decision, and summarized by verdict — so a threshold can be picked
+    from real project data before consolidation is ever enabled.
+
+    Honors the fail-open contract: if the judge response is malformed or
+    absent, every entity in the batch reports ADD, never a would-archive.
+    """
+    if not dry_run:
+        click.echo(
+            "Only --dry-run is currently supported: this command is a "
+            "calibration preview. To run consolidation for real, enable "
+            "it in config.toml's [consolidation] section — it then runs "
+            "automatically as part of extraction.",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    from callmem.core.config import load_config
+    from callmem.core.consolidation import ConsolidationStats, EntityConsolidator
+    from callmem.core.database import Database
+    from callmem.core.engine import MemoryEngine, _create_llm_client
+    from callmem.models.entities import Entity
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}", err=True)
+        raise SystemExit(1)
+
+    config = load_config(project)
+    if threshold is not None:
+        config.consolidation.threshold = threshold
+
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+
+    llm = _create_llm_client(config)
+    if llm is None:
+        click.echo(
+            "No LLM backend configured — cannot judge candidates.", err=True,
+        )
+        raise SystemExit(1)
+
+    # Fetch (effectively) the whole live, non-stale corpus so the
+    # skip-count below is accurate, then bound the actual judged batch
+    # to --limit, most-recently-updated first (same ordering
+    # get_entities already uses).
+    rows = engine.repo.get_entities(
+        engine.project_id, type=entity_type, limit=1_000_000,
+        include_stale=False,
+    )
+    live_entities = [
+        Entity.from_row(row) for row in rows if row.get("archived_at") is None
+    ]
+    total = len(live_entities)
+    batch = live_entities[:limit]
+    skipped = total - len(batch)
+
+    if not batch:
+        click.echo("No entities to consolidate against.")
+        return
+
+    consolidator = EntityConsolidator(db, llm, config)
+
+    # One consolidate() call PER entity, not one call over the whole
+    # batch: EntityConsolidator excludes every id in its own `entities`
+    # argument from candidate lookup (batch siblings can never
+    # consolidate each other — see consolidation.py's module
+    # docstring), which is the right rule for a live extraction batch
+    # of genuinely-new co-extracted entities, but would blind a
+    # corpus-wide sweep to exactly the near-duplicate pairs it exists to
+    # find if the whole --limit batch were passed in one call. Judging
+    # one entity at a time against the rest of the (unmutated — dry_run
+    # never writes) corpus reuses the identical candidate-selection and
+    # judging code with no such blind spot; --limit bounds the resulting
+    # number of judge calls, one per qualifying entity.
+    stats = ConsolidationStats()
+    judge_failed_count = 0
+    for entity in batch:
+        entity_stats = consolidator.consolidate(
+            engine.project_id, [entity], dry_run=True,
+        )
+        stats.added += entity_stats.added
+        stats.updated += entity_stats.updated
+        stats.noop += entity_stats.noop
+        stats.contradicted += entity_stats.contradicted
+        if entity_stats.judge_failed:
+            judge_failed_count += 1
+        if entity_stats.decisions:
+            stats.decisions = (stats.decisions or []) + entity_stats.decisions
+
+    click.echo(
+        f"Dry-run consolidation over {len(batch)} of {total} "
+        f"entit{'y' if total == 1 else 'ies'} "
+        f"(threshold={config.consolidation.threshold}, "
+        f"top_k={config.consolidation.top_k})"
+        + (f" — {skipped} skipped, raise --limit to cover more" if skipped else "")
+        + ":\n"
+    )
+
+    if judge_failed_count:
+        click.echo(
+            f"  Judge response was malformed or absent for "
+            f"{judge_failed_count} entit{'y' if judge_failed_count == 1 else 'ies'} "
+            "— fail-open: those report ADD below (reason=judge_failed), "
+            "nothing would be archived.\n"
+        )
+
+    decisions = stats.decisions or []
+    for d in decisions:
+        sim = f"{d.similarity:.3f}" if d.similarity is not None else "  n/a"
+        line = (
+            f"  [{sim}] {d.verdict:<11} "
+            f"{d.entity_id[:8]} {d.entity_title[:50]!r}"
+        )
+        if d.existing_id:
+            line += f" -> {d.existing_id[:8]} {(d.existing_title or '')[:50]!r}"
+        if d.reason:
+            line += f"  ({d.reason})"
+        click.echo(line)
+
+    # Summary: counts (from stats — the collision-resolved, DB-accurate
+    # figures) plus the similarity distribution per raw judge verdict
+    # (from the per-decision report above) so a threshold sweep is
+    # interpretable at a glance.
+    by_verdict: dict[str, list[float]] = {}
+    for d in decisions:
+        if d.similarity is not None:
+            by_verdict.setdefault(d.verdict, []).append(d.similarity)
+
+    click.echo("\nSummary (DB-accurate — after duplicate-claim resolution):")
+    click.echo(
+        f"  ADD={stats.added}  UPDATE={stats.updated}  "
+        f"NOOP={stats.noop}  CONTRADICTS={stats.contradicted}"
+    )
+    if skipped:
+        click.echo(f"  skipped={skipped}")
+
+    click.echo("\nSimilarity distribution by verdict (as judged, pre-collision):")
+    for verdict in ("ADD", "UPDATE", "NOOP", "CONTRADICTS"):
+        sims = sorted(by_verdict.get(verdict, []))
+        if not sims:
+            continue
+        n = len(sims)
+        mid = (
+            sims[n // 2] if n % 2
+            else (sims[n // 2 - 1] + sims[n // 2]) / 2
+        )
+        click.echo(
+            f"  {verdict:<11} n={n:<4} min={sims[0]:.3f} "
+            f"median={mid:.3f} max={sims[-1]:.3f}"
+        )
+
+
 # ── Usage analytics ─────────────────────────────────────────────────
 
 

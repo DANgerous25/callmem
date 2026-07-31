@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
@@ -772,3 +774,257 @@ class TestDedupe:
         assert result.exit_code == 0
         assert "Would mark" in result.output
         assert self._stale_flag(tmp_path, loser_id) == 0
+
+
+class TestConsolidateDryRun:
+    """CLI surface for Task 4's calibration harness (see
+    docs/plans/consolidation-enable.md Task 4): ``callmem consolidate
+    --dry-run`` must never write, must honor --threshold/--limit, and
+    must report the fail-open contract rather than a would-archive."""
+
+    def _seed_entity(
+        self, tmp_path: Path, eid: str, title: str, content: str,
+        created: str = "2026-01-01T00:00:00+00:00",
+    ) -> None:
+        import sqlite3
+
+        db_path = tmp_path / ".callmem" / "memory.db"
+        from callmem.core.config import load_config
+        from callmem.core.database import Database
+        from callmem.core.engine import MemoryEngine
+
+        config = load_config(tmp_path)
+        db = Database(db_path)
+        db.initialize()
+        project_id = MemoryEngine(db, config).project_id
+
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO entities (id, project_id, type, title, "
+                "content, status, pinned, stale, created_at, updated_at) "
+                "VALUES (?, ?, 'fact', ?, ?, NULL, 0, 0, ?, ?)",
+                (eid, project_id, title, content, created, created),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _entity_row(self, tmp_path: Path, eid: str) -> tuple:
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        try:
+            return conn.execute(
+                "SELECT archived_at, stale, superseded_by FROM entities "
+                "WHERE id = ?",
+                (eid,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def _stub_llm(self, response_by_new_id: dict[str, str] | None = None):
+        """A fake `_create_llm_client` return value: `.extract(prompt)`
+        returns a NOOP verdict for whichever new-entity id appears in
+        the prompt, or None (fail-open) if `response_by_new_id` is None.
+        """
+
+        class _Stub:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def extract(self, prompt: str) -> str | None:
+                self.calls.append(prompt)
+                if response_by_new_id is None:
+                    return None
+                for new_id, verdict_json in response_by_new_id.items():
+                    if new_id in prompt:
+                        return verdict_json
+                return None
+
+        return _Stub()
+
+    def test_requires_dry_run_flag(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+
+        result = runner.invoke(main, ["consolidate", "--project", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "--dry-run" in result.output
+
+    def test_no_database_found(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["consolidate", "--project", str(tmp_path), "--dry-run"],
+        )
+        assert result.exit_code != 0
+        assert "No callmem database found" in result.output
+
+    def test_no_llm_backend_configured_refuses(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_entity(tmp_path, "e1", "Auth uses JWT", "RS256")
+
+        with patch("callmem.core.engine._create_llm_client", return_value=None):
+            result = runner.invoke(
+                main, ["consolidate", "--project", str(tmp_path), "--dry-run"],
+            )
+
+        assert result.exit_code != 0
+        assert "No LLM backend" in result.output
+
+    def test_dry_run_writes_nothing_and_reports_noop(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_entity(
+            tmp_path, "e1", "Auth uses JWT", "RS256 tokens",
+            created="2026-01-01T00:00:00+00:00",
+        )
+        self._seed_entity(
+            tmp_path, "e2", "Auth uses JWT", "RS256 tokens",
+            created="2026-01-02T00:00:00+00:00",
+        )
+        before_e1 = self._entity_row(tmp_path, "e1")
+        before_e2 = self._entity_row(tmp_path, "e2")
+
+        response = json.dumps([{
+            "new_id": "e2", "verdict": "NOOP", "existing_id": "e1",
+            "reason": "same fact restated",
+        }])
+        stub = self._stub_llm({"e2": response})
+
+        with patch("callmem.core.engine._create_llm_client", return_value=stub):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.3"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "NOOP" in result.output
+        assert "same fact restated" in result.output
+        # Writes nothing: both rows byte-identical to before the run.
+        assert self._entity_row(tmp_path, "e1") == before_e1
+        assert self._entity_row(tmp_path, "e2") == before_e2
+
+    def test_limit_bounds_judge_calls_and_reports_skipped(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        # Three near-identical entities -- with --limit 1, only one may
+        # ever be judged/considered, and the other two must be reported
+        # as skipped rather than silently dropped.
+        for i, created in enumerate([
+            "2026-01-03T00:00:00+00:00",
+            "2026-01-02T00:00:00+00:00",
+            "2026-01-01T00:00:00+00:00",
+        ]):
+            self._seed_entity(
+                tmp_path, f"e{i}", "Auth uses JWT", "RS256 tokens",
+                created=created,
+            )
+        stub = self._stub_llm(None)  # fail-open on every call
+
+        with patch("callmem.core.engine._create_llm_client", return_value=stub):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.3", "--limit", "1"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "1 of 3" in result.output
+        assert "2 skipped" in result.output
+        # At most one entity was ever in a batch -> at most one judge
+        # call (its only possible candidate was skipped, so likely
+        # zero, but never more than one).
+        assert len(stub.calls) <= 1
+
+    def test_threshold_override_changes_qualifying_set(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        # e2's title tokens are a subset of e1's title tokens, so the
+        # FTS AND-match finds e1 directly (no reliance on the OR-retry
+        # fallback, which only fires when the AND query matches nothing
+        # at all -- since e2 is itself a persisted row here, as every
+        # dry-run "new" entity is, an AND query over e2's own title
+        # always matches e2 trivially and would otherwise mask whether
+        # e1 was found too).
+        self._seed_entity(
+            tmp_path, "e1", "Auth uses JWT tokens for sessions",
+            "RS256, rotated quarterly",
+        )
+        self._seed_entity(
+            tmp_path, "e2", "Auth uses JWT tokens",
+            "short form", created="2026-01-02T00:00:00+00:00",
+        )
+
+        strict_stub = self._stub_llm(None)
+        with patch(
+            "callmem.core.engine._create_llm_client", return_value=strict_stub,
+        ):
+            runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.99"],
+            )
+        assert strict_stub.calls == []
+
+        loose_stub = self._stub_llm({
+            "e2": json.dumps([{
+                "new_id": "e2", "verdict": "ADD", "existing_id": None,
+                "reason": "distinct enough",
+            }]),
+        })
+        with patch(
+            "callmem.core.engine._create_llm_client", return_value=loose_stub,
+        ):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.1"],
+            )
+        assert result.exit_code == 0, result.output
+        assert len(loose_stub.calls) >= 1
+
+    def test_judge_failure_reports_add_never_a_would_archive(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_entity(
+            tmp_path, "e1", "Auth uses JWT", "RS256 tokens",
+            created="2026-01-01T00:00:00+00:00",
+        )
+        self._seed_entity(
+            tmp_path, "e2", "Auth uses JWT", "RS256 tokens",
+            created="2026-01-02T00:00:00+00:00",
+        )
+        before_e1 = self._entity_row(tmp_path, "e1")
+        before_e2 = self._entity_row(tmp_path, "e2")
+        stub = self._stub_llm(None)  # malformed/absent -> fail-open
+
+        with patch("callmem.core.engine._create_llm_client", return_value=stub):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.3"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "judge_failed" in result.output
+        # No per-decision line reports an archive/supersede verdict --
+        # only the always-printed "NOOP=0"/"UPDATE=0" summary tallies,
+        # which is exactly the fail-open guarantee: never a would-archive.
+        assert "] NOOP" not in result.output
+        assert "] UPDATE" not in result.output
+        assert "NOOP=0" in result.output
+        assert "UPDATE=0" in result.output
+        assert self._entity_row(tmp_path, "e1") == before_e1
+        assert self._entity_row(tmp_path, "e2") == before_e2
