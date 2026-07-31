@@ -462,16 +462,22 @@ class TestMalformedLLMResponse:
     ``Expecting value: line 1 column 1 (char 0)`` -- a json.loads on
     text that isn't valid JSON. Live-captured against the real
     OpenRouter backend (google/gemma-3-27b-it) for a real llm-mem
-    entity pair, the model sometimes prefixes the fenced JSON block
+    entity pair, the model sometimes prefixed the fenced JSON block
     with stray preamble text (e.g. a stray "SS" or ":" token) before
-    the ```json fence. ``strip_code_fences`` only strips a leading
-    fence when the string STARTS with ```, so the preamble survives
-    and json.loads chokes on it at char 0 -- reproducing the exact
-    production error. These entries must never crash the job or mark
-    anything stale on unparseable output.
+    the ```json fence.
+
+    ``json_utils.strip_code_fences`` (see json_utils.py / its own test
+    suite) was later hardened to locate a fenced JSON block anywhere in
+    the response rather than only at position 0, so the prose-prefixed
+    shape below now parses and is legitimately acted on -- see
+    ``test_prose_prefixed_fenced_json_is_now_parsed_and_honoured``.
+    ``_judge``'s own defense (this module) is the second, independent
+    layer: for input that is still genuinely unparseable even after
+    that hardening, it must never crash the job or mark anything stale
+    -- see ``test_still_unparseable_response_does_not_crash_job``.
     """
 
-    def test_prose_prefixed_fenced_json_does_not_crash_job(
+    def test_prose_prefixed_fenced_json_is_now_parsed_and_honoured(
         self, tmp_path: Path,
     ) -> None:
         engine = _make_engine(tmp_path)
@@ -496,18 +502,20 @@ class TestMalformedLLMResponse:
 
         decisions = checker.run(engine.project_id)  # must not raise
 
-        assert decisions == []
+        assert len(decisions) == 1
+        assert decisions[0].older_id == older
+        assert decisions[0].verdict == "superseded"
         row = engine.repo.get_entity(older)
         assert row is not None
-        assert row["stale"] == 0
+        assert row["stale"] == 1
 
-    def test_empty_fenced_block_does_not_crash_job(
+    def test_still_unparseable_response_does_not_crash_job(
         self, tmp_path: Path,
     ) -> None:
-        # A model can also emit an empty fenced block (e.g. on a
-        # refusal or truncated generation); after fence-stripping this
-        # leaves an empty string, which json.loads rejects with the
-        # same "Expecting value" error.
+        # Prose with no JSON anywhere in it -- there is no fenced block
+        # and no balanced {...}/[...] span for json_utils to locate, so
+        # this remains genuinely unparseable even after the hardening
+        # above, and must still fail closed rather than crash the job.
         engine = _make_engine(tmp_path)
         older = _insert_entity(
             engine.repo, engine.project_id,
@@ -519,7 +527,34 @@ class TestMalformedLLMResponse:
             "fact", "new fact", "content",
             created_at=_hours_ago(1),
         )
-        llm = _MalformedLLM("```json\n```")
+        llm = _MalformedLLM("I cannot determine this without more context.")
+        checker = StalenessChecker(engine.db, llm, lookback_minutes=24 * 60)
+
+        decisions = checker.run(engine.project_id)  # must not raise
+
+        assert decisions == []
+        row = engine.repo.get_entity(older)
+        assert row is not None
+        assert row["stale"] == 0
+
+    def test_truncated_object_does_not_crash_job(
+        self, tmp_path: Path,
+    ) -> None:
+        # An unbalanced object (e.g. a truncated generation) has no
+        # closing brace for json_utils to find either, so it also
+        # still raises json.JSONDecodeError and must fail closed.
+        engine = _make_engine(tmp_path)
+        older = _insert_entity(
+            engine.repo, engine.project_id,
+            "fact", "old fact", "content",
+            created_at=_hours_ago(12),
+        )
+        _insert_entity(
+            engine.repo, engine.project_id,
+            "fact", "new fact", "content",
+            created_at=_hours_ago(1),
+        )
+        llm = _MalformedLLM('{"verdict": "sup')
         checker = StalenessChecker(engine.db, llm, lookback_minutes=24 * 60)
 
         decisions = checker.run(engine.project_id)  # must not raise
