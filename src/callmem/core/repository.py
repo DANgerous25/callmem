@@ -1263,6 +1263,32 @@ class Repository:
         finally:
             conn.close()
 
+    def is_entity_live(self, entity_id: str) -> bool:
+        """True if ``entity_id`` exists and is neither archived nor stale.
+
+        Used by consolidation's NOOP verb to re-verify a survivor is
+        still live immediately before archiving its duplicate: the
+        candidate lookup and judge call both happen earlier, so a
+        concurrent process (staleness detection, a manual resolve,
+        another consolidation run) could have archived or staled the
+        survivor in the meantime. Archiving the duplicate against a
+        dead survivor would remove the fact from the visible corpus
+        entirely, with no live copy left behind.
+        """
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at, stale FROM entities WHERE id = ?",
+                (entity_id,),
+            ).fetchone()
+            return (
+                row is not None
+                and row["archived_at"] is None
+                and not row["stale"]
+            )
+        finally:
+            conn.close()
+
     def transfer_citations(self, source_id: str, target_id: str) -> bool:
         """Move ``source_id``'s citation credit onto ``target_id`` (additive).
 
@@ -1422,6 +1448,88 @@ class Repository:
         finally:
             conn.close()
 
+    # Bounds the superseded_by walk in _resolve_live_citation_target --
+    # C2 already makes cycles structurally impossible, but this must
+    # never be the thing that turns a latent bug into an infinite loop.
+    _MAX_SUPERSEDE_HOPS = 10
+
+    def _resolve_live_citation_target(
+        self, conn: sqlite3.Connection, entity_id: str,
+    ) -> str:
+        """Follow an archived/stale entity's ``superseded_by`` chain to
+        the live entity that should receive citation credit landing on
+        ``entity_id``.
+
+        A session can end after consolidation has already archived or
+        superseded the entity a citation names -- without this, that
+        credit is permanently stranded on a dead row nothing retrieves
+        (see ``transfer_citations`` for the consolidation-time half of
+        this fix; this is the post-hoc half, for citations that arrive
+        after the archival already happened).
+
+        Returns ``entity_id`` unchanged when it's already live, and also
+        when the chain dead-ends before reaching a live row (no
+        ``superseded_by`` link, a repeated/self id, a link to a missing
+        row, or the hop bound) -- in that case credit lands on the last
+        real dead row in the chain exactly as it always has, logged at
+        debug so the strand is visible without being an error.
+        """
+        current = entity_id
+        # The last id we confirmed actually exists -- entity_id itself
+        # always does (every caller here is iterating real citations), so
+        # this only ever falls back if a `superseded_by` link points at a
+        # row that no longer exists.
+        prev = entity_id
+        visited = {current}
+        for _ in range(self._MAX_SUPERSEDE_HOPS):
+            row = conn.execute(
+                "SELECT archived_at, stale, superseded_by FROM entities "
+                "WHERE id = ?",
+                (current,),
+            ).fetchone()
+            if row is None:
+                logger.debug(
+                    "Citation superseded_by chain from %s points to "
+                    "missing entity %s -- crediting %s (the last real "
+                    "entity in the chain) instead.",
+                    entity_id, current, prev,
+                )
+                return prev
+            if row["archived_at"] is None and not row["stale"]:
+                return current
+            nxt = row["superseded_by"]
+            if not nxt or nxt in visited:
+                logger.debug(
+                    "Citation for archived/stale entity %s has no live "
+                    "successor to credit -- crediting the dead row as-is.",
+                    current,
+                )
+                return current
+            visited.add(nxt)
+            prev, current = current, nxt
+        logger.debug(
+            "Citation superseded_by chain from %s exceeded %d hops -- "
+            "crediting %s as-is.",
+            entity_id, self._MAX_SUPERSEDE_HOPS, current,
+        )
+        return current
+
+    def _merge_citations_onto_live_targets(
+        self, conn: sqlite3.Connection, citations: dict[str, tuple[int, str]],
+    ) -> dict[str, tuple[int, str]]:
+        """Remap each cited entity_id to its live citation target and
+        merge counts for any two ids that resolve to the same survivor
+        (counts summed, ``last_cited_at`` the max of the contributors)."""
+        merged: dict[str, tuple[int, str]] = {}
+        for entity_id, (count, last_cited_at) in citations.items():
+            target = self._resolve_live_citation_target(conn, entity_id)
+            prev_count, prev_last = merged.get(target, (0, ""))
+            merged[target] = (
+                prev_count + count,
+                max(prev_last, last_cited_at or ""),
+            )
+        return merged
+
     def increment_citation_counts(
         self, citations: dict[str, tuple[int, str]],
     ) -> int:
@@ -1432,13 +1540,18 @@ class Repository:
         session-end hook, which only sees that one session's citations and
         must not clobber counts accumulated from earlier sessions.
         ``last_cited_at`` only ever advances forward (kept as-is if it's
-        already newer than this session's timestamp). Returns the number
-        of entity rows updated.
+        already newer than this session's timestamp). Entities that are
+        archived or stale with a ``superseded_by`` link are credited via
+        their live successor instead (see
+        ``_resolve_live_citation_target``), so a session ending after
+        consolidation archives the cited entity doesn't strand the
+        credit. Returns the number of entity rows updated.
         """
         if not citations:
             return 0
         conn = self.db.connect()
         try:
+            merged = self._merge_citations_onto_live_targets(conn, citations)
             cursor = conn.executemany(
                 "UPDATE entities SET "
                 "cited_count = cited_count + ?, "
@@ -1449,7 +1562,7 @@ class Repository:
                 "WHERE id = ?",
                 [
                     (count, last_cited_at, last_cited_at, entity_id)
-                    for entity_id, (count, last_cited_at) in citations.items()
+                    for entity_id, (count, last_cited_at) in merged.items()
                 ],
             )
             conn.commit()

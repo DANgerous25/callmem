@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -1005,6 +1006,26 @@ class TestTransferCitations:
 
         assert repo.get_entity(target.id)["last_cited_at"] == "2026-01-05T00:00:00"
 
+    def test_last_cited_at_equal_timestamps_leaves_target_unchanged(
+        self, memory_db: Database,
+    ) -> None:
+        """Neither branch of the CASE fires when the two sides are
+        exactly equal (the comparison is a strict `>`) -- the target
+        keeps its own value, and the count still adds correctly."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        source = self._entity(repo, project.id, title="dup")
+        target = self._entity(repo, project.id, title="survivor")
+        same_ts = "2026-01-03T00:00:00"
+        repo.set_citation_counts({source.id: (1, same_ts)})
+        repo.set_citation_counts({target.id: (1, same_ts)})
+
+        repo.transfer_citations(source.id, target.id)
+
+        assert repo.get_entity(target.id)["last_cited_at"] == same_ts
+        assert repo.get_entity(target.id)["cited_count"] == 2
+
     def test_source_zeroed_after_transfer(self, memory_db: Database) -> None:
         repo = Repository(memory_db)
         project = Project(name="p")
@@ -1059,6 +1080,238 @@ class TestTransferCitations:
 
         assert modified is False
         assert repo.get_entity(entity.id)["cited_count"] == 3
+
+
+class TestIncrementCitationCountsRedirectsThroughSupersession:
+    """increment_citation_counts backs the session-end citation hook. A
+    session can end after consolidation has already archived/superseded
+    the entity a citation names -- without redirecting through
+    superseded_by to the live survivor, that credit is permanently
+    stranded on a dead row briefing ranking never looks at again."""
+
+    def _entity(self, repo: Repository, project_id: str, title: str) -> Entity:
+        entity = Entity(
+            project_id=project_id, type="fact", title=title, content="c",
+        )
+        repo.create_entity(entity)
+        return entity
+
+    def test_live_entity_is_credited_directly(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="live")
+
+        updated = repo.increment_citation_counts(
+            {entity.id: (2, "2026-01-01T00:00:00")},
+        )
+
+        assert updated == 1
+        assert repo.get_entity(entity.id)["cited_count"] == 2
+
+    def test_archived_entity_with_superseded_by_credits_the_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        old = self._entity(repo, project.id, title="old")
+        new = self._entity(repo, project.id, title="new")
+        repo.archive_entity(old.id)
+        repo.mark_stale(old.id, reason="consolidated", superseded_by=new.id)
+
+        repo.increment_citation_counts({old.id: (3, "2026-01-05T00:00:00")})
+
+        assert repo.get_entity(new.id)["cited_count"] == 3
+        assert repo.get_entity(old.id)["cited_count"] == 0
+
+    def test_stale_not_archived_entity_with_superseded_by_also_redirects(
+        self, memory_db: Database,
+    ) -> None:
+        """The redirect condition is archived OR stale, not just
+        archived -- UPDATE/CONTRADICTS supersede without archiving."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        old = self._entity(repo, project.id, title="old")
+        new = self._entity(repo, project.id, title="new")
+        repo.mark_stale(old.id, reason="consolidated", superseded_by=new.id)
+        assert repo.get_entity(old.id)["archived_at"] is None  # stale, not archived
+
+        repo.increment_citation_counts({old.id: (1, "2026-01-05T00:00:00")})
+
+        assert repo.get_entity(new.id)["cited_count"] == 1
+        assert repo.get_entity(old.id)["cited_count"] == 0
+
+    def test_two_hop_chain_credits_the_final_live_survivor(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        oldest = self._entity(repo, project.id, title="oldest")
+        middle = self._entity(repo, project.id, title="middle")
+        newest = self._entity(repo, project.id, title="newest")
+        repo.mark_stale(oldest.id, reason="consolidated", superseded_by=middle.id)
+        repo.mark_stale(middle.id, reason="consolidated", superseded_by=newest.id)
+
+        repo.increment_citation_counts({oldest.id: (4, "2026-01-05T00:00:00")})
+
+        assert repo.get_entity(newest.id)["cited_count"] == 4
+        assert repo.get_entity(middle.id)["cited_count"] == 0
+        assert repo.get_entity(oldest.id)["cited_count"] == 0
+
+    def test_archived_with_no_superseded_by_credits_dead_row_and_logs_debug(
+        self, memory_db: Database, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        orphan = self._entity(repo, project.id, title="orphan")
+        repo.archive_entity(orphan.id)
+
+        with caplog.at_level(logging.DEBUG, logger="callmem.core.repository"):
+            updated = repo.increment_citation_counts(
+                {orphan.id: (1, "2026-01-01T00:00:00")},
+            )
+
+        # Today's behaviour: credit lands on the dead row, no crash.
+        assert updated == 1
+        assert repo.get_entity(orphan.id)["cited_count"] == 1
+        assert any("no live successor" in r.message for r in caplog.records)
+
+    def test_self_referencing_superseded_by_does_not_infinite_loop(
+        self, memory_db: Database,
+    ) -> None:
+        """Cycles are structurally impossible via mark_stale (an entity
+        can't name itself as its own supersessor through normal calls),
+        but the walk must not rely on that -- construct one directly via
+        raw SQL and confirm the bounded walk still terminates safely."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="cycle")
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE entities SET stale = 1, superseded_by = ? WHERE id = ?",
+                (entity.id, entity.id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        updated = repo.increment_citation_counts(
+            {entity.id: (1, "2026-01-01T00:00:00")},
+        )
+
+        assert updated == 1
+        assert repo.get_entity(entity.id)["cited_count"] == 1
+
+    def test_two_hop_cycle_does_not_infinite_loop(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        a = self._entity(repo, project.id, title="a")
+        b = self._entity(repo, project.id, title="b")
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE entities SET stale = 1, superseded_by = ? WHERE id = ?",
+                (b.id, a.id),
+            )
+            conn.execute(
+                "UPDATE entities SET stale = 1, superseded_by = ? WHERE id = ?",
+                (a.id, b.id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Must terminate (the hop bound guards this even though the
+        # cycle guard should catch it first) and must not crash.
+        updated = repo.increment_citation_counts(
+            {a.id: (1, "2026-01-01T00:00:00")},
+        )
+        assert updated == 1
+
+    def test_chain_longer_than_hop_bound_terminates(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        chain = [self._entity(repo, project.id, title=f"n{i}") for i in range(15)]
+        conn = memory_db.connect()
+        try:
+            for older, newer in zip(chain, chain[1:], strict=False):
+                conn.execute(
+                    "UPDATE entities SET stale = 1, superseded_by = ? "
+                    "WHERE id = ?",
+                    (newer.id, older.id),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Must terminate within the hop bound rather than walking all 14
+        # hops to the true end of the chain.
+        updated = repo.increment_citation_counts(
+            {chain[0].id: (1, "2026-01-01T00:00:00")},
+        )
+        assert updated == 1
+        assert repo.get_entity(chain[-1].id)["cited_count"] == 0
+
+    def test_two_sources_resolving_to_the_same_survivor_are_summed(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        old_a = self._entity(repo, project.id, title="old-a")
+        old_b = self._entity(repo, project.id, title="old-b")
+        survivor = self._entity(repo, project.id, title="survivor")
+        repo.mark_stale(old_a.id, reason="consolidated", superseded_by=survivor.id)
+        repo.mark_stale(old_b.id, reason="consolidated", superseded_by=survivor.id)
+
+        repo.increment_citation_counts({
+            old_a.id: (2, "2026-01-01T00:00:00"),
+            old_b.id: (3, "2026-01-03T00:00:00"),
+        })
+
+        row = repo.get_entity(survivor.id)
+        assert row["cited_count"] == 5
+        assert row["last_cited_at"] == "2026-01-03T00:00:00"
+
+    def test_missing_superseded_by_target_credits_last_real_entity(
+        self, memory_db: Database,
+    ) -> None:
+        """A superseded_by link pointing at a row that no longer exists
+        (defensive-only -- not reachable through normal mutation paths)
+        must still resolve to a real id, not a phantom one that would
+        silently swallow the credit."""
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        entity = self._entity(repo, project.id, title="dangling")
+        conn = memory_db.connect()
+        try:
+            conn.execute(
+                "UPDATE entities SET stale = 1, superseded_by = ? WHERE id = ?",
+                ("does-not-exist", entity.id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        updated = repo.increment_citation_counts(
+            {entity.id: (1, "2026-01-01T00:00:00")},
+        )
+
+        assert updated == 1
+        assert repo.get_entity(entity.id)["cited_count"] == 1
 
 
 class TestUnarchiveProtected:
