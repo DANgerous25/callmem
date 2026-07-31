@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from mcp.types import TextContent, Tool
 
 from callmem.core.engine import AmbiguousEntityIdError, EntityNotFoundError
+from callmem.core.repository import CLOSED_ENTITY_STATUSES
 
 if TYPE_CHECKING:
     from mcp.server import Server
@@ -21,8 +22,10 @@ if TYPE_CHECKING:
 
 # Real EntityStatus values (see models/entities.py) that make sense as a
 # closing state for mem_resolve. "open" and "unresolved" are excluded --
-# resolving TO an open state isn't "resolving".
-_RESOLVE_STATUSES = ("done", "resolved", "cancelled")
+# resolving TO an open state isn't "resolving". Sourced from the shared
+# CLOSED_ENTITY_STATUSES constant (see repository.py) so this can't drift
+# out of sync with compaction's/unarchive-protected's status vocabulary.
+_RESOLVE_STATUSES = CLOSED_ENTITY_STATUSES
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [

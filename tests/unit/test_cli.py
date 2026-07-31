@@ -410,6 +410,32 @@ class TestUnarchiveProtected:
         )
         assert "No callmem database" in result.output
 
+    def test_malformed_since_rejected_with_clear_message(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        entity_id = self._seed_archived_failure(tmp_path)
+
+        result = runner.invoke(
+            main,
+            [
+                "unarchive-protected", "--project", str(tmp_path),
+                "--since", "not-a-date",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--since" in result.output
+
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        row = conn.execute(
+            "SELECT archived_at FROM entities WHERE id = ?", (entity_id,)
+        ).fetchone()
+        conn.close()
+        assert row[0] is not None
+
 
 class TestAudit:
     def test_clean_db_passes(self, tmp_path: Path) -> None:

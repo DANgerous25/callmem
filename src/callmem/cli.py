@@ -2451,9 +2451,19 @@ def unarchive_protected(project: Path, since: str | None, yes: bool) -> None:
     --since to scope to the archival window when the bug was live, and
     review the dry-run output before passing --yes.
     """
+    from datetime import datetime as _datetime
+
     from callmem.core.config import load_config
     from callmem.core.database import Database
     from callmem.core.engine import MemoryEngine
+
+    if since is not None:
+        try:
+            _datetime.strptime(since, "%Y-%m-%d")
+        except ValueError as exc:
+            raise click.UsageError(
+                f"Invalid --since date {since!r}: expected YYYY-MM-DD."
+            ) from exc
 
     db_path = project / ".callmem" / "memory.db"
     if not db_path.exists():

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -1096,3 +1098,47 @@ class TestUnarchiveProtected:
         finally:
             conn.close()
         assert row["archived_at"] == "2026-06-01T00:00:00+00:00"
+
+
+def _lines_hardcoding_all_closed_statuses(src_root: Path) -> list[str]:
+    """Every source line under `src_root` that quotes exactly the three
+    closed lifecycle status literals ('done', 'cancelled', 'resolved')
+    together -- not the full 5-value EntityStatus literal (which also
+    includes 'open'/'unresolved' and is a legitimately separate concept:
+    the full status vocabulary, not the closed subset). A hit outside
+    CLOSED_ENTITY_STATUSES's own definition means someone re-hardcoded the
+    closed-status vocabulary instead of importing the shared constant.
+    """
+    literal_re = re.compile(
+        r"""['"](open|done|cancelled|unresolved|resolved)['"]"""
+    )
+    closed = {"done", "cancelled", "resolved"}
+    hits: list[str] = []
+    for path in src_root.rglob("*.py"):
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            found = set(literal_re.findall(line))
+            if found == closed:
+                hits.append(f"{path}:{lineno}: {line.strip()}")
+    return hits
+
+
+class TestClosedStatusVocabularySingleSource:
+    """Regression guard for the status-vocabulary drift bug: the closed
+    lifecycle statuses were independently hardcoded in compaction.py,
+    repository.py's archive_entities_with_full_coverage, and
+    mcp/tools.py's _RESOLVE_STATUSES before being consolidated into
+    CLOSED_ENTITY_STATUSES. If a future change reintroduces a hardcoded
+    copy anywhere under src/, this must fail instead of drifting silently.
+    """
+
+    def test_closed_status_literals_appear_only_in_the_shared_constant(
+        self,
+    ) -> None:
+        src_root = Path(__file__).resolve().parents[2] / "src"
+        hits = _lines_hardcoding_all_closed_statuses(src_root)
+        assert len(hits) == 1, (
+            "Expected exactly one place in src/ to hardcode the closed "
+            "status literals together (CLOSED_ENTITY_STATUSES's own "
+            f"definition). Found: {hits}"
+        )
+        assert "CLOSED_ENTITY_STATUSES" in hits[0]

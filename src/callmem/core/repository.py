@@ -1038,9 +1038,13 @@ class Repository:
             params: list[Any] = [project_id]
             if not force:
                 clauses.append("pinned = 0")
-                clauses.append(
-                    "(status IS NULL OR status NOT IN ('done', 'cancelled', 'resolved'))"
+                closed_placeholders = ",".join(
+                    "?" for _ in CLOSED_ENTITY_STATUSES
                 )
+                clauses.append(
+                    f"(status IS NULL OR status NOT IN ({closed_placeholders}))"
+                )
+                params.extend(CLOSED_ENTITY_STATUSES)
 
             where = " AND ".join(clauses)
             rows = conn.execute(
