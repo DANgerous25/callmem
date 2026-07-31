@@ -14,11 +14,13 @@ rechecking pairs that were already resolved.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from callmem.core.json_utils import parse_json
+from callmem.core.prompts import STALENESS_PROMPT
 from callmem.core.repository import build_fts_match_query
 
 if TYPE_CHECKING:
@@ -41,35 +43,6 @@ DEFAULT_MAX_CANDIDATES = 5
 # `change` / `research` entries describe moments, not durable state,
 # so superseding them makes no sense.
 _ELIGIBLE_TYPES = ("decision", "fact", "feature", "bugfix", "todo")
-
-
-STALENESS_PROMPT = """You are auditing a project's memory for outdated knowledge.
-
-Compare these two entries of type "{etype}". They were produced
-from different points in a coding session — Entry A is older,
-Entry B is newer.
-
-Entry A (older, id={a_id}, created {a_created}):
-  Title: {a_title}
-  Content: {a_content}
-
-Entry B (newer, id={b_id}, created {b_created}):
-  Title: {b_title}
-  Content: {b_content}
-
-Decide exactly ONE of:
-- "superseded"   — B replaces A with an updated version of the same
-                   decision/fact/feature/bugfix/todo.
-- "contradicted" — B directly conflicts with A (mutually exclusive).
-- "coexists"     — both remain valid (different scope, unrelated,
-                   or additive).
-
-Be strict. Return "coexists" unless you are confident.
-
-Return ONLY a JSON object with shape:
-{{"verdict": "superseded" | "contradicted" | "coexists",
-  "reason": "<one short sentence>"}}
-"""
 
 
 @dataclass
@@ -191,7 +164,15 @@ class StalenessChecker:
         if not raw:
             return None
 
-        data = parse_json(raw)
+        try:
+            data = parse_json(raw)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Staleness judge returned invalid JSON for pair "
+                "%s/%s: %s",
+                older["id"][:8], newer["id"][:8], raw[:200],
+            )
+            return None
         if not isinstance(data, dict):
             return None
         verdict = str(data.get("verdict", "")).strip().lower()

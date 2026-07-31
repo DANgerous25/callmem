@@ -441,6 +441,95 @@ class TestAutomaticDetection:
         assert checker.run(engine.project_id) == []
 
 
+# ── Malformed LLM responses (live-forensics) ────────────────────────
+
+
+class _MalformedLLM:
+    """Stand-in returning a fixed raw response, unlike ``_StubLLM``
+    which always returns well-formed JSON."""
+
+    def __init__(self, raw: str) -> None:
+        self.raw = raw
+        self.calls: list[str] = []
+
+    def extract(self, prompt: str) -> str:
+        self.calls.append(prompt)
+        return self.raw
+
+
+class TestMalformedLLMResponse:
+    """llm-mem production had 46 failed staleness_check jobs, all with
+    ``Expecting value: line 1 column 1 (char 0)`` -- a json.loads on
+    text that isn't valid JSON. Live-captured against the real
+    OpenRouter backend (google/gemma-3-27b-it) for a real llm-mem
+    entity pair, the model sometimes prefixes the fenced JSON block
+    with stray preamble text (e.g. a stray "SS" or ":" token) before
+    the ```json fence. ``strip_code_fences`` only strips a leading
+    fence when the string STARTS with ```, so the preamble survives
+    and json.loads chokes on it at char 0 -- reproducing the exact
+    production error. These entries must never crash the job or mark
+    anything stale on unparseable output.
+    """
+
+    def test_prose_prefixed_fenced_json_does_not_crash_job(
+        self, tmp_path: Path,
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        older = _insert_entity(
+            engine.repo, engine.project_id,
+            "fact", "old fact", "content",
+            created_at=_hours_ago(12),
+        )
+        _insert_entity(
+            engine.repo, engine.project_id,
+            "fact", "new fact", "content",
+            created_at=_hours_ago(1),
+        )
+        # Captured verbatim from OpenRouter against a real llm-mem pair.
+        raw = (
+            ':\n```json\n'
+            '{"verdict": "superseded", "reason": "..."}\n'
+            '```'
+        )
+        llm = _MalformedLLM(raw)
+        checker = StalenessChecker(engine.db, llm, lookback_minutes=24 * 60)
+
+        decisions = checker.run(engine.project_id)  # must not raise
+
+        assert decisions == []
+        row = engine.repo.get_entity(older)
+        assert row is not None
+        assert row["stale"] == 0
+
+    def test_empty_fenced_block_does_not_crash_job(
+        self, tmp_path: Path,
+    ) -> None:
+        # A model can also emit an empty fenced block (e.g. on a
+        # refusal or truncated generation); after fence-stripping this
+        # leaves an empty string, which json.loads rejects with the
+        # same "Expecting value" error.
+        engine = _make_engine(tmp_path)
+        older = _insert_entity(
+            engine.repo, engine.project_id,
+            "fact", "old fact", "content",
+            created_at=_hours_ago(12),
+        )
+        _insert_entity(
+            engine.repo, engine.project_id,
+            "fact", "new fact", "content",
+            created_at=_hours_ago(1),
+        )
+        llm = _MalformedLLM("```json\n```")
+        checker = StalenessChecker(engine.db, llm, lookback_minutes=24 * 60)
+
+        decisions = checker.run(engine.project_id)  # must not raise
+
+        assert decisions == []
+        row = engine.repo.get_entity(older)
+        assert row is not None
+        assert row["stale"] == 0
+
+
 # ── Briefing footer ──────────────────────────────────────────────────
 
 

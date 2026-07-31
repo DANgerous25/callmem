@@ -164,6 +164,36 @@ Respond with ONLY a JSON array, exactly one object per pair listed above, in thi
 Do not include explanatory text outside the JSON array."""
 
 
+STALENESS_PROMPT = """You are auditing a project's memory for outdated knowledge.
+
+Compare these two entries of type "{etype}". They were produced
+from different points in a coding session — Entry A is older,
+Entry B is newer.
+
+Entry A (older, id={a_id}, created {a_created}):
+  Title: {a_title}
+  Content: {a_content}
+
+Entry B (newer, id={b_id}, created {b_created}):
+  Title: {b_title}
+  Content: {b_content}
+
+Decide exactly ONE of:
+- "superseded"   — B replaces A with an updated version of the same
+                   decision/fact/feature/bugfix/todo.
+- "contradicted" — B directly conflicts with A (mutually exclusive).
+- "coexists"     — both remain valid (different scope, unrelated,
+                   or additive).
+
+Be strict. Return "coexists" unless you are confident.
+
+Respond with ONLY a JSON object, exactly this shape:
+{{"verdict": "superseded" | "contradicted" | "coexists",
+  "reason": "<one short sentence>"}}
+
+Do not include explanatory text outside the JSON object."""
+
+
 CHUNK_SUMMARY_PROMPT = """Summarize this batch of coding session events into a concise paragraph.
 Focus on: what was worked on, what was accomplished, any problems encountered.
 
