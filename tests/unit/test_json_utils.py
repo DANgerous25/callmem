@@ -109,14 +109,25 @@ class TestNoFenceBalancedScan:
 
 
 class TestBalancedScanRetriesCandidates:
-    """Round-1 review fix: the balanced scan must not give up (or
-    silently return the wrong value) just because the first '{'/'['
-    in the text doesn't turn out to be the real payload. It tries
-    every candidate start position (bounded) and picks the longest
-    one that both balances and parses as JSON on its own -- "longest",
-    not "first", because incidental prose brackets like "[1]" in a
-    numbered list are themselves valid JSON and would otherwise win
-    by mere position."""
+    """Round-1 review fix (further refined in round 2): the balanced
+    scan must not give up, or silently return the wrong value, just
+    because the first '{'/'[' in the text doesn't turn out to be the
+    real payload. It tries every candidate start position (bounded)
+    and picks the one whose closing bracket appears LAST (rightmost)
+    among candidates that both balance and parse as JSON on their own.
+
+    Rightmost-end, not first and not longest: every one of the six
+    callers' prompts demands JSON-only output, so a genuine payload is
+    typically short, while the realistic deviation we have live
+    evidence for is verbose content ahead of it (numbered references,
+    step lists, chain-of-thought). "First" would wrongly pick an
+    incidental "[1]" that's independently valid JSON but not the
+    payload; "longest" would wrongly pick a long decoy list ahead of a
+    short real answer. Rightmost-end fixes both, and also keeps an
+    enclosing object/array intact instead of returning a nested
+    fragment, since a container's closing bracket always appears after
+    its children's.
+    """
 
     def test_first_bracket_span_invalid_later_one_valid(self) -> None:
         # "{1,2,3}" balances but isn't valid JSON (bare numeric keys);
@@ -133,12 +144,36 @@ class TestBalancedScanRetriesCandidates:
         # "[1]" and "[2]" are each independently valid JSON (a
         # single-element array), so a naive "first candidate that
         # parses" would wrongly return [1]. The real payload is the
-        # longer object later in the text.
+        # object that closes last, later in the text.
         raw = (
             "See references [1] and [2] for details. "
             'Final answer: {"resolved": true}'
         )
         assert parse_json(raw) == {"resolved": True}
+
+    def test_longer_decoy_array_ahead_of_short_real_object(self) -> None:
+        # A "longest that parses" rule would wrongly pick this array:
+        # it's syntactically valid and far longer than the terse
+        # object that follows it -- exactly the shape a chain-of-
+        # thought/step-list preamble produces ahead of a short
+        # JSON-only answer.
+        raw = 'Given [1,2,3,4,5,6,7,8,9,10,11,12], the answer is: {"a":1}'
+        assert parse_json(raw) == {"a": 1}
+
+    def test_nested_envelope_wins_over_children(self) -> None:
+        # The enclosing object's closing brace is textually after all
+        # of its children's, so it has the highest end index and wins
+        # under rightmost-end selection -- extraction still returns
+        # the whole structure, not an inner fragment.
+        raw = (
+            "preamble\n"
+            '{"a": [1, 2, {"b": 3}], "c": {"d": [4, 5]}}\n'
+            "trailing"
+        )
+        assert parse_json(raw) == {
+            "a": [1, 2, {"b": 3}],
+            "c": {"d": [4, 5]},
+        }
 
     def test_nothing_parses_still_raises(self) -> None:
         raw = "Looking at steps {1,2,3} and refs [a, b] with no real JSON."

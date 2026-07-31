@@ -28,18 +28,33 @@ def strip_code_fences(text: str) -> str:
       1. Fenced code blocks (```json, ```JSON, or bare ```) found
          anywhere in the text -- the first block whose contents parse
          as JSON is used.
-      2. If no fenced block parses, the longest balanced ``{...}`` or
-         ``[...]`` span that also parses as JSON on its own, among up
-         to ``_MAX_BALANCE_CANDIDATES`` candidate start positions
-         ('{' or '[' characters) scanned left to right. This is *not*
-         simply the first bracket in the text: prose can contain
-         incidental brackets that are themselves valid JSON but aren't
-         the payload (e.g. "[1]" in "see refs [1] and [2] ... final
-         answer: {...}"), so every candidate is checked and the
-         longest one that parses wins, ties going to the earliest
-         position. Braces/brackets inside string literals, including
-         escaped quotes, are ignored while balancing so entity content
+      2. If no fenced block parses, the balanced ``{...}`` or
+         ``[...]`` span whose CLOSING bracket appears latest (rightmost)
+         in the text among candidates that both balance and parse as
+         JSON on their own, trying up to ``_MAX_BALANCE_CANDIDATES``
+         candidate start positions ('{' or '[' characters) scanned left
+         to right; ties broken by longest span, then earliest start.
+         Braces/brackets inside string literals, including escaped
+         quotes, are ignored while balancing so entity content
          containing ``}``/``]`` isn't corrupted.
+
+         Rightmost-closing, not first and not longest: every one of
+         the six callers' prompts asks for JSON-only output, so a
+         genuine payload is typically short, while the realistic
+         deviation we have live evidence for is verbose content ahead
+         of it (chain-of-thought, numbered references, step lists) --
+         e.g. "[1]" in "see refs [1] and [2] ... final answer: {...}"
+         is itself valid JSON and would win under "first", and
+         "[1,2,...,12]" ahead of a short "{"a":1}" would win under
+         "longest". Rightmost-end also keeps an enclosing object/array
+         intact rather than returning a smaller nested fragment, since
+         a container's closing bracket always appears after all of its
+         children's. The one diagnostic case we don't have live
+         evidence for -- a decoy appearing AFTER the real payload --
+         would still win under this rule; every observed live failure
+         (2/25 responses) was preamble-BEFORE-json, so that's the
+         supported shape and this is an accepted residual gap, not an
+         oversight.
       3. Otherwise the whitespace-trimmed input is returned unchanged,
          so callers see the same ``json.JSONDecodeError`` they always
          have.
@@ -74,12 +89,14 @@ def _parses(candidate: str) -> bool:
 
 
 def _find_balanced_json(text: str) -> str | None:
-    """Return the longest balanced ``{...}``/``[...]`` span in ``text``
-    that also parses as JSON on its own, trying up to
-    ``_MAX_BALANCE_CANDIDATES`` candidate start positions in order.
+    """Return the balanced ``{...}``/``[...]`` span in ``text`` whose
+    closing bracket has the highest end index (i.e. closes latest,
+    rightmost) among candidates that both balance and parse as JSON on
+    their own, trying up to ``_MAX_BALANCE_CANDIDATES`` start positions
+    in order. Ties broken by longest span, then earliest start.
     Returns None if no candidate both balances and parses.
     """
-    candidates: list[str] = []
+    candidates: list[tuple[int, int, int, str]] = []
     attempts = 0
     for i, ch in enumerate(text):
         if ch not in "{[":
@@ -88,11 +105,13 @@ def _find_balanced_json(text: str) -> str | None:
         if attempts > _MAX_BALANCE_CANDIDATES:
             break
         span = _balanced_span(text, i)
-        if span is not None and _parses(span):
-            candidates.append(span)
+        if span is None or not _parses(span):
+            continue
+        end = i + len(span) - 1
+        candidates.append((end, len(span), -i, span))
     if not candidates:
         return None
-    return max(candidates, key=len)
+    return max(candidates)[-1]
 
 
 def _balanced_span(text: str, start: int) -> str | None:
