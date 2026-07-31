@@ -652,3 +652,123 @@ class TestEnsureAgentsMcpBlock:
         content_after_second = (tmp_path / "AGENTS.md").read_text()
 
         assert content_after_first == content_after_second
+
+
+class TestDedupe:
+    """Consolidation is the evidence-based curator when enabled; the
+    cruder title-similarity dedupe command must defer to it (see
+    docs/plans/consolidation-enable.md Task 1)."""
+
+    def _write_consolidation_config(self, tmp_path: Path, enabled: bool) -> None:
+        config_path = tmp_path / ".callmem" / "config.toml"
+        config_path.write_text(
+            f"[consolidation]\nenabled = {'true' if enabled else 'false'}\n"
+        )
+
+    def _seed_duplicate_entities(self, tmp_path: Path) -> str:
+        """Seed a near-duplicate pair (title-similarity ~0.94) that
+        find_clusters will merge. Returns the loser id (the newer one)."""
+        import sqlite3
+
+        from callmem.core.config import load_config
+        from callmem.core.database import Database
+        from callmem.core.engine import MemoryEngine
+
+        db_path = tmp_path / ".callmem" / "memory.db"
+        config = load_config(tmp_path)
+        db = Database(db_path)
+        db.initialize()
+        engine = MemoryEngine(db, config)
+        project_id = engine.project_id
+
+        rows = [
+            ("en-dup-survivor", "fix flaky websocket reconnect loop",
+             "2026-01-01T00:00:00+00:00"),
+            ("en-dup-loser", "fix flaky websocket reconnect loop bug",
+             "2026-01-02T00:00:00+00:00"),
+        ]
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for eid, title, created in rows:
+                conn.execute(
+                    "INSERT INTO entities (id, project_id, type, title, "
+                    "content, status, pinned, stale, created_at, updated_at) "
+                    "VALUES (?, ?, 'failure', ?, 'c', 'unresolved', 0, 0, "
+                    "?, ?)",
+                    (eid, project_id, title, created, created),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+        return "en-dup-loser"
+
+    def _stale_flag(self, tmp_path: Path, entity_id: str) -> int:
+        import sqlite3
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        try:
+            row = conn.execute(
+                "SELECT stale FROM entities WHERE id = ?", (entity_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        return row[0]
+
+    def test_consolidation_enabled_without_force_refuses(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._write_consolidation_config(tmp_path, enabled=True)
+        loser_id = self._seed_duplicate_entities(tmp_path)
+
+        result = runner.invoke(main, ["dedupe", "--project", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "consolidation" in result.output.lower()
+        assert "--force" in result.output
+        assert self._stale_flag(tmp_path, loser_id) == 0
+
+    def test_consolidation_enabled_with_force_proceeds(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._write_consolidation_config(tmp_path, enabled=True)
+        loser_id = self._seed_duplicate_entities(tmp_path)
+
+        result = runner.invoke(
+            main, ["dedupe", "--project", str(tmp_path), "--force"],
+        )
+
+        assert result.exit_code == 0
+        assert self._stale_flag(tmp_path, loser_id) == 1
+
+    def test_consolidation_disabled_unchanged_behaviour(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._write_consolidation_config(tmp_path, enabled=False)
+        loser_id = self._seed_duplicate_entities(tmp_path)
+
+        result = runner.invoke(main, ["dedupe", "--project", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert self._stale_flag(tmp_path, loser_id) == 1
+
+    def test_dry_run_never_blocked_even_when_consolidation_enabled(
+        self, tmp_path: Path,
+    ) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._write_consolidation_config(tmp_path, enabled=True)
+        loser_id = self._seed_duplicate_entities(tmp_path)
+
+        result = runner.invoke(
+            main, ["dedupe", "--project", str(tmp_path), "--dry-run"],
+        )
+
+        assert result.exit_code == 0
+        assert "Would mark" in result.output
+        assert self._stale_flag(tmp_path, loser_id) == 0

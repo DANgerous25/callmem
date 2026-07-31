@@ -3275,22 +3275,50 @@ def migrate(path: Path, dry_run: bool) -> None:
               help="Report clusters without writing to the DB.")
 @click.option("--limit", type=int, default=40,
               help="Cap on clusters printed in the report.")
+@click.option("--force", is_flag=True,
+              help="Proceed even though consolidation is enabled for this "
+                   "project (required to write when it is; not needed "
+                   "with --dry-run).")
 def dedupe(
     project: Path, threshold: float, session_only: bool,
-    dry_run: bool, limit: int,
+    dry_run: bool, limit: int, force: bool,
 ) -> None:
     """Find and merge near-duplicate entities by title similarity.
 
     Losers are marked stale with ``superseded_by`` pointing to the
     survivor (the oldest entity in each cluster). No rows are deleted —
     you can always inspect the originals via ``callmem stale --show``.
+
+    When LLM-routed consolidation is enabled for the project, it is the
+    evidence-based curator and already resolves duplicate/updated
+    entities; this cruder title-similarity pass can create supersession
+    chains from a different ruleset on top of it, so it refuses to write
+    unless ``--force`` is given (dry-run is always allowed).
     """
+    from callmem.core.config import load_config
     from callmem.core.dedupe import apply_clusters, find_clusters
 
     db_path = project / ".callmem" / "memory.db"
     if not db_path.exists():
         click.echo(f"No callmem database found at {db_path}", err=True)
         raise SystemExit(1)
+
+    if not dry_run and not force:
+        config = load_config(project)
+        if config.consolidation.enabled:
+            click.echo(
+                "Consolidation is enabled for this project — it is the "
+                "evidence-based curator (LLM judge, threshold "
+                f"{config.consolidation.threshold}) and already resolves "
+                "duplicate and updated entities from real evidence. "
+                "Running title-similarity dedupe on top of it "
+                f"(threshold {threshold}) may create supersession chains "
+                "from a cruder, unevidenced rule.\n\n"
+                "Re-run with --force to proceed anyway, or --dry-run to "
+                "preview without writing.",
+                err=True,
+            )
+            raise SystemExit(1)
 
     clusters = find_clusters(
         db_path, threshold=threshold, session_only=session_only,

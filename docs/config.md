@@ -146,6 +146,19 @@ enabled = false
 threshold = 0.55                   # same 0..1 scale as [embeddings].min_similarity
 top_k = 5                          # similar existing entities considered per new entity
 
+# Precedence vs. `callmem dedupe` (title-similarity, threshold 0.82, see
+# core/dedupe.py): when consolidation is enabled it is the authoritative,
+# evidence-based curator — it already resolves duplicate/updated entities as
+# part of ingestion. `callmem dedupe` is a separate, manual CLI command (no
+# daemon/compaction path invokes it) for two cases: (1) one-off cleanup of a
+# corpus that predates consolidation being turned on (e.g. a project with a
+# large pre-existing duplicate backlog), or (2) projects with no LLM backend
+# configured, where consolidation cannot run at all. Because the two use
+# different rules, running dedupe on a project consolidation already curates
+# can produce supersession chains consolidation would not have made itself.
+# `callmem dedupe` refuses to write when `[consolidation].enabled = true`
+# unless passed `--force`; `--dry-run` is always allowed.
+
 [ui]
 host = "127.0.0.1"
 port = 9090
