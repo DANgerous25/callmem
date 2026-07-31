@@ -315,6 +315,102 @@ class TestClearFailed:
         assert "No callmem database" in result.output
 
 
+class TestUnarchiveProtected:
+    def _seed_archived_failure(self, tmp_path: Path) -> str:
+        """Seed one archived, still-open failure entity via the same
+        project resolution the command uses, so it lands in the same
+        project row. Returns the entity id."""
+        import sqlite3
+
+        from callmem.core.config import load_config
+        from callmem.core.database import Database
+        from callmem.core.engine import MemoryEngine
+
+        db_path = tmp_path / ".callmem" / "memory.db"
+        config = load_config(tmp_path)
+        db = Database(db_path)
+        db.initialize()
+        engine = MemoryEngine(db, config)
+        project_id = engine.project_id
+
+        entity_id = "en-failure-1"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute(
+                "INSERT INTO entities (id, project_id, type, title, "
+                "content, status, pinned, created_at, updated_at, "
+                "archived_at) VALUES (?, ?, 'failure', 'open failure', "
+                "'c', 'unresolved', 0, datetime('now'), datetime('now'), "
+                "'2026-06-01T00:00:00+00:00')",
+                (entity_id, project_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return entity_id
+
+    def test_dry_run_default_prints_candidate_and_does_not_write(
+        self, tmp_path: Path,
+    ) -> None:
+        import sqlite3
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        entity_id = self._seed_archived_failure(tmp_path)
+
+        result = runner.invoke(
+            main, ["unarchive-protected", "--project", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert entity_id in result.output
+        assert "Dry-run only" in result.output
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        row = conn.execute(
+            "SELECT archived_at FROM entities WHERE id = ?", (entity_id,)
+        ).fetchone()
+        conn.close()
+        assert row[0] is not None
+
+    def test_yes_flag_restores_entity(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        entity_id = self._seed_archived_failure(tmp_path)
+
+        result = runner.invoke(
+            main,
+            ["unarchive-protected", "--project", str(tmp_path), "--yes"],
+        )
+        assert result.exit_code == 0
+        assert "Restored 1 entity(ies)." in result.output
+
+        conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+        row = conn.execute(
+            "SELECT archived_at FROM entities WHERE id = ?", (entity_id,)
+        ).fetchone()
+        conn.close()
+        assert row[0] is None
+
+    def test_no_candidates_prints_message(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+
+        result = runner.invoke(
+            main, ["unarchive-protected", "--project", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "No archived-but-protected entities found." in result.output
+
+    def test_no_db_shows_error(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["unarchive-protected", "--project", str(tmp_path)]
+        )
+        assert "No callmem database" in result.output
+
+
 class TestAudit:
     def test_clean_db_passes(self, tmp_path: Path) -> None:
         runner = CliRunner()

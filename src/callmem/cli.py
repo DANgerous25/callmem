@@ -2421,6 +2421,75 @@ def clear_failed(project: Path, job_type: str | None, yes: bool) -> None:
     click.echo(f"Cleared {deleted} failed job(s).")
 
 
+@main.command("unarchive-protected")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option(
+    "--since", default=None,
+    help="Only restore entities archived on/after this date (YYYY-MM-DD).",
+)
+@click.option(
+    "--yes", is_flag=True,
+    help="Execute the restore. Without this flag, only a dry-run preview is printed.",
+)
+def unarchive_protected(project: Path, since: str | None, yes: bool) -> None:
+    """Restore entities compaction archived while their lifecycle status
+    was still open (e.g. 'unresolved' failures) — a repair path for the
+    status-vocabulary gap where only the todo type's 'open' status was
+    protected from archival. Restores archived_at only; touches nothing
+    else. Entities archived by staleness detection or dedupe/consolidation
+    (staleness_reason or superseded_by set) are never touched — those
+    archivals were intentional.
+
+    Dry-run by default: prints each candidate (id, type, status,
+    archived_at, title) without modifying the database. Pass --yes to
+    execute.
+
+    CAVEAT: re-extraction also archives superseded originals but does not
+    set staleness_reason/superseded_by (only staleness detection and
+    dedupe set those), so on a project that has been re-extracted, an
+    unscoped run could restore originals that should stay archived. Use
+    --since to scope to the archival window when the bug was live, and
+    review the dry-run output before passing --yes.
+    """
+    from callmem.core.config import load_config
+    from callmem.core.database import Database
+    from callmem.core.engine import MemoryEngine
+
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}")
+        click.echo("Run 'callmem init' first.")
+        return
+
+    config = load_config(project)
+    db = Database(db_path)
+    db.initialize()
+    engine = MemoryEngine(db, config)
+    repo = engine.repo
+
+    candidates = repo.find_archived_protected_candidates(
+        engine.project_id, since=since
+    )
+    if not candidates:
+        click.echo("No archived-but-protected entities found.")
+        return
+
+    click.echo(f"{len(candidates)} candidate(s) to restore:")
+    for c in candidates:
+        click.echo(
+            f"  {c['id']}  {c['type']:<10} {c['status']:<12} "
+            f"{c['archived_at']}  {c['title']}"
+        )
+
+    if not yes:
+        click.echo()
+        click.echo("Dry-run only — pass --yes to restore these entities.")
+        return
+
+    restored = repo.restore_archived_protected(engine.project_id, since=since)
+    click.echo(f"Restored {restored} entity(ies).")
+
+
 # ── Watch command ────────────────────────────────────────────────────
 
 

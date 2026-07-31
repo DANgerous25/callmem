@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 from ulid import ULID
 
 from callmem.compat import UTC
-from callmem.core.repository import CLOSED_ENTITY_STATUSES
+from callmem.core.repository import open_lifecycle_status_clause
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
@@ -212,18 +212,14 @@ class Compactor:
         if policy.protect_pinned:
             clauses.append("pinned = 0")
         if policy.protect_active_todos:
-            # Protect any entity whose status is a non-closed lifecycle
-            # state (e.g. 'open', 'unresolved') regardless of type — not
-            # just todos with status='open'. status IS NULL entities
-            # (facts/changes/decisions) have no lifecycle and keep aging
-            # out normally.
-            closed_placeholders = ",".join(
-                "?" for _ in CLOSED_ENTITY_STATUSES
-            )
-            clauses.append(
-                f"(status IS NULL OR status IN ({closed_placeholders}))"
-            )
-            params.extend(CLOSED_ENTITY_STATUSES)
+            # Archivable means NOT an open lifecycle status — i.e. status
+            # IS NULL (facts/changes/decisions, no lifecycle) or a closed
+            # status. This protects any entity whose status is a
+            # non-closed lifecycle state (e.g. 'open', 'unresolved')
+            # regardless of type — not just todos with status='open'.
+            open_clause, open_params = open_lifecycle_status_clause()
+            clauses.append(f"NOT {open_clause}")
+            params.extend(open_params)
 
         where = " AND ".join(clauses)
         result = conn.execute(

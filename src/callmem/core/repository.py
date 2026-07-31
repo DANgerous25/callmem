@@ -108,6 +108,22 @@ def build_fts_match_query(
 CLOSED_ENTITY_STATUSES = ("done", "cancelled", "resolved")
 
 
+def open_lifecycle_status_clause(column: str = "status") -> tuple[str, list[str]]:
+    """SQL predicate (with its params) matching an open lifecycle status.
+
+    True for any non-NULL status not in CLOSED_ENTITY_STATUSES (e.g.
+    'open', 'unresolved'). Never true for status IS NULL — those entities
+    (facts/changes/decisions) have no lifecycle to protect. Shared by
+    compaction's archival protection and the unarchive-protected repair
+    path so the vocabulary can't drift apart between them again.
+    """
+    placeholders = ",".join("?" for _ in CLOSED_ENTITY_STATUSES)
+    return (
+        f"({column} IS NOT NULL AND {column} NOT IN ({placeholders}))",
+        list(CLOSED_ENTITY_STATUSES),
+    )
+
+
 class Repository:
     """Data access layer for callmem.
 
@@ -863,6 +879,71 @@ class Repository:
             )
             conn.commit()
             return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+    def find_archived_protected_candidates(
+        self, project_id: str, since: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Entities archived while their lifecycle status was still open —
+        candidates for the `callmem unarchive-protected` repair path (the
+        compaction status-vocabulary bug archived e.g. 'unresolved'
+        failures before it was fixed).
+
+        Excludes entities with staleness_reason or superseded_by set:
+        those were archived by staleness detection or dedupe/consolidation
+        on purpose, not by the status-vocabulary bug, and must stay
+        archived. `since` (an ISO date/timestamp prefix) optionally scopes
+        to entities archived on or after that time.
+        """
+        status_clause, status_params = open_lifecycle_status_clause()
+        clauses = [
+            "project_id = ?",
+            "archived_at IS NOT NULL",
+            status_clause,
+            "staleness_reason IS NULL",
+            "superseded_by IS NULL",
+        ]
+        params: list[Any] = [project_id, *status_params]
+        if since is not None:
+            clauses.append("archived_at >= ?")
+            params.append(since)
+
+        where = " AND ".join(clauses)
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                f"SELECT id, type, status, archived_at, title FROM entities "
+                f"WHERE {where} ORDER BY archived_at ASC",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def restore_archived_protected(
+        self, project_id: str, since: str | None = None,
+    ) -> int:
+        """Clear archived_at for entities matching
+        find_archived_protected_candidates. Returns the count restored.
+
+        Touches archived_at only.
+        """
+        candidates = self.find_archived_protected_candidates(project_id, since)
+        if not candidates:
+            return 0
+
+        ids = [c["id"] for c in candidates]
+        placeholders = ",".join("?" for _ in ids)
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                f"UPDATE entities SET archived_at = NULL "
+                f"WHERE id IN ({placeholders})",
+                ids,
+            )
+            conn.commit()
+            return len(ids)
         finally:
             conn.close()
 

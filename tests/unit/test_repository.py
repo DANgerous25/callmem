@@ -944,3 +944,155 @@ class TestGetEntitiesSourceText:
         repo = Repository(memory_db)
         result = repo.get_entities_source_text(["does-not-exist"])
         assert result.get("does-not-exist", "") == ""
+
+
+class TestUnarchiveProtected:
+    """find_archived_protected_candidates / restore_archived_protected back
+    `callmem unarchive-protected` -- a repair path for entities the
+    compaction status-vocabulary bug wrongly archived (e.g. 'unresolved'
+    failures) before it was fixed. Must never touch entities archived for
+    legitimate reasons: closed lifecycle status, no lifecycle at all
+    (status IS NULL), or staleness/dedupe archival (staleness_reason or
+    superseded_by set).
+    """
+
+    def _make_project(self, memory_db: Database) -> str:
+        repo = Repository(memory_db)
+        project = Project(name="p")
+        repo.create_project(project)
+        return project.id
+
+    def test_restores_unresolved_failure_archived_by_policy(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        entity = Entity(
+            project_id=project_id, type="failure", status="unresolved",
+            title="open failure", content="c",
+            archived_at="2026-06-01T00:00:00+00:00",
+        )
+        repo.create_entity(entity)
+
+        candidates = repo.find_archived_protected_candidates(project_id)
+        assert [c["id"] for c in candidates] == [entity.id]
+
+        restored = repo.restore_archived_protected(project_id)
+        assert restored == 1
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM entities WHERE id = ?", (entity.id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["archived_at"] is None
+
+    def test_does_not_restore_done_todo(self, memory_db: Database) -> None:
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        entity = Entity(
+            project_id=project_id, type="todo", status="done",
+            title="finished", content="c",
+            archived_at="2026-06-01T00:00:00+00:00",
+        )
+        repo.create_entity(entity)
+
+        candidates = repo.find_archived_protected_candidates(project_id)
+        assert candidates == []
+        assert repo.restore_archived_protected(project_id) == 0
+
+    def test_does_not_restore_staleness_archived_entity(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        entity = Entity(
+            project_id=project_id, type="failure", status="unresolved",
+            title="superseded failure", content="c",
+            archived_at="2026-06-01T00:00:00+00:00",
+        )
+        repo.create_entity(entity)
+        repo.mark_stale(entity.id, "superseded")
+
+        candidates = repo.find_archived_protected_candidates(project_id)
+        assert candidates == []
+
+    def test_does_not_restore_superseded_by_set_entity(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        entity = Entity(
+            project_id=project_id, type="failure", status="unresolved",
+            title="replaced failure", content="c",
+            archived_at="2026-06-01T00:00:00+00:00",
+        )
+        repo.create_entity(entity)
+        repo.mark_stale(entity.id, "duplicate", superseded_by="other-entity-id")
+
+        candidates = repo.find_archived_protected_candidates(project_id)
+        assert candidates == []
+
+    def test_does_not_restore_status_null_fact(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        entity = Entity(
+            project_id=project_id, type="fact", status=None,
+            title="a fact", content="c",
+            archived_at="2026-06-01T00:00:00+00:00",
+        )
+        repo.create_entity(entity)
+
+        candidates = repo.find_archived_protected_candidates(project_id)
+        assert candidates == []
+
+    def test_since_filters_to_archival_window(
+        self, memory_db: Database,
+    ) -> None:
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        old = Entity(
+            project_id=project_id, type="failure", status="unresolved",
+            title="archived long ago", content="c",
+            archived_at="2026-01-01T00:00:00+00:00",
+        )
+        recent = Entity(
+            project_id=project_id, type="failure", status="unresolved",
+            title="archived recently", content="c",
+            archived_at="2026-06-15T00:00:00+00:00",
+        )
+        repo.create_entity(old)
+        repo.create_entity(recent)
+
+        candidates = repo.find_archived_protected_candidates(
+            project_id, since="2026-06-01"
+        )
+        assert [c["id"] for c in candidates] == [recent.id]
+
+    def test_find_candidates_does_not_mutate_db(
+        self, memory_db: Database,
+    ) -> None:
+        """The dry-run listing path must never write."""
+        repo = Repository(memory_db)
+        project_id = self._make_project(memory_db)
+        entity = Entity(
+            project_id=project_id, type="failure", status="unresolved",
+            title="open failure", content="c",
+            archived_at="2026-06-01T00:00:00+00:00",
+        )
+        repo.create_entity(entity)
+
+        repo.find_archived_protected_candidates(project_id)
+
+        conn = memory_db.connect()
+        try:
+            row = conn.execute(
+                "SELECT archived_at FROM entities WHERE id = ?", (entity.id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["archived_at"] == "2026-06-01T00:00:00+00:00"
