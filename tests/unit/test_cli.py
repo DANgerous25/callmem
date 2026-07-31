@@ -838,7 +838,13 @@ class TestConsolidateDryRun:
                 if response_by_new_id is None:
                     return None
                 for new_id, verdict_json in response_by_new_id.items():
-                    if new_id in prompt:
+                    # Match the NEW entry's own id specifically (not a
+                    # bare substring): every candidate listed for THIS
+                    # new entry also has its id printed in the same
+                    # prompt, so a bare `new_id in prompt` check can
+                    # match the wrong entry's response when more than
+                    # one key is configured.
+                    if f"NEW ENTRY id={new_id} " in prompt:
                         return verdict_json
                 return None
 
@@ -1019,12 +1025,226 @@ class TestConsolidateDryRun:
 
         assert result.exit_code == 0, result.output
         assert "judge_failed" in result.output
-        # No per-decision line reports an archive/supersede verdict --
-        # only the always-printed "NOOP=0"/"UPDATE=0" summary tallies,
-        # which is exactly the fail-open guarantee: never a would-archive.
+        assert "ADD (judge_failed)" in result.output
+        # No per-decision line reports an archive/supersede verdict, and
+        # the bucketed counts never mention NOOP/UPDATE at all (buckets
+        # with zero entries are omitted) -- exactly the fail-open
+        # guarantee: never a would-archive.
         assert "] NOOP" not in result.output
         assert "] UPDATE" not in result.output
-        assert "NOOP=0" in result.output
-        assert "UPDATE=0" in result.output
+        assert "\n  NOOP " not in result.output
+        assert "\n  UPDATE " not in result.output
         assert self._entity_row(tmp_path, "e1") == before_e1
         assert self._entity_row(tmp_path, "e2") == before_e2
+
+    def test_cluster_collapse_estimate_for_duplicate_cluster(
+        self, tmp_path: Path,
+    ) -> None:
+        """R1: every entity is judged against every OTHER entity, so an
+        n-member duplicate cluster inflates the raw per-entity NOOP
+        count to n even though a live run only ever archives (n-1) of
+        them. The cluster-collapse estimate must report the true
+        answer, and the report must no longer claim to be
+        'DB-accurate' (single-entity batches make cross-entity
+        collision resolution structurally unreachable)."""
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        for i, created in enumerate([
+            "2026-01-01T00:00:00+00:00",
+            "2026-01-02T00:00:00+00:00",
+            "2026-01-03T00:00:00+00:00",
+        ]):
+            self._seed_entity(
+                tmp_path, f"e{i}", "Auth uses JWT tokens", "RS256 tokens",
+                created=created,
+            )
+
+        stub = self._stub_llm({
+            "e0": json.dumps([{
+                "new_id": "e0", "verdict": "NOOP", "existing_id": "e1",
+                "reason": "dup",
+            }]),
+            "e1": json.dumps([{
+                "new_id": "e1", "verdict": "NOOP", "existing_id": "e0",
+                "reason": "dup",
+            }]),
+            "e2": json.dumps([{
+                "new_id": "e2", "verdict": "NOOP", "existing_id": "e0",
+                "reason": "dup",
+            }]),
+        })
+        with patch("callmem.core.engine._create_llm_client", return_value=stub):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.3"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "1 cluster(s) covering 3 entities" in result.output
+        assert "cluster of 3" in result.output
+        assert "-> an estimated 1 survivor(s)" in result.output
+        # The false claim itself is gone -- the report may now correctly
+        # say the opposite (these are NOT DB-accurate archive counts),
+        # but must never claim collision-resolved DB accuracy again.
+        assert "DB-accurate — after duplicate-claim resolution" not in result.output
+        assert "not DB-accurate" in result.output
+        # R2: explicit, plain-words who-dies wording on the per-decision
+        # lines -- the reader has never seen consolidation run.
+        assert "would archive" in result.output
+
+    def test_limit_below_one_is_rejected(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+
+        result = runner.invoke(
+            main,
+            ["consolidate", "--project", str(tmp_path), "--dry-run",
+             "--limit", "0"],
+        )
+
+        assert result.exit_code != 0
+        assert "0" in result.output
+
+    def test_threshold_out_of_range_is_rejected(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+
+        result = runner.invoke(
+            main,
+            ["consolidate", "--project", str(tmp_path), "--dry-run",
+             "--threshold", "55"],
+        )
+
+        assert result.exit_code != 0
+        assert "55" in result.output
+
+    def test_dry_run_against_fresh_db_does_not_create_a_project_row(
+        self, tmp_path: Path,
+    ) -> None:
+        """R7: MemoryEngine.project_id lazily CREATES a project row on
+        first access if none exists -- a command whose entire premise
+        is "writes nothing" must never trigger that side effect, even
+        against a project that has never ingested anything."""
+        import sqlite3
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+
+        def _project_count() -> int:
+            conn = sqlite3.connect(str(tmp_path / ".callmem" / "memory.db"))
+            try:
+                return conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+            finally:
+                conn.close()
+
+        assert _project_count() == 0
+
+        result = runner.invoke(
+            main, ["consolidate", "--project", str(tmp_path), "--dry-run"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert _project_count() == 0
+
+    def test_cli_routes_through_the_shared_consolidate_method(
+        self, tmp_path: Path,
+    ) -> None:
+        """R5: structural guard -- a rewritten consolidate_cmd that did
+        its own candidate lookup/judging instead of going through
+        EntityConsolidator.consolidate would pass every other test in
+        this class. Spy on the real (autospec, side_effect=original)
+        method and assert the CLI actually calls it, once per entity,
+        with dry_run=True."""
+        from callmem.core.consolidation import EntityConsolidator
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        self._seed_entity(tmp_path, "e1", "Auth uses JWT", "RS256 tokens")
+        self._seed_entity(
+            tmp_path, "e2", "Auth uses JWT", "RS256 tokens",
+            created="2026-01-02T00:00:00+00:00",
+        )
+        stub = self._stub_llm(None)
+
+        with (
+            patch("callmem.core.engine._create_llm_client", return_value=stub),
+            patch.object(
+                EntityConsolidator, "consolidate", autospec=True,
+                side_effect=EntityConsolidator.consolidate,
+            ) as spy,
+        ):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.3"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert spy.call_count == 2
+        for call in spy.call_args_list:
+            assert call.kwargs.get("dry_run") is True
+            # args: (self, project_id, entities) -- always a singleton
+            # list, never the whole batch handed to one call.
+            assert len(call.args[2]) == 1
+
+    def test_sweep_survives_a_transient_judge_error_for_one_entity(
+        self, tmp_path: Path,
+    ) -> None:
+        """R6: self.llm.extract is unguarded in the sweep loop -- a
+        single transient error partway through must not abort the
+        report and discard already-paid-for judge calls on the rest.
+        The exception is caught inside EntityConsolidator.consolidate
+        itself (same fail-open treatment as a malformed response), so
+        the CLI's per-entity loop just moves on to the next entity."""
+        import re
+
+        import httpx
+
+        runner = CliRunner()
+        runner.invoke(main, ["init", "--project", str(tmp_path)])
+        # Two duplicate pairs: e1a/e1b will hit the flaky judge; e2a/e2b
+        # must still be judged normally afterwards.
+        self._seed_entity(tmp_path, "e1a", "Auth uses JWT tokens", "RS256")
+        self._seed_entity(
+            tmp_path, "e1b", "Auth uses JWT tokens", "RS256",
+            created="2026-01-02T00:00:00+00:00",
+        )
+        self._seed_entity(
+            tmp_path, "e2a", "DB is SQLite storage", "WAL mode",
+            created="2026-01-03T00:00:00+00:00",
+        )
+        self._seed_entity(
+            tmp_path, "e2b", "DB is SQLite storage", "WAL mode",
+            created="2026-01-04T00:00:00+00:00",
+        )
+
+        class _FlakyJudge:
+            def extract(self, prompt: str) -> str | None:
+                if (
+                    "NEW ENTRY id=e1a " in prompt
+                    or "NEW ENTRY id=e1b " in prompt
+                ):
+                    raise httpx.ReadTimeout("timed out")
+                new_id = re.search(r"NEW ENTRY id=(\S+)", prompt).group(1)
+                return json.dumps([{
+                    "new_id": new_id, "verdict": "ADD", "existing_id": None,
+                    "reason": "distinct enough",
+                }])
+
+        with patch(
+            "callmem.core.engine._create_llm_client",
+            return_value=_FlakyJudge(),
+        ):
+            result = runner.invoke(
+                main,
+                ["consolidate", "--project", str(tmp_path), "--dry-run",
+                 "--threshold", "0.3"],
+            )
+
+        assert result.exit_code == 0, result.output
+        # All 4 entities are reported -- the run did not abort partway.
+        for eid in ("e1a", "e1b", "e2a", "e2b"):
+            assert eid in result.output
+        assert "ADD (judge_failed)" in result.output
+        assert "ADD (judged)" in result.output

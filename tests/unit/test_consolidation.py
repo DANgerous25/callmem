@@ -2225,8 +2225,10 @@ class TestDryRun:
         assert decision.verdict == "NOOP"
         assert decision.existing_id == old_id
         assert decision.reason == "identical fact, no new information"
-        assert decision.similarity is not None
-        assert 0.0 < decision.similarity <= 1.0
+        assert decision.gate_similarity is not None
+        assert 0.0 < decision.gate_similarity <= 1.0
+        assert decision.matched_similarity is not None
+        assert 0.0 < decision.matched_similarity <= 1.0
 
     def test_dry_run_below_threshold_entity_reports_add_with_near_miss_similarity(
         self, memory_db: Database,
@@ -2258,10 +2260,13 @@ class TestDryRun:
         assert stats.decisions is not None
         [decision] = stats.decisions
         assert decision.verdict == "ADD"
-        assert decision.reason is None
-        # Never sent to the judge, but the near-miss score is still
+        # Distinct from a genuine judge ADD or a judge failure -- this
+        # entity never reached the judge at all.
+        assert decision.reason == "below_threshold"
+        # Never sent to the judge, but the near-miss gate score is still
         # surfaced -- this is exactly the data a threshold sweep needs.
-        assert decision.similarity is not None
+        assert decision.gate_similarity is not None
+        assert decision.matched_similarity is None
 
     def test_dry_run_threshold_override_changes_qualifying_set(
         self, memory_db: Database,
@@ -2295,7 +2300,7 @@ class TestDryRun:
             memory_db, judge_loose, loose,
         ).consolidate(engine.project_id, [new_entity], dry_run=True)
         assert len(judge_loose.calls) == 1
-        assert loose_stats.decisions[0].similarity is not None
+        assert loose_stats.decisions[0].gate_similarity is not None
 
     def test_judge_failure_in_dry_run_reports_add_never_a_would_archive(
         self, memory_db: Database,
@@ -2443,3 +2448,176 @@ class TestDryRun:
             if name != "_apply" and "apply" in name.lower()
         ]
         assert apply_like == []
+
+    def test_matched_similarity_differs_from_gate_similarity_for_lower_ranked_pick(
+        self, memory_db: Database,
+    ) -> None:
+        """R3: the judge may name ANY top-K candidate, not just the
+        highest-scoring one -- gate_similarity (what the threshold
+        compared) and matched_similarity (the named candidate's own
+        score) must be reported separately, never one silently
+        substituted for the other."""
+        engine = _make_engine(memory_db)
+        candidate_a = _insert_entity(
+            engine.repo, engine.project_id, "fact", "Top match", "content A",
+        )
+        candidate_b = _insert_entity(
+            engine.repo, engine.project_id, "fact", "Second match", "content B",
+        )
+        model_key = embedding_model_key(engine.config)
+        engine.repo.upsert_embedding(
+            candidate_a, model_key, 2, pack_vector([1.0, 0.0]),
+        )
+        engine.repo.upsert_embedding(
+            candidate_b, model_key, 2, pack_vector([0.6, 0.8]),
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="New", content="new content",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        # Judge names candidate_b -- the LOWER-scoring (0.6) candidate,
+        # not candidate_a (1.0, the one that set the gate).
+        judge = _StubJudge(_judge_response("NOOP", new_entity.id, candidate_b))
+        embedder = _StubEmbedder([1.0, 0.0])
+        consolidator = EntityConsolidator(
+            memory_db, judge, engine.config, embedder=embedder,
+        )
+
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        [decision] = stats.decisions
+        assert decision.existing_id == candidate_b
+        assert round(decision.gate_similarity, 3) == 1.0
+        assert round(decision.matched_similarity, 3) == 0.6
+        assert decision.gate_similarity != decision.matched_similarity
+
+    def test_three_way_add_disaggregation_in_one_batch(
+        self, memory_db: Database,
+    ) -> None:
+        """R4: a judged ADD, a never-asked (below threshold) entity, and
+        (separately, below) a judge-failure must all be distinguishable
+        via `reason` -- conflating them into one "ADD" bucket hides the
+        single most decision-relevant split for calibration."""
+        engine = _make_engine(memory_db)
+        # judged_add's title tokens are a SUBSET of the candidate's, so
+        # the FTS AND-match finds the candidate directly rather than
+        # relying on the OR-retry fallback, which only fires when the
+        # AND query matches nothing at all -- since judged_add is
+        # itself a persisted row here, an AND query over its own title
+        # always matches itself trivially and would otherwise mask
+        # whether the candidate was found too (see the CLI test suite's
+        # note on this same FTS quirk).
+        _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT tokens for sessions", "RS256, rotated quarterly",
+        )
+        judged_add = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT tokens", content="short form",
+        )
+        never_asked = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Completely unrelated turtles", content="nothing shared",
+        )
+        _insert_new(engine.repo, judged_add)
+        _insert_new(engine.repo, never_asked)
+
+        response = json.dumps([{
+            "new_id": judged_add.id, "verdict": "ADD", "existing_id": None,
+            "reason": "related but genuinely distinct",
+        }])
+        judge = _StubJudge(response=response)
+        config = engine.config.model_copy(deep=True)
+        config.consolidation.threshold = 0.5
+        consolidator = EntityConsolidator(memory_db, judge, config)
+
+        stats = consolidator.consolidate(
+            engine.project_id, [judged_add, never_asked], dry_run=True,
+        )
+
+        by_id = {d.entity_id: d for d in stats.decisions}
+        assert by_id[judged_add.id].verdict == "ADD"
+        assert by_id[judged_add.id].reason == "related but genuinely distinct"
+        assert by_id[never_asked.id].verdict == "ADD"
+        assert by_id[never_asked.id].reason == "below_threshold"
+        # The two ADDs are NOT the same population.
+        assert by_id[judged_add.id].reason != by_id[never_asked.id].reason
+
+    def test_judge_transport_error_fails_open_instead_of_raising(
+        self, memory_db: Database, caplog,
+    ) -> None:
+        """R6: a transient transport error from the judge call (a bad
+        response body, a connection hiccup any real client can leak)
+        must fail open exactly like a malformed/absent response, not
+        propagate and abort the caller's sweep."""
+        import json as jsonlib
+
+        engine = _make_engine(memory_db)
+        old_id = _insert_entity(
+            engine.repo, engine.project_id, "fact",
+            "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+        before = _snapshot(engine.repo, old_id, new_entity.id)
+
+        class _RaisingJudge:
+            def extract(self, prompt: str) -> str | None:
+                raise jsonlib.JSONDecodeError("bad body", "<html>", 0)
+
+        consolidator = EntityConsolidator(memory_db, _RaisingJudge(), engine.config)
+
+        with caplog.at_level(logging.WARNING):
+            stats = consolidator.consolidate(
+                engine.project_id, [new_entity], dry_run=True,
+            )
+
+        assert stats.judge_failed is True
+        assert stats.updated == 0
+        assert stats.noop == 0
+        assert stats.contradicted == 0
+        assert stats.added == 1
+        [decision] = stats.decisions
+        assert decision.reason == "judge_failed"
+        assert _snapshot(engine.repo, old_id, new_entity.id) == before
+        assert any(
+            "JSONDecodeError" in r.message or "fail-open" in r.message.lower()
+            for r in caplog.records
+        )
+
+    def test_judge_httpx_error_also_fails_open(self, memory_db: Database) -> None:
+        """Same guarantee for the other narrow exception type -- an
+        httpx transport error (timeout/connect/status) raised instead of
+        being swallowed by the client's own internal handling."""
+        import httpx
+
+        engine = _make_engine(memory_db)
+        _insert_entity(
+            engine.repo, engine.project_id, "fact", "Auth uses JWT", "RS256",
+        )
+        new_entity = Entity(
+            project_id=engine.project_id, type="fact",
+            title="Auth uses JWT", content="RS256",
+        )
+        _insert_new(engine.repo, new_entity)
+
+        class _TimingOutJudge:
+            def extract(self, prompt: str) -> str | None:
+                raise httpx.ReadTimeout("timed out")
+
+        consolidator = EntityConsolidator(
+            memory_db, _TimingOutJudge(), engine.config,
+        )
+        stats = consolidator.consolidate(
+            engine.project_id, [new_entity], dry_run=True,
+        )
+
+        assert stats.judge_failed is True
+        assert stats.added == 1

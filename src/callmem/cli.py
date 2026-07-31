@@ -3355,6 +3355,105 @@ def dedupe(
 # ── Consolidation calibration ───────────────────────────────────────
 
 
+def _consolidate_outcome_text(d: Any) -> str:
+    """Which side dies, in plain words -- a reader of this report has by
+    definition never seen consolidation run, so the verdict code alone
+    ("NOOP") is not self-explanatory: NOOP archives the LEFT (new/
+    entity_id) side, UPDATE/CONTRADICTS stale the RIGHT (existing) side.
+    CONTRADICTS keeps both -- it flags, it does not remove."""
+    existing = d.existing_id[:8] if d.existing_id else "?"
+    entity = d.entity_id[:8]
+    if d.verdict == "NOOP":
+        return f"would archive {entity} (kept: {existing})"
+    if d.verdict == "UPDATE":
+        return f"would stale {existing} (superseded by {entity})"
+    if d.verdict == "CONTRADICTS":
+        return f"would stale+invalidate {existing} (both kept, flagged conflicting)"
+    return "no change"
+
+
+def _consolidate_add_bucket(d: Any) -> str:
+    """Disaggregate the ADD verdict into the three populations that get
+    silently conflated otherwise: an entity the judge actually looked at
+    and called distinct, one whose best match never even cleared the
+    threshold gate (never asked), and one caught by a judge failure
+    (fails open to ADD, same as every other fail-open case). "What did
+    the judge call ADD just above the threshold" vs "what was never
+    asked" is the single most decision-relevant split for picking a
+    threshold -- conflating them into one bucket hides it."""
+    if d.verdict != "ADD":
+        return str(d.verdict)
+    if d.reason == "below_threshold":
+        return "ADD (never asked)"
+    if d.reason == "judge_failed":
+        return "ADD (judge_failed)"
+    return "ADD (judged)"
+
+
+def _consolidate_collapse_clusters(decisions: list[Any]) -> list[set[str]]:
+    """Union-find over NOOP/UPDATE decision edges (entity_id <->
+    existing_id) -- CONTRADICTS is deliberately excluded, since it keeps
+    both entities visible rather than collapsing them.
+
+    Judging one entity at a time against the rest of the corpus (see
+    consolidate_cmd's per-entity loop) means an n-member duplicate
+    cluster produces n separate NOOP/UPDATE decisions, one for each
+    member's own turn as "new" -- the raw per-verdict counts would
+    therefore report NOOP=n for a cluster that a live run would only
+    ever archive (n-1) entities from, one at a time, as they were each
+    submitted against an already-settled corpus. Collapsing every such
+    decision into connected components turns that inflated count back
+    into the number an operator actually cares about: how many distinct
+    facts survive.
+    """
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for d in decisions:
+        if d.verdict in ("NOOP", "UPDATE") and d.existing_id:
+            union(d.entity_id, d.existing_id)
+
+    groups: dict[str, set[str]] = {}
+    for node in list(parent):
+        groups.setdefault(find(node), set()).add(node)
+    return [g for g in groups.values() if len(g) >= 2]
+
+
+def _consolidate_similarity_table(
+    label: str, values_by_bucket: dict[str, list[float]],
+) -> list[str]:
+    lines = [f"\n{label}:"]
+    printed = False
+    for bucket, values in sorted(values_by_bucket.items()):
+        values = sorted(values)
+        if not values:
+            continue
+        printed = True
+        n = len(values)
+        mid = (
+            values[n // 2] if n % 2
+            else (values[n // 2 - 1] + values[n // 2]) / 2
+        )
+        lines.append(
+            f"  {bucket:<16} n={n:<4} min={values[0]:.3f} "
+            f"median={mid:.3f} max={values[-1]:.3f}"
+        )
+    if not printed:
+        lines.append("  (no data)")
+    return lines
+
+
 @main.command("consolidate")
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--dry-run", is_flag=True,
@@ -3362,13 +3461,15 @@ def dedupe(
                    "Required — this command is a calibration preview, not "
                    "a way to run consolidation live outside the normal "
                    "extraction pipeline.")
-@click.option("--threshold", type=float, default=None,
+@click.option("--threshold", type=click.FloatRange(min=0.0, max=1.0),
+              default=None,
               help="Override config.toml's [consolidation] threshold for "
-                   "this run only, so the same corpus can be swept at "
-                   "several thresholds without editing config.")
-@click.option("--limit", type=int, default=50, show_default=True,
+                   "this run only (0..1), so the same corpus can be swept "
+                   "at several thresholds without editing config.")
+@click.option("--limit", type=click.IntRange(min=1), default=50,
+              show_default=True,
               help="Cap on how many entities are judged this run "
-                   "(most-recently-updated first).")
+                   "(pinned first, then most-recently-updated).")
 @click.option("--type", "entity_type", default=None,
               help="Restrict to one entity type (decision, todo, fact, "
                    "failure, discovery, feature, bugfix, research, "
@@ -3407,7 +3508,8 @@ def consolidate_cmd(
     from callmem.core.config import load_config
     from callmem.core.consolidation import ConsolidationStats, EntityConsolidator
     from callmem.core.database import Database
-    from callmem.core.engine import MemoryEngine, _create_llm_client
+    from callmem.core.engine import _create_llm_client
+    from callmem.core.repository import Repository
     from callmem.models.entities import Entity
 
     db_path = project / ".callmem" / "memory.db"
@@ -3421,7 +3523,18 @@ def consolidate_cmd(
 
     db = Database(db_path)
     db.initialize()
-    engine = MemoryEngine(db, config)
+    repo = Repository(db)
+
+    # A "writes nothing" command must not have the side effect of
+    # creating the project row: MemoryEngine.project_id lazily
+    # CREATES one on first access if none exists yet. Look it up
+    # read-only instead -- no project means no entities, so there is
+    # nothing to consolidate against either way.
+    project_row = repo.get_project_by_name(config.project.name or "default")
+    if project_row is None:
+        click.echo("No entities to consolidate against (project not yet initialized).")
+        return
+    project_id = project_row.id
 
     llm = _create_llm_client(config)
     if llm is None:
@@ -3432,11 +3545,10 @@ def consolidate_cmd(
 
     # Fetch (effectively) the whole live, non-stale corpus so the
     # skip-count below is accurate, then bound the actual judged batch
-    # to --limit, most-recently-updated first (same ordering
-    # get_entities already uses).
-    rows = engine.repo.get_entities(
-        engine.project_id, type=entity_type, limit=1_000_000,
-        include_stale=False,
+    # to --limit, pinned first then most-recently-updated (same
+    # ordering get_entities already uses).
+    rows = repo.get_entities(
+        project_id, type=entity_type, limit=1_000_000, include_stale=False,
     )
     live_entities = [
         Entity.from_row(row) for row in rows if row.get("archived_at") is None
@@ -3467,7 +3579,7 @@ def consolidate_cmd(
     judge_failed_count = 0
     for entity in batch:
         entity_stats = consolidator.consolidate(
-            engine.project_id, [entity], dry_run=True,
+            project_id, [entity], dry_run=True,
         )
         stats.added += entity_stats.added
         stats.updated += entity_stats.updated
@@ -3486,59 +3598,108 @@ def consolidate_cmd(
         + (f" — {skipped} skipped, raise --limit to cover more" if skipped else "")
         + ":\n"
     )
+    click.echo(
+        "Every entity is judged against every OTHER entity in this run "
+        "(not just newly-extracted ones), so a live run only ever "
+        "archives one member of a duplicate cluster at a time as it is "
+        "submitted -- see 'Cluster collapse estimate' below for what "
+        "that means for these counts.\n"
+    )
 
     if judge_failed_count:
         click.echo(
-            f"  Judge response was malformed or absent for "
-            f"{judge_failed_count} entit{'y' if judge_failed_count == 1 else 'ies'} "
-            "— fail-open: those report ADD below (reason=judge_failed), "
-            "nothing would be archived.\n"
+            f"  Judge response was malformed, absent, or raised a "
+            f"transport error for {judge_failed_count} "
+            f"entit{'y' if judge_failed_count == 1 else 'ies'} — fail-open: "
+            "those report ADD below (reason=judge_failed), nothing would "
+            "be archived.\n"
         )
 
     decisions = stats.decisions or []
     for d in decisions:
-        sim = f"{d.similarity:.3f}" if d.similarity is not None else "  n/a"
+        gate = f"{d.gate_similarity:.3f}" if d.gate_similarity is not None else "  n/a"
+        matched = (
+            f"{d.matched_similarity:.3f}" if d.matched_similarity is not None
+            else "  n/a"
+        )
         line = (
-            f"  [{sim}] {d.verdict:<11} "
+            f"  [gate={gate} matched={matched}] {d.verdict:<11} "
             f"{d.entity_id[:8]} {d.entity_title[:50]!r}"
         )
         if d.existing_id:
-            line += f" -> {d.existing_id[:8]} {(d.existing_title or '')[:50]!r}"
-        if d.reason:
+            line += f" vs {d.existing_id[:8]} {(d.existing_title or '')[:50]!r}"
+        line += f"  — {_consolidate_outcome_text(d)}"
+        if d.reason and d.reason not in ("below_threshold", "judge_failed"):
             line += f"  ({d.reason})"
         click.echo(line)
 
-    # Summary: counts (from stats — the collision-resolved, DB-accurate
-    # figures) plus the similarity distribution per raw judge verdict
-    # (from the per-decision report above) so a threshold sweep is
-    # interpretable at a glance.
-    by_verdict: dict[str, list[float]] = {}
-    for d in decisions:
-        if d.similarity is not None:
-            by_verdict.setdefault(d.verdict, []).append(d.similarity)
-
-    click.echo("\nSummary (DB-accurate — after duplicate-claim resolution):")
+    # Cluster collapse estimate (R1's preferred fix): the raw per-entity
+    # verdict counts below are hypotheticals -- every entity took a turn
+    # as "new" against the rest of the corpus, so an n-member duplicate
+    # cluster inflates NOOP/UPDATE to n even though a live run only ever
+    # removes (n-1) of them, one at a time. Collapse NOOP/UPDATE edges
+    # into connected components to answer the question an operator
+    # actually has: how many distinct facts would remain.
+    clusters = _consolidate_collapse_clusters(decisions)
+    clustered_ids = {eid for c in clusters for eid in c}
     click.echo(
-        f"  ADD={stats.added}  UPDATE={stats.updated}  "
-        f"NOOP={stats.noop}  CONTRADICTS={stats.contradicted}"
+        "\nCluster collapse estimate (NOOP/UPDATE edges only; CONTRADICTS "
+        "keeps both sides and is excluded):"
     )
-    if skipped:
-        click.echo(f"  skipped={skipped}")
-
-    click.echo("\nSimilarity distribution by verdict (as judged, pre-collision):")
-    for verdict in ("ADD", "UPDATE", "NOOP", "CONTRADICTS"):
-        sims = sorted(by_verdict.get(verdict, []))
-        if not sims:
-            continue
-        n = len(sims)
-        mid = (
-            sims[n // 2] if n % 2
-            else (sims[n // 2 - 1] + sims[n // 2]) / 2
-        )
+    if not clusters:
+        click.echo("  No NOOP/UPDATE relationships found -- nothing collapses.")
+    else:
+        entities_in_clusters = len(clustered_ids)
+        estimated_survivors = len(clusters)
         click.echo(
-            f"  {verdict:<11} n={n:<4} min={sims[0]:.3f} "
-            f"median={mid:.3f} max={sims[-1]:.3f}"
+            f"  {len(clusters)} cluster(s) covering {entities_in_clusters} "
+            f"entities -> an estimated {estimated_survivors} survivor(s) "
+            f"(net -{entities_in_clusters - estimated_survivors})"
         )
+        for cluster in sorted(clusters, key=len, reverse=True):
+            ids = sorted(cluster)
+            click.echo(
+                f"    cluster of {len(ids)}: "
+                f"{', '.join(i[:8] for i in ids)} -> keep 1"
+            )
+
+    # Per-entity hypothetical counts -- NOT the number of entities a live
+    # run would actually archive (see the cluster estimate above for
+    # that). ADD is split into the three populations that "ADD" alone
+    # conflates: judged-and-called-ADD, never sent to the judge at all
+    # (below threshold), and judge failures (fail open to ADD).
+    bucket_counts: dict[str, int] = {}
+    bucket_gate_sims: dict[str, list[float]] = {}
+    bucket_matched_sims: dict[str, list[float]] = {}
+    for d in decisions:
+        bucket = _consolidate_add_bucket(d)
+        bucket_counts[bucket] = bucket_counts.get(bucket, 0) + 1
+        if d.gate_similarity is not None:
+            bucket_gate_sims.setdefault(bucket, []).append(d.gate_similarity)
+        if d.matched_similarity is not None:
+            bucket_matched_sims.setdefault(bucket, []).append(d.matched_similarity)
+
+    click.echo(
+        "\nPer-entity hypothetical verdict counts (each entity judged "
+        "once, against the rest of the corpus -- not DB-accurate archive "
+        "counts; see the cluster estimate above for that):"
+    )
+    for bucket in sorted(bucket_counts):
+        click.echo(f"  {bucket:<16} {bucket_counts[bucket]}")
+    if skipped:
+        click.echo(f"  skipped          {skipped}")
+
+    for line in _consolidate_similarity_table(
+        "Gate similarity by bucket (what --threshold actually compares)",
+        bucket_gate_sims,
+    ):
+        click.echo(line)
+    for line in _consolidate_similarity_table(
+        "Matched-pair similarity by bucket (the named candidate's own "
+        "score, UPDATE/NOOP/CONTRADICTS only)",
+        bucket_matched_sims,
+    ):
+        click.echo(line)
 
 
 # ── Usage analytics ─────────────────────────────────────────────────

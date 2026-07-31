@@ -99,6 +99,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 from callmem.core.embeddings import (
     create_embedder,
     embedding_model_key,
@@ -131,11 +133,26 @@ class ConsolidationDecision:
 
     Only populated on ``consolidate(..., dry_run=True)`` -- the live path
     has no use for it and leaves ``ConsolidationStats.decisions`` as
-    None. ``verdict``/``existing_id``/``reason`` are exactly what the
-    judge returned for entities that reached it; entities that never
-    qualified (below threshold) or were never reached (judge failure)
-    report verdict "ADD" with ``reason`` set to ``None`` or
-    ``"judge_failed"`` respectively -- see ``EntityConsolidator._decision_report``.
+    None. ``verdict``/``existing_id`` are exactly what the judge
+    returned for entities that reached it. ``reason`` is either the
+    judge's own one-sentence rationale (verdict came from the judge),
+    or one of two sentinels distinguishing WHY an entity never got a
+    real judge-authored verdict: ``"below_threshold"`` (never sent --
+    its best match never cleared the gate) or ``"judge_failed"`` (sent,
+    but the whole batch's judge response was malformed/absent, so this
+    entity fails open to ADD too). This three-way split is the single
+    most decision-relevant one for calibration: "judged ADD just above
+    threshold" and "never asked" look identical if conflated.
+
+    Two similarity scores, not one, because they can legitimately
+    differ: ``gate_similarity`` is always the top candidate's score --
+    what the configured threshold actually compares against to decide
+    whether this entity reaches the judge at all. ``matched_similarity``
+    is the score of the SPECIFIC candidate named by ``existing_id``
+    (None for ADD, which names no candidate) -- the judge is free to
+    pick any candidate from the top-K list handed to it, not
+    necessarily the highest-scoring one, so the two can diverge.
+    Deriving a threshold from only one of these would be unsound.
     """
 
     entity_id: str
@@ -143,7 +160,8 @@ class ConsolidationDecision:
     verdict: str
     existing_id: str | None
     existing_title: str | None
-    similarity: float | None
+    gate_similarity: float | None
+    matched_similarity: float | None
     reason: str | None
 
 
@@ -254,7 +272,27 @@ class EntityConsolidator:
         prompt = CONSOLIDATION_PROMPT.format(
             entries_block=_format_entries(qualifying.values()),
         )
-        raw = self.llm.extract(prompt)
+        try:
+            raw = self.llm.extract(prompt)
+        except (httpx.HTTPError, json.JSONDecodeError) as exc:
+            # Both shipped clients (OllamaClient, OpenAICompatClient)
+            # already catch httpx's connect/timeout/status errors
+            # internally and return None -- this is the one gap: a
+            # response body that isn't valid JSON (e.g. a proxy or
+            # gateway hiccup returning an HTML error page with a 200
+            # status). Treat it exactly like an absent response: `raw =
+            # None` already routes through the same fail-open path
+            # below, so a single transient judge call can never abort
+            # the whole batch (or, via the CLI's per-entity sweep, the
+            # rest of a large-corpus calibration run).
+            logger.warning(
+                "Consolidation judge call raised %s for %d candidate "
+                "entit%s -- treating as a failed judge call (fail-open). "
+                "%s",
+                type(exc).__name__, len(qualifying),
+                "y" if len(qualifying) == 1 else "ies", exc,
+            )
+            raw = None
         decisions = self._parse(raw, qualifying, batch_ids)
 
         if decisions is None:
@@ -761,11 +799,14 @@ class EntityConsolidator:
         ``decisions`` is None for the two fail-open exits (nothing
         cleared the threshold, or the judge response was malformed):
         every entity reports verdict "ADD" with similarity/candidate
-        info still shown when it exists, and any entity that DID reach
-        the judge (i.e. is in ``qualifying``) is tagged with
-        ``fallback_reason`` (e.g. "judge_failed") so the harness can
-        tell "never sent to the judge" apart from "the judge failed" --
-        never a would-archive either way.
+        info still shown when it exists. ``reason`` disambiguates WHY:
+        an entity that reached the judge (is in ``qualifying``) is
+        tagged with ``fallback_reason`` (e.g. "judge_failed"); an entity
+        that never reached it at all (its best match never cleared the
+        threshold) is tagged "below_threshold" -- conflating these two
+        into one untagged "ADD" bucket would hide the single most
+        decision-relevant split calibration needs. Never a would-archive
+        either way.
         """
         below_hits = {e.id: hits for e, hits in below_threshold}
         rows = []
@@ -777,20 +818,39 @@ class EntityConsolidator:
             if decisions is not None and entity.id in decisions:
                 verdict, existing_id, reason = decisions[entity.id]
             elif entity.id in qualifying:
+                # Reached the judge, but the batch's response as a whole
+                # was malformed/absent -- fails open with a specific
+                # reason, not silence.
                 reason = fallback_reason
+            else:
+                # Never sent: this entity's own best match never cleared
+                # settings.threshold.
+                reason = "below_threshold"
 
             existing_title = None
-            similarity = hits[0]["_similarity"] if hits else None
+            # The gate value: hits[0] is always the top-ranked candidate
+            # (both _vector_candidates and _fts_similar return
+            # highest-similarity first), i.e. exactly what
+            # `settings.threshold` was compared against to decide
+            # whether this entity even reached the judge.
+            gate_similarity = hits[0]["_similarity"] if hits else None
+            # The judge is free to name any candidate from the top-K
+            # list, not necessarily hits[0] -- so the matched pair's own
+            # score can differ from the gate value and must be reported
+            # separately, not silently substituted for it.
+            matched_similarity = None
             if existing_id is not None:
                 match = next((h for h in hits if h["id"] == existing_id), None)
                 if match is not None:
                     existing_title = match.get("title")
-                    similarity = match["_similarity"]
+                    matched_similarity = match["_similarity"]
 
             rows.append(ConsolidationDecision(
                 entity_id=entity.id, entity_title=entity.title,
                 verdict=verdict, existing_id=existing_id,
-                existing_title=existing_title, similarity=similarity,
+                existing_title=existing_title,
+                gate_similarity=gate_similarity,
+                matched_similarity=matched_similarity,
                 reason=reason,
             ))
         return rows

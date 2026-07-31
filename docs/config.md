@@ -140,8 +140,14 @@ document_prefix = "search_document: "
 #
 # Off by default — this marks stale / archives entities in your existing
 # memory, and `threshold` is only calibrated against a small probe corpus.
-# Enable per project once you've reviewed `consolidation_log` (per-run
-# added/updated/noop/judge_failed counts) and are comfortable with it.
+# Before enabling, run `callmem consolidate --dry-run` (optionally with
+# --threshold/--limit) against this project's real corpus: it runs the
+# exact same candidate-selection/judging path, writes nothing, and prints
+# per-decision verdicts plus a cluster-collapse estimate so you can pick a
+# threshold from evidence instead of guessing. Enable per project once
+# you've reviewed that output (or `consolidation_log`'s per-run
+# added/updated/noop/judge_failed counts, once it has run for real) and
+# are comfortable with it.
 enabled = false
 threshold = 0.55                   # same 0..1 scale as [embeddings].min_similarity
 top_k = 5                          # similar existing entities considered per new entity
