@@ -6,6 +6,19 @@ CLAUDE.md, which mirrors this content). The global
 `~/.config/opencode/AGENTS.md` provides additional cross-cutting norms; where
 they conflict, this file wins.
 
+## Quick Commands
+
+When the user says one of these phrases, execute the corresponding action:
+
+| Phrase | Action |
+|---|---|
+| **catch up** | Run `callmem briefing` (or call `mem_get_briefing` via MCP). Summarize the current project state and ask what to work on. |
+| **wrap up** | Run tests, commit, and push. |
+| **status** | Call `mem_get_tasks` and report open items. |
+| **dfn** (done for now) | Run tests, commit, and push. |
+| **dfd** (done for day) | Run tests, commit, and push. Assume the next reader is a fresh agent tomorrow — spell out specific next steps in the commit message body. |
+| **do <task>** | Read the relevant task specification, implement everything specified. Run tests after each change. Commit after each file. |
+
 ## How to work
 
 - **Think before coding.** Surface ambiguities and state assumptions before

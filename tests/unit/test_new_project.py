@@ -154,6 +154,24 @@ class TestCodingNormsFlag:
         assert "mem_ingest" in agents
         assert "## Project stack" in agents
 
+    def test_agents_md_includes_quick_commands(self, tmp_path: Path) -> None:
+        """The dfn/dfd/catch-up phrases must ship in every new project,
+        agnostic of which agent reads AGENTS.md."""
+        target = tmp_path / "norms-quick"
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "new", str(target), "--no-service", "--port", "9811", "--coding-norms",
+        ])
+        assert result.exit_code == 0, result.output
+        agents = (target / "AGENTS.md").read_text()
+        assert "## Quick Commands" in agents
+        for phrase in ("**catch up**", "**wrap up**", "**status**",
+                       "**dfn**", "**dfd**", "**do <task>**"):
+            assert phrase in agents
+        # CLAUDE.md defers to AGENTS.md, so both agents see the table.
+        claude = (target / "CLAUDE.md").read_text()
+        assert "AGENTS.md" in claude
+
     def test_writes_claude_md(self, tmp_path: Path) -> None:
         target = tmp_path / "norms2"
         runner = CliRunner()
