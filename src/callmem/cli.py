@@ -390,15 +390,30 @@ def doctor(project: Path, fix: bool) -> None:
         finally:
             conn.close()
 
+        from callmem.core.queue import JobQueue
+
+        queue = JobQueue(db)
+        failed_jobs = queue.get_failed_count("extract_entities")
+        pending_jobs = queue.get_pending_count("extract_entities")
+
         click.echo("  Extraction health:")
         click.echo(f"    Events:   {events}")
         click.echo(f"    Entities: {entities}")
-        if events > 0 and entities == 0:
+        if failed_jobs > 0:
             click.echo(
-                f"    \u26a0\ufe0f  {events} events captured but 0 entities extracted.\n"
-                "       The LLM backend may be unreachable or misconfigured."
+                f"    \u26a0\ufe0f  {failed_jobs} extraction job(s) failed. "
+                "Fix the backend above, then run `callmem requeue-failed`."
             )
             problems_found = True
+        elif pending_jobs > 0:
+            click.echo(
+                f"    {pending_jobs} extraction job(s) pending — "
+                "waiting for the daemon to drain the queue."
+            )
+        elif events > 0 and entities == 0:
+            click.echo(
+                "    \u2713 healthy (nothing memorable extracted yet)"
+            )
         elif events > entities * 2 and events > 10:
             click.echo(
                 f"    \u26a0\ufe0f  Low extraction ratio: "

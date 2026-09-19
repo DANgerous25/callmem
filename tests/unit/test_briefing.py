@@ -144,16 +144,13 @@ class TestBriefingGeneration:
         assert briefing.token_count > 0
         assert "new project" in briefing.content.lower() or "no prior" in briefing.content.lower()
 
-    def test_briefing_extraction_warning_when_events_but_no_entities(
-        self, memory_db: Database,
-    ) -> None:
+    def _seed_events_no_entities(self, memory_db: Database) -> str:
         project_id = _seed_project(memory_db)
         repo = Repository(memory_db)
 
         session = Session(project_id=project_id)
         repo.insert_session(session)
 
-        from callmem.models.events import Event
         for i in range(5):
             event = Event(
                 session_id=session.id,
@@ -162,11 +159,62 @@ class TestBriefingGeneration:
                 content=f"test event {i}",
             )
             repo.insert_event(event)
+        return project_id
+
+    def test_extraction_warning_when_jobs_failed(
+        self, memory_db: Database,
+    ) -> None:
+        """Failed extraction jobs keep the actionable backend warning."""
+        project_id = self._seed_events_no_entities(memory_db)
+        repo = Repository(memory_db)
+
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {}, max_attempts=1)
+        job = queue.dequeue("extract_entities")
+        assert job is not None
+        queue.fail(job.id, "backend unreachable")
 
         gen = BriefingGenerator(repo, Config())
         briefing = gen.generate(project_id, project_name="test")
         assert "0 entities extracted" in briefing.content
+        assert "unreachable" in briefing.content
         assert "callmem doctor" in briefing.content
+
+    def test_extraction_warning_notes_pending_jobs(
+        self, memory_db: Database,
+    ) -> None:
+        """Queued-but-undrained jobs point at the daemon, not the backend."""
+        project_id = self._seed_events_no_entities(memory_db)
+        repo = Repository(memory_db)
+
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {})
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "still queued" in briefing.content
+        assert "daemon" in briefing.content
+        assert "unreachable" not in briefing.content
+
+    def test_extraction_benign_when_jobs_completed_empty(
+        self, memory_db: Database,
+    ) -> None:
+        """Completed jobs with 0 entities is a normal first-run state —
+        no backend warning."""
+        project_id = self._seed_events_no_entities(memory_db)
+        repo = Repository(memory_db)
+
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {})
+        job = queue.dequeue("extract_entities")
+        assert job is not None
+        queue.complete(job.id)
+
+        gen = BriefingGenerator(repo, Config())
+        briefing = gen.generate(project_id, project_name="test")
+        assert "nothing memorable" in briefing.content
+        assert "unreachable" not in briefing.content
+        assert "callmem doctor" not in briefing.content
 
     def test_briefing_respects_token_budget(
         self, memory_db: Database

@@ -131,6 +131,63 @@ class TestDoctorCommand:
         result = runner.invoke(main, ["doctor", "--project", str(tmp_path)])
         assert result.exit_code == 0
 
+    @staticmethod
+    def _seed_extraction_state(
+        project_dir: Path, *, fail_job: bool,
+    ) -> None:
+        """Seed events with zero entities plus one extraction job that
+        either completed (benign first-run) or failed (backend problem)."""
+        from callmem.core.database import Database
+        from callmem.core.queue import JobQueue
+        from callmem.core.repository import Repository
+        from callmem.models.events import Event
+        from callmem.models.projects import Project
+        from callmem.models.sessions import Session
+
+        db = Database(project_dir / ".callmem" / "memory.db")
+        repo = Repository(db)
+        project = Project(name="p")
+        repo.create_project(project)
+        session = Session(project_id=project.id)
+        repo.insert_session(session)
+        repo.insert_event(Event(
+            session_id=session.id, project_id=project.id,
+            type="note", content="hi",
+        ))
+
+        queue = JobQueue(db)
+        queue.enqueue("extract_entities", {}, max_attempts=1)
+        job = queue.dequeue("extract_entities")
+        assert job is not None
+        if fail_job:
+            queue.fail(job.id, "backend unreachable")
+        else:
+            queue.complete(job.id)
+
+    def test_doctor_benign_when_extraction_completed_empty(
+        self, project_dir: Path,
+    ) -> None:
+        """Events but 0 entities with completed jobs is a healthy
+        first-run state — must not claim the backend is unreachable."""
+        self._seed_extraction_state(project_dir, fail_job=False)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--project", str(project_dir)])
+        assert result.exit_code == 0
+        assert "healthy" in result.output
+        assert "unreachable" not in result.output
+
+    def test_doctor_flags_failed_extraction_jobs(
+        self, project_dir: Path,
+    ) -> None:
+        self._seed_extraction_state(project_dir, fail_job=True)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--project", str(project_dir)])
+        assert result.exit_code == 1
+        assert "extraction job(s) failed" in result.output
+        assert "requeue-failed" in result.output
+
 
 class TestNewCommand:
     def test_creates_fresh_project_without_donor(self, tmp_path: Path) -> None:

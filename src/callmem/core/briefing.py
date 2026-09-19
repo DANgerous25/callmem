@@ -320,8 +320,13 @@ class BriefingGenerator:
             now_str = datetime.now(UTC).strftime("%Y-%m-%d %-I:%M%p")
             event_count = self._fetch_event_count(project_id)
             if event_count > 0:
+                from callmem.core.queue import JobQueue
+
+                queue = JobQueue(self.repo.db)
                 content = self._build_extraction_warning(
                     project_name, now_str, event_count,
+                    failed=queue.get_failed_count("extract_entities"),
+                    pending=queue.get_pending_count("extract_entities"),
                 )
             else:
                 content = NEW_PROJECT_MESSAGE.format(
@@ -829,14 +834,45 @@ class BriefingGenerator:
 
     def _build_extraction_warning(
         self, project_name: str, now_str: str, event_count: int,
+        *, failed: int = 0, pending: int = 0,
     ) -> str:
-        return (
+        """Render the empty-memory briefing when events exist but no
+        entities do.
+
+        The job queue decides the tone: failed jobs mean the LLM backend
+        really is unreachable (actionable warning); pending jobs mean the
+        queue has not drained (daemon not running); otherwise extraction
+        ran cleanly and found nothing memorable yet — a normal state for
+        a new or greeting-only project, not a backend problem.
+        """
+        header = (
             f"[{project_name}] recent context, {now_str}\n"
             + "\u2500" * 48 + "\n\n"
-            f"\u26a0\ufe0f {event_count} events captured but 0 entities extracted.\n"
-            f"   LLM backend may be unreachable. "
-            f"Run `callmem doctor` to diagnose."
         )
+        if failed > 0:
+            body = (
+                f"\u26a0\ufe0f {event_count} events captured but 0 entities extracted.\n"
+                f"   {failed} extraction job(s) failed — LLM backend may be "
+                f"unreachable.\n"
+                f"   Run `callmem doctor` to diagnose, then "
+                f"`callmem requeue-failed`."
+            )
+        elif pending > 0:
+            body = (
+                f"\u26a0\ufe0f {event_count} events captured; {pending} extraction "
+                f"job(s) still queued.\n"
+                f"   Is the callmem daemon running? Start it with "
+                f"`callmem daemon`."
+            )
+        else:
+            body = (
+                f"No entities yet — {event_count} event(s) captured, "
+                f"nothing memorable\n"
+                f"extracted so far. Memories appear here automatically as "
+                f"substantive\n"
+                f"work accumulates."
+            )
+        return header + body
 
     def _score_entity(self, entity: dict[str, Any], now: datetime) -> float:
         """Importance score for briefing selection/ordering.
