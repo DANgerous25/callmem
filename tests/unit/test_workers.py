@@ -617,3 +617,35 @@ class TestResolveConcurrency:
     def test_rejects_out_of_range(self) -> None:
         with pytest.raises(ValueError):
             Config(workers={"concurrency": 0})
+
+
+class TestStartupReap:
+    def test_default_start_leaves_fresh_running_jobs(
+        self, memory_db: Database
+    ) -> None:
+        engine, ollama = _make_engine(memory_db)
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {"session_id": "S1"})
+        job = queue.dequeue()
+        assert job is not None
+
+        runner = WorkerRunner(memory_db, ollama, engine.config, poll_interval=60)
+        with patch.object(runner, "_run_loop"):
+            runner.start()
+        runner.stop()
+        assert queue.get_job(job.id).status == "running"  # type: ignore[union-attr]
+
+    def test_daemon_start_reaps_every_running_job(
+        self, memory_db: Database
+    ) -> None:
+        engine, ollama = _make_engine(memory_db)
+        queue = JobQueue(memory_db)
+        queue.enqueue("extract_entities", {"session_id": "S1"})
+        job = queue.dequeue()
+        assert job is not None
+
+        runner = WorkerRunner(memory_db, ollama, engine.config, poll_interval=60)
+        with patch.object(runner, "_run_loop"):
+            runner.start(reap_stale_after=0)
+        runner.stop()
+        assert queue.get_job(job.id).status == "pending"  # type: ignore[union-attr]

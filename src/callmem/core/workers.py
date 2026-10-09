@@ -81,14 +81,21 @@ class WorkerRunner:
             EMBED_JOB_TYPE: EntityEmbedder(db, config),
         }
 
-    def start(self) -> None:
-        """Start the worker loop in a background daemon thread."""
+    def start(self, reap_stale_after: int = 300) -> None:
+        """Start the worker loop in background daemon threads.
+
+        ``reap_stale_after`` is how old a 'running' job must be to count as
+        orphaned. The daemon passes 0: it owns the queue (MCP servers stand
+        down while it runs), so every 'running' row at its startup belongs
+        to a dead process — and an unreaped one would block its session's
+        extraction, since dequeue serializes per session.
+        """
         # Recover jobs left in 'running' from a prior daemon that died
         # mid-inference (e.g. systemctl restart during an Ollama call).
         # Without this they sit frozen forever because dequeue() only
         # picks up 'pending' rows.
         try:
-            reaped = self.queue.reap_orphaned_running()
+            reaped = self.queue.reap_orphaned_running(reap_stale_after)
             if reaped:
                 self._publish_queue_status()
         except Exception as exc:  # noqa: BLE001 — reaper must never block startup

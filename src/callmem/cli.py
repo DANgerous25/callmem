@@ -1739,8 +1739,8 @@ def daemon(
                 project_path=str(project),
                 concurrency=resolve_concurrency(config),
             )
-            worker_runner.start()
             write_pid_file(project)
+            worker_runner.start(reap_stale_after=0)
             click.echo(
                 f"  Workers:  started ({worker_runner.concurrency} threads)"
             )
