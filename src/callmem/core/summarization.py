@@ -86,7 +86,7 @@ class Summarizer:
         prompt = CHUNK_SUMMARY_PROMPT.format(events_text=events_text)
         response = self.ollama.extract(prompt)
         if response is None:
-            raise RuntimeError("Ollama returned no response for chunk summary")
+            raise RuntimeError("LLM backend returned no response for chunk summary")
 
         token_count = _estimate_tokens(response)
         first_ts = events[0].get("timestamp")
@@ -125,7 +125,7 @@ class Summarizer:
         )
         response = self.ollama.extract(prompt)
         if response is None:
-            raise RuntimeError("Ollama returned no response for session summary")
+            raise RuntimeError("LLM backend returned no response for session summary")
 
         token_count = _estimate_tokens(response)
 
@@ -161,7 +161,7 @@ class Summarizer:
         )
         response = self.ollama.extract(prompt)
         if response is None:
-            raise RuntimeError("Ollama returned no response for cross-session summary")
+            raise RuntimeError("LLM backend returned no response for cross-session summary")
 
         token_count = _estimate_tokens(response)
 

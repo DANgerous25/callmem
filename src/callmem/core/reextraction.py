@@ -202,7 +202,7 @@ class ReExtractor:
         response = self.ollama._generate(prompt)
         if not response:
             raise RuntimeError(
-                "Ollama returned no response for re-extraction batch"
+                "LLM backend returned no response for re-extraction batch"
             )
 
         from callmem.core.extraction import ENTITY_TYPE_MAP

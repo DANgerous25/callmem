@@ -160,7 +160,7 @@ class EntityExtractor:
         )
         response = self.ollama.extract(prompt)
         if response is None:
-            raise RuntimeError("Ollama returned no response for extraction")
+            raise RuntimeError("LLM backend returned no response for extraction")
 
         extracted = self._parse_extraction(response)
         project_id = events[0]["project_id"]

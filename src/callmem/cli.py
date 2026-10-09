@@ -1626,6 +1626,47 @@ def adapter(project: Path, opencode_url: str) -> None:
         click.echo("Adapter stopped.")
 
 
+def _wait_for_backend_dns(
+    config: Any, timeout: float = 60.0, interval: float = 2.0,
+) -> bool:
+    """Block until the LLM endpoint's hostname resolves, up to ``timeout``.
+
+    User-level systemd units can't order themselves after
+    network-online.target, so at boot the daemon can start before DNS is
+    up and burn every queued job's retries on name-resolution errors.
+    Returns True once resolvable (or nothing to resolve), False on timeout.
+    """
+    import ipaddress
+    import socket
+    import time
+    from urllib.parse import urlparse
+
+    if config.llm.backend == "openai_compat":
+        endpoint = config.openai_compat.endpoint
+    elif config.llm.backend == "ollama":
+        endpoint = config.ollama.endpoint
+    else:
+        return True
+    host = urlparse(endpoint).hostname
+    if not host or host == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            socket.getaddrinfo(host, None)
+            return True
+        except socket.gaierror:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(interval)
+
+
 @main.command()
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--port", type=int, default=None, help="Override UI port.")
@@ -1684,6 +1725,12 @@ def daemon(
         llm_client = _create_llm_client(config)
         if llm_client is not None:
             from callmem.core.workers import WorkerRunner
+
+            if not _wait_for_backend_dns(config):
+                click.echo(
+                    "  Workers:  LLM endpoint not resolvable after 60s — "
+                    "starting anyway"
+                )
 
             worker_runner = WorkerRunner(
                 db, llm_client, config,

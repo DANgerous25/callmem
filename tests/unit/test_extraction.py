@@ -211,7 +211,7 @@ class TestEntityExtractor:
             assert row is not None
             assert row["status"] == "pending"
             assert row["next_attempt_at"] is not None
-            assert "Ollama returned no response" in row["error"]
+            assert "LLM backend returned no response" in row["error"]
         finally:
             conn.close()
 

@@ -1,8 +1,9 @@
-"""Tests for daemon pid files, env-file key fallback, and MCP worker gating."""
+"""Tests for daemon startup: pid files, key fallback, worker gating, DNS wait."""
 
 from __future__ import annotations
 
 import os
+import socket
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,6 +11,7 @@ if TYPE_CHECKING:
 
     import pytest
 
+from callmem.cli import _wait_for_backend_dns
 from callmem.core.config import resolve_secret
 from callmem.core.daemon_lock import (
     daemon_running,
@@ -20,6 +22,7 @@ from callmem.core.daemon_lock import (
 from callmem.core.ollama import OllamaClient
 from callmem.core.openai_compat import OpenAICompatClient
 from callmem.mcp.server import _worker_skip_reason
+from callmem.models.config import Config
 
 
 class TestDaemonPidFile:
@@ -109,3 +112,49 @@ class TestWorkerSkipReason:
     def test_runs_with_key_and_no_daemon(self, tmp_path: Path) -> None:
         client = OpenAICompatClient(api_key="k")
         assert _worker_skip_reason(tmp_path, client) is None
+
+
+class TestWaitForBackendDns:
+    def _config(self, backend: str, endpoint: str) -> Config:
+        return Config.from_dict({
+            "llm": {"backend": backend},
+            "openai_compat": {"endpoint": endpoint},
+            "ollama": {"endpoint": endpoint},
+        })
+
+    def test_skips_local_and_ip_endpoints(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _fail(*_a: object) -> None:
+            raise AssertionError("should not resolve")
+
+        monkeypatch.setattr(socket, "getaddrinfo", _fail)
+        for ep in ("http://localhost:11434", "http://10.200.200.1:11434"):
+            assert _wait_for_backend_dns(self._config("ollama", ep)) is True
+        assert _wait_for_backend_dns(self._config("none", "")) is True
+
+    def test_waits_until_resolvable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[str] = []
+
+        def _resolve(host: str, *_a: object) -> list[object]:
+            calls.append(host)
+            if len(calls) < 3:
+                raise socket.gaierror("not yet")
+            return []
+
+        monkeypatch.setattr(socket, "getaddrinfo", _resolve)
+        cfg = self._config("openai_compat", "https://openrouter.ai/api/v1")
+        assert _wait_for_backend_dns(cfg, timeout=5, interval=0) is True
+        assert calls == ["openrouter.ai"] * 3
+
+    def test_gives_up_after_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _never(*_a: object) -> None:
+            raise socket.gaierror("down")
+
+        monkeypatch.setattr(socket, "getaddrinfo", _never)
+        cfg = self._config("openai_compat", "https://openrouter.ai/api/v1")
+        assert _wait_for_backend_dns(cfg, timeout=0, interval=0) is False
