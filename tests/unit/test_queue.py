@@ -646,3 +646,49 @@ class TestHasAnyJobs:
         queue = JobQueue(memory_db)
         queue.enqueue("generate_summary", {})
         assert queue.has_any_jobs("extract_entities") is False
+
+
+class TestDequeueSerialization:
+    def test_holds_back_same_session_extraction(
+        self, memory_db: Database
+    ) -> None:
+        q = JobQueue(memory_db)
+        first = q.enqueue("extract_entities", {"session_id": "S1"})
+        q.enqueue("extract_entities", {"session_id": "S1"})
+        other = q.enqueue("extract_entities", {"session_id": "S2"})
+
+        assert q.dequeue().id == first
+        # S1's second batch must wait for the first; S2 can go in parallel.
+        assert q.dequeue().id == other
+        assert q.dequeue() is None
+
+        q.complete(first)
+        assert q.dequeue() is not None
+
+    def test_sessionless_extraction_is_not_blocked(
+        self, memory_db: Database
+    ) -> None:
+        q = JobQueue(memory_db)
+        q.enqueue("extract_entities", {"session_id": "S1"})
+        q.enqueue("extract_entities", {"event_ids": []})
+        assert q.dequeue() is not None
+        assert q.dequeue() is not None
+
+    def test_holds_back_concurrent_compaction(self, memory_db: Database) -> None:
+        q = JobQueue(memory_db)
+        q.enqueue("compact", {"project_id": "p"})
+        q.enqueue("compact", {"project_id": "p"})
+        q.enqueue("generate_summary", {"session_id": "S1"})
+
+        assert q.dequeue().type == "compact"
+        assert q.dequeue().type == "generate_summary"
+        assert q.dequeue() is None
+
+    def test_type_filtered_dequeue_also_serializes(
+        self, memory_db: Database
+    ) -> None:
+        q = JobQueue(memory_db)
+        q.enqueue("extract_entities", {"session_id": "S1"})
+        q.enqueue("extract_entities", {"session_id": "S1"})
+        assert q.dequeue("extract_entities") is not None
+        assert q.dequeue("extract_entities") is None

@@ -175,6 +175,17 @@ class ExtractionConfig(BaseModel):
     batch_size: int = 10
 
 
+class WorkersConfig(BaseModel):
+    """Background worker settings for the daemon.
+
+    ``concurrency`` is the number of queue-polling threads. None picks a
+    default from the backend: 4 for hosted openai_compat APIs, 1 for
+    Ollama, whose server queues parallel requests and can then hit the
+    client timeout.
+    """
+    concurrency: int | None = Field(default=None, ge=1, le=16)
+
+
 class IngestionConfig(BaseModel):
     """Filtering rules applied before events are stored or queued.
 
@@ -250,6 +261,7 @@ class Config(BaseModel):
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     summarization: SummarizationConfig = Field(default_factory=SummarizationConfig)
     extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    workers: WorkersConfig = Field(default_factory=WorkersConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
     sensitive_data: SensitiveDataConfig = Field(default_factory=SensitiveDataConfig)

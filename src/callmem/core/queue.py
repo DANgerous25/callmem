@@ -18,6 +18,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# dequeue() filter that keeps parallel workers from running two extraction
+# jobs for the same session (later batches rely on the earlier batch's
+# titles to avoid duplicates) or two compactions at once. Unqualified
+# ``type``/``payload`` refer to the candidate row; ``r`` is a running job.
+# The IS NOT NULL guards stop SQL NULL semantics from silently excluding
+# every candidate.
+_NOT_SERIALIZED_BEHIND_RUNNING = (
+    "NOT (type = 'extract_entities' "
+    "     AND json_extract(payload, '$.session_id') IS NOT NULL "
+    "     AND json_extract(payload, '$.session_id') IN ("
+    "       SELECT json_extract(r.payload, '$.session_id') FROM jobs AS r "
+    "       WHERE r.status = 'running' AND r.type = 'extract_entities' "
+    "       AND json_extract(r.payload, '$.session_id') IS NOT NULL)) "
+    "AND NOT (type = 'compact' AND EXISTS ("
+    "       SELECT 1 FROM jobs AS r "
+    "       WHERE r.status = 'running' AND r.type = 'compact'))"
+)
+
 
 @dataclass
 class Job:
@@ -89,7 +107,10 @@ class JobQueue:
 
         Sets status to 'running' and increments attempts.
         Uses a single atomic UPDATE with RETURNING so concurrent workers
-        never claim the same job. Returns None if no jobs are available.
+        never claim the same job. Extraction jobs for a session that
+        already has one running, and compaction while another compaction
+        runs, are held back so parallel workers keep those serialized.
+        Returns None if no jobs are available.
         """
         conn = self.db.connect()
         try:
@@ -102,6 +123,7 @@ class JobQueue:
                     "  SELECT id FROM jobs "
                     "  WHERE status = 'pending' AND type = ? "
                     "  AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now')) "
+                    f"  AND {_NOT_SERIALIZED_BEHIND_RUNNING} "
                     "  ORDER BY created_at ASC LIMIT 1"
                     ") RETURNING *",
                     (job_type,),
@@ -115,6 +137,7 @@ class JobQueue:
                     "  SELECT id FROM jobs "
                     "  WHERE status = 'pending' "
                     "  AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now')) "
+                    f"  AND {_NOT_SERIALIZED_BEHIND_RUNNING} "
                     "  ORDER BY created_at ASC LIMIT 1"
                     ") RETURNING *",
                 ).fetchone()

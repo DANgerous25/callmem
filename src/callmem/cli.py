@@ -1555,7 +1555,7 @@ def workers(project: Path, interval: int) -> None:
 
     from callmem.core.config import load_config
     from callmem.core.database import Database
-    from callmem.core.workers import WorkerRunner
+    from callmem.core.workers import WorkerRunner, resolve_concurrency
 
     config = load_config(project)
     db_path = project / ".callmem" / "memory.db"
@@ -1574,6 +1574,7 @@ def workers(project: Path, interval: int) -> None:
         db, llm_client, config,
         poll_interval=interval,
         project_path=str(project),
+        concurrency=resolve_concurrency(config),
     )
 
     stop_event = threading.Event()
@@ -1724,7 +1725,7 @@ def daemon(
     if not no_workers:
         llm_client = _create_llm_client(config)
         if llm_client is not None:
-            from callmem.core.workers import WorkerRunner
+            from callmem.core.workers import WorkerRunner, resolve_concurrency
 
             if not _wait_for_backend_dns(config):
                 click.echo(
@@ -1736,10 +1737,13 @@ def daemon(
                 db, llm_client, config,
                 event_bus=app.state.event_bus,
                 project_path=str(project),
+                concurrency=resolve_concurrency(config),
             )
             worker_runner.start()
             write_pid_file(project)
-            click.echo("  Workers:  started")
+            click.echo(
+                f"  Workers:  started ({worker_runner.concurrency} threads)"
+            )
         else:
             click.echo(
                 "  Workers:  skipped (backend='none')"

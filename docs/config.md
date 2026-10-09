@@ -62,6 +62,11 @@ batch_size = 10                    # Process this many events per extraction run
 delay_s = 5                        # Wait this long after last event before extracting
 types = ["decision", "todo", "fact", "failure", "discovery"]
 
+[workers]
+# Daemon queue threads. Unset = 4 for openai_compat, 1 for ollama.
+# A session's extraction batches still run one at a time.
+# concurrency = 4
+
 [summarization]
 enabled = true
 chunk_size = 20                    # Events per chunk summary

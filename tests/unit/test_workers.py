@@ -6,9 +6,11 @@ import time
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
+
 from callmem.core.ollama import OllamaClient
 from callmem.core.queue import JobQueue
-from callmem.core.workers import WorkerRunner
+from callmem.core.workers import WorkerRunner, resolve_concurrency
 from callmem.models.config import Config
 
 if TYPE_CHECKING:
@@ -571,18 +573,47 @@ class TestWorkerThread:
         runner = WorkerRunner(memory_db, ollama, engine.config, poll_interval=1)
 
         runner.start()
-        assert runner._thread is not None
-        assert runner._thread.is_alive()
+        assert len(runner._threads) == 1
+        assert runner._threads[0].is_alive()
 
         time.sleep(0.5)
         runner.stop()
-        assert not runner._thread.is_alive()
+        assert not runner._threads[0].is_alive()
 
     def test_worker_thread_is_daemon(self, memory_db: Database) -> None:
         engine, ollama = _make_engine(memory_db)
         runner = WorkerRunner(memory_db, ollama, engine.config)
 
         runner.start()
-        assert runner._thread is not None
-        assert runner._thread.daemon is True
+        assert runner._threads[0].daemon is True
         runner.stop()
+
+    def test_concurrency_starts_that_many_threads(
+        self, memory_db: Database
+    ) -> None:
+        engine, ollama = _make_engine(memory_db)
+        runner = WorkerRunner(
+            memory_db, ollama, engine.config, poll_interval=1, concurrency=3,
+        )
+
+        runner.start()
+        assert len(runner._threads) == 3
+        assert all(t.is_alive() for t in runner._threads)
+        runner.stop()
+        assert not any(t.is_alive() for t in runner._threads)
+
+
+class TestResolveConcurrency:
+    def test_backend_defaults(self) -> None:
+        assert resolve_concurrency(
+            Config(llm={"backend": "openai_compat"})
+        ) == 4
+        assert resolve_concurrency(Config(llm={"backend": "ollama"})) == 1
+
+    def test_explicit_setting_wins(self) -> None:
+        cfg = Config(llm={"backend": "ollama"}, workers={"concurrency": 2})
+        assert resolve_concurrency(cfg) == 2
+
+    def test_rejects_out_of_range(self) -> None:
+        with pytest.raises(ValueError):
+            Config(workers={"concurrency": 0})

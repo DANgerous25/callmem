@@ -28,8 +28,25 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL = 5
 
 
+def resolve_concurrency(config: Config) -> int:
+    """Worker thread count: ``[workers] concurrency``, else a backend default.
+
+    Hosted openai_compat APIs handle parallel calls well; a local Ollama
+    server queues them, so extra threads only add client-timeout risk.
+    """
+    if config.workers.concurrency is not None:
+        return config.workers.concurrency
+    return 4 if config.llm.backend == "openai_compat" else 1
+
+
 class WorkerRunner:
-    """Processes background jobs from the queue in a daemon thread."""
+    """Processes background jobs from the queue in daemon threads.
+
+    With ``concurrency`` > 1, several threads poll the same queue. That's
+    safe because ``JobQueue.dequeue`` claims atomically and never hands out
+    a second extraction job for a session that already has one running,
+    so per-session extraction order (and its prior-titles dedupe) holds.
+    """
 
     def __init__(
         self,
@@ -39,6 +56,7 @@ class WorkerRunner:
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         event_bus: Any | None = None,
         project_path: str | None = None,
+        concurrency: int = 1,
     ) -> None:
         self.db = db
         self.ollama = ollama
@@ -46,7 +64,9 @@ class WorkerRunner:
         self.queue = JobQueue(db)
         self.poll_interval = poll_interval
         self.running = False
-        self._thread: threading.Thread | None = None
+        self.concurrency = max(1, concurrency)
+        self._threads: list[threading.Thread] = []
+        self._summary_lock = threading.Lock()
         self.event_bus = event_bus
         self.project_path = project_path
         self._extractions_since_summary = 0
@@ -75,17 +95,24 @@ class WorkerRunner:
             logger.warning("Orphaned-job reaper failed: %s", exc)
 
         self.running = True
-        self._thread = threading.Thread(
-            target=self._run_loop, daemon=True, name="callmem-worker"
+        self._threads = [
+            threading.Thread(
+                target=self._run_loop, daemon=True, name=f"callmem-worker-{i}"
+            )
+            for i in range(self.concurrency)
+        ]
+        for t in self._threads:
+            t.start()
+        logger.info(
+            "Worker runner started (threads=%d, poll_interval=%ds)",
+            self.concurrency, self.poll_interval,
         )
-        self._thread.start()
-        logger.info("Worker runner started (poll_interval=%ds)", self.poll_interval)
 
     def stop(self) -> None:
         """Signal the worker to stop and wait for the current job."""
         self.running = False
-        if self._thread is not None:
-            self._thread.join(timeout=30)
+        for t in self._threads:
+            t.join(timeout=30)
         logger.info("Worker runner stopped")
 
     def process_one(self) -> bool:
@@ -108,16 +135,20 @@ class WorkerRunner:
             self._dispatch(handler, job)
             self.queue.complete(job.id)
             logger.info("Job %s completed", job.id[:8])
+            self._drain(handler, job)
             self._publish_queue_status()
             if job.type in (
                 "extract_entities", "generate_summary", EMBED_JOB_TYPE,
             ):
                 self._auto_resurrect_failed(job)
             if job.type == "extract_entities":
-                self._extractions_since_summary += 1
-                if self._extractions_since_summary >= 5:
+                with self._summary_lock:
+                    self._extractions_since_summary += 1
+                    due = self._extractions_since_summary >= 5
+                    if due:
+                        self._extractions_since_summary = 0
+                if due:
                     self._maybe_write_session_summary()
-                    self._extractions_since_summary = 0
                 self._enqueue_staleness_check(job)
         except Exception as exc:
             logger.error("Job %s failed: %s", job.id[:8], exc)
@@ -129,39 +160,39 @@ class WorkerRunner:
         return True
 
     def _dispatch(self, handler: Any, job: Any) -> None:
-        """Dispatch a job to the appropriate handler method.
+        """Run the claimed job's own payload through its handler.
 
-        For EntityExtractor/Summarizer/EntityEmbedder, the claimed job's own
-        payload is processed directly first — process_one owns that job's
-        complete/fail. A fault here must propagate so process_one can fail
-        the claimed job.
-
-        process_pending() then drains any other jobs still pending, in its
-        own try/except: a fault during the drain (e.g. the queue's dequeue
-        call itself raising under contention) must never be attributed to
-        the claimed job, which may have already completed successfully and
-        is not safe to reprocess — extraction/summarization inserts are not
-        idempotent. Any still-pending jobs the drain didn't reach are simply
-        picked up on the next tick.
-
-        Embedding jobs are idempotent (``upsert_embedding`` + an
-        already-embedded skip), but they follow the same two-phase shape
-        so a drain fault is never charged to the claimed job.
+        process_one owns the claimed job's complete/fail, so a fault here
+        must propagate for process_one to fail the job.
         """
         if isinstance(handler, (EntityExtractor, Summarizer, EntityEmbedder)):
             handler.process_job(job)
-            try:
-                handler.process_pending()
-            except Exception as exc:
-                logger.error(
-                    "Drain phase failed after claimed job %s (type=%s) "
-                    "already succeeded: %s", job.id[:8], job.type, exc,
-                )
         elif isinstance(handler, (Compactor, StalenessChecker)):
             project_id = job.payload.get("project_id", "")
             handler.run(project_id)
         else:
             raise RuntimeError(f"No dispatch for handler: {type(handler)}")
+
+    def _drain(self, handler: Any, job: Any) -> None:
+        """Drain other pending jobs of the claimed job's type.
+
+        Runs only after the claimed job has been marked complete:
+        dequeue holds back a session's next extraction batch while an
+        earlier one is 'running', so draining before that would stall.
+        A drain fault is logged, never charged to the claimed job — which
+        may already have succeeded and isn't safe to reprocess, since
+        extraction/summarization inserts are not idempotent. Anything the
+        drain doesn't reach is picked up on the next tick.
+        """
+        if not isinstance(handler, (EntityExtractor, Summarizer, EntityEmbedder)):
+            return
+        try:
+            handler.process_pending()
+        except Exception as exc:
+            logger.error(
+                "Drain phase failed after claimed job %s (type=%s): %s",
+                job.id[:8], job.type, exc,
+            )
 
     def _publish_queue_status(self) -> None:
         """Publish queue status via event_bus if available."""
