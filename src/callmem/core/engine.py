@@ -56,11 +56,10 @@ def _create_llm_client(config: Config) -> Any:
         )
 
     if backend == "openai_compat":
-        import os
-
+        from callmem.core.config import resolve_secret
         from callmem.core.openai_compat import OpenAICompatClient
 
-        api_key = os.environ.get(config.openai_compat.api_key_env, "")
+        api_key = resolve_secret(config.openai_compat.api_key_env)
         return OpenAICompatClient(
             endpoint=config.openai_compat.endpoint,
             model=config.openai_compat.model,

@@ -8,12 +8,32 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
+from typing import Any
 
 from callmem.core.config import load_config
 from callmem.core.database import Database
 from callmem.core.engine import MemoryEngine
 from callmem.mcp.tools import register_tools
+
+logger = logging.getLogger(__name__)
+
+
+def _worker_skip_reason(project_path: Path, llm_client: Any) -> str | None:
+    """Explain why this MCP server should leave the job queue alone, if so.
+
+    A worker with no API key fails every job it claims, and a second worker
+    alongside a live daemon resets the daemon's in-flight jobs on startup.
+    """
+    from callmem.core.daemon_lock import daemon_running
+    from callmem.core.openai_compat import OpenAICompatClient
+
+    if daemon_running(project_path):
+        return "callmem daemon is already processing this project's queue"
+    if isinstance(llm_client, OpenAICompatClient) and not llm_client.api_key:
+        return "no API key for the openai_compat backend"
+    return None
 
 
 def create_server(
@@ -44,6 +64,12 @@ def create_server(
     db = Database(db_path)
     db.initialize()
     engine = MemoryEngine(db, config)
+
+    if not no_workers:
+        skip_reason = _worker_skip_reason(project_path, engine.ollama)
+        if skip_reason:
+            logger.warning("MCP server not starting workers: %s", skip_reason)
+            no_workers = True
 
     if not no_workers and engine.ollama is not None:
         from callmem.core.workers import WorkerRunner

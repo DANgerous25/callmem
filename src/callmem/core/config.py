@@ -32,6 +32,11 @@ GLOBAL_CONFIG_PATHS = [
 
 PROJECT_CONFIG_DIRS = (".callmem", ".llm-mem")  # preferred, then legacy
 
+# Shared KEY=value file that the systemd daemons load via EnvironmentFile.
+# Read as a fallback so processes started outside systemd (e.g. the MCP
+# server an agent spawns) find the same backend key.
+GLOBAL_ENV_FILE = Path.home() / ".config" / "callmem" / "env"
+
 ENV_PREFIX = "CALLMEM_"
 LEGACY_ENV_PREFIX = "LLM_MEM_"
 ENV_SEPARATOR = "__"
@@ -67,6 +72,26 @@ def load_config(project_path: Path | None = None) -> Config:
         _deep_merge(merged, env_overrides)
 
     return Config.from_dict(merged)
+
+
+def resolve_secret(name: str, env_file: Path | None = None) -> str:
+    """Return env var ``name``, falling back to the global callmem env file."""
+    value = os.environ.get(name, "")
+    if value:
+        return value
+    path = env_file or GLOBAL_ENV_FILE
+    try:
+        lines = path.read_text().splitlines()
+    except (FileNotFoundError, PermissionError):
+        return ""
+    for line in lines:
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, raw = line.partition("=")
+        if sep and key.strip() == name:
+            return raw.strip().strip("'\"")
+    return ""
 
 
 def _load_toml(path: Path) -> dict[str, Any]:

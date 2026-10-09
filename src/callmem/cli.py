@@ -456,12 +456,12 @@ def _check_llm_backend(project: Path) -> None:
     click.echo(f"    Endpoint: {endpoint}")
     click.echo(f"    Model: {model}")
 
-    import os
+    from callmem.core.config import resolve_secret
 
     if env_var == "(local — no key needed)":
         click.echo("    API key: (local — no key needed)")
     else:
-        key_set = bool(os.environ.get(env_var))
+        key_set = bool(resolve_secret(env_var))
         status = "\u2713 set" if key_set else "\u2717 missing"
         click.echo(f"    API key: {status} ({env_var})")
 
@@ -1659,6 +1659,7 @@ def daemon(
     import uvicorn
 
     from callmem.core.config import load_config
+    from callmem.core.daemon_lock import remove_pid_file, write_pid_file
     from callmem.core.database import Database
     from callmem.core.engine import MemoryEngine, _create_llm_client
     from callmem.ui.app import create_app
@@ -1690,6 +1691,7 @@ def daemon(
                 project_path=str(project),
             )
             worker_runner.start()
+            write_pid_file(project)
             click.echo("  Workers:  started")
         else:
             click.echo(
@@ -1820,6 +1822,7 @@ def daemon(
             a.stop()
         if worker_runner is not None:
             worker_runner.stop()
+            remove_pid_file(project)
         for t in threads:
             t.join(timeout=5)
 

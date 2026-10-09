@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import struct
 import time
 from abc import ABC, abstractmethod
@@ -23,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from callmem.core.config import resolve_secret
 from callmem.core.queue import JobQueue
 
 if TYPE_CHECKING:
@@ -342,7 +342,7 @@ def create_embedder(config: Config) -> Embedder | None:
     return OpenAICompatEmbedder(
         endpoint=settings.endpoint or config.openai_compat.endpoint,
         model=settings.model,
-        api_key=os.environ.get(config.openai_compat.api_key_env, ""),
+        api_key=resolve_secret(config.openai_compat.api_key_env),
         timeout=settings.timeout,
     )
 

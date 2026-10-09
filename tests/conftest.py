@@ -145,6 +145,17 @@ def project_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests away from the real ~/.config/callmem/env and daemon pid files."""
+    monkeypatch.setattr(
+        "callmem.core.config.GLOBAL_ENV_FILE", tmp_path / "no-such-env"
+    )
+    monkeypatch.setattr(
+        "callmem.core.daemon_lock.STATE_DIR", tmp_path / "daemon-state"
+    )
+
+
 @pytest.fixture
 def mcp_server(project_dir: Path) -> object:
     """MCP server instance backed by project_dir."""
