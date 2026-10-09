@@ -6,7 +6,11 @@ import json
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from callmem.core.extraction import EntityExtractor
+from callmem.core.extraction import (
+    EntityExtractor,
+    normalize_priority,
+    normalize_status,
+)
 from callmem.core.ollama import OllamaClient
 from callmem.core.queue import JobQueue
 from callmem.models.config import Config
@@ -86,6 +90,28 @@ class TestEntityExtractor:
         assert len(entities) == 1
         assert entities[0].type == "todo"
         assert entities[0].priority == "high"
+
+    def test_off_spec_status_and_priority_are_coerced(
+        self, memory_db: Database
+    ) -> None:
+        engine, extractor = _setup_engine_and_extractor(memory_db)
+        engine.start_session()
+        event = engine.ingest_one("response", "Auth work is underway")
+        assert event is not None
+
+        llm_response = (
+            '{"todos": [{"title": "Finish auth", "content": "Underway", '
+            '"priority": "Critical", "status": "in_progress"}],'
+            '"failures": [{"title": "Login 500", "content": "Fixed it", '
+            '"status": "fixed"}]}'
+        )
+        with patch.object(extractor.ollama, "_generate", return_value=llm_response):
+            entities = extractor.process_pending()
+
+        by_type = {e.type: e for e in entities}
+        assert by_type["todo"].status == "open"
+        assert by_type["todo"].priority == "high"
+        assert by_type["failure"].status == "resolved"
 
     def test_extracts_multiple_categories(
         self, memory_db: Database
@@ -1443,3 +1469,25 @@ class TestWidenRecallWithEmbeddings:
         assert target_ids == {todo_high, todo_mid}
         assert todo_low not in target_ids
         assert any("capping" in r.message.lower() for r in caplog.records)
+
+
+class TestNormalizeStatusAndPriority:
+    def test_valid_values_pass_through(self) -> None:
+        assert normalize_status(" Done ", "todo") == "done"
+        assert normalize_status("unresolved", "failure") == "unresolved"
+        assert normalize_priority("LOW") == "low"
+
+    def test_live_aliases_map_to_open_state(self) -> None:
+        assert normalize_status("in_progress", "todo") == "open"
+        assert normalize_status("blocked", "failure") == "unresolved"
+
+    def test_closed_aliases_map_to_closed_state(self) -> None:
+        assert normalize_status("completed", "todo") == "done"
+        assert normalize_status("fixed", "failure") == "resolved"
+
+    def test_unknown_or_missing_yield_none(self) -> None:
+        assert normalize_status("in_progress", "decision") is None
+        assert normalize_status(None, "todo") is None
+        assert normalize_status(3, "todo") is None
+        assert normalize_priority("p0") is None
+        assert normalize_priority(None) is None

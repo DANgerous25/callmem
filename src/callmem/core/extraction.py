@@ -40,6 +40,39 @@ ENTITY_TYPE_MAP = {
 EXTRACTION_BATCH_SIZE = 10
 MAX_EVENTS_PER_JOB = 50
 
+# The LLM doesn't always stick to the prompt's status/priority vocabulary
+# (e.g. "in_progress", "critical"). Coerce instead of letting one off-spec
+# field fail Entity validation and with it the whole extraction job.
+_VALID_STATUSES = {"open", "done", "cancelled", "unresolved", "resolved"}
+_CLOSED_STATUSES = {"completed", "complete", "closed", "fixed", "finished"}
+_OPEN_STATUS_BY_TYPE = {"todo": "open", "failure": "unresolved"}
+_CLOSED_STATUS_BY_TYPE = {"todo": "done", "failure": "resolved"}
+_PRIORITY_ALIASES = {
+    "high": "high", "critical": "high", "urgent": "high",
+    "medium": "medium", "normal": "medium", "moderate": "medium",
+    "low": "low", "minor": "low",
+}
+
+
+def normalize_status(value: Any, entity_type: str) -> str | None:
+    """Map an LLM-supplied status onto the EntityStatus vocabulary."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    status = value.strip().lower()
+    if status in _VALID_STATUSES:
+        return status
+    if status in _CLOSED_STATUSES:
+        return _CLOSED_STATUS_BY_TYPE.get(entity_type)
+    # Anything else ("in_progress", "pending", "blocked", ...) is still live.
+    return _OPEN_STATUS_BY_TYPE.get(entity_type)
+
+
+def normalize_priority(value: Any) -> str | None:
+    """Map an LLM-supplied priority onto high/medium/low, else None."""
+    if not isinstance(value, str):
+        return None
+    return _PRIORITY_ALIASES.get(value.strip().lower())
+
 
 def _mentions_entity_id(text: str, entity_id: str) -> bool:
     """True if ``text`` quotes ``entity_id``'s short (last-8-char, with
@@ -200,8 +233,8 @@ class EntityExtractor:
                     content=content,
                     key_points=key_points,
                     synopsis=synopsis,
-                    status=item.get("status"),
-                    priority=item.get("priority"),
+                    status=normalize_status(item.get("status"), entity_type),
+                    priority=normalize_priority(item.get("priority")),
                     extracted_by=getattr(self.ollama, "model", None),
                 )
                 self._insert_entity(entity)

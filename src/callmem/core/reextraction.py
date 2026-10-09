@@ -11,7 +11,12 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from callmem.core.extraction import EXTRACTION_BATCH_SIZE, EntityExtractor
+from callmem.core.extraction import (
+    EXTRACTION_BATCH_SIZE,
+    EntityExtractor,
+    normalize_priority,
+    normalize_status,
+)
 from callmem.core.prompts import EXTRACTION_PROMPT
 from callmem.models.entities import Entity
 
@@ -249,8 +254,8 @@ class ReExtractor:
                     content=content,
                     key_points=key_points,
                     synopsis=synopsis,
-                    status=item.get("status"),
-                    priority=item.get("priority"),
+                    status=normalize_status(item.get("status"), entity_type),
+                    priority=normalize_priority(item.get("priority")),
                 )
                 files = item.get("files", [])
                 clean_files = (
