@@ -692,3 +692,16 @@ class TestDequeueSerialization:
         q.enqueue("extract_entities", {"session_id": "S1"})
         assert q.dequeue("extract_entities") is not None
         assert q.dequeue("extract_entities") is None
+
+    def test_holds_back_concurrent_staleness_check(
+        self, memory_db: Database
+    ) -> None:
+        q = JobQueue(memory_db)
+        q.enqueue("staleness_check", {"project_id": "p"})
+        q.enqueue("staleness_check", {"project_id": "p"})
+        q.enqueue("compact", {"project_id": "p"})
+
+        assert q.dequeue().type == "staleness_check"
+        # A running staleness check must not block a different type.
+        assert q.dequeue().type == "compact"
+        assert q.dequeue() is None

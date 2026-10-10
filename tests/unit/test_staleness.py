@@ -710,3 +710,81 @@ class TestCli:
         # additionally surfaces its invalidated_at timestamp.
         assert "invalidated" not in plain_line
         assert "invalidated" in contradicted_line
+
+
+class TestIncrementalWindow:
+    def _mark_check_completed(self, engine: MemoryEngine, hours_ago: float) -> None:
+        started = (
+            datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        conn = engine.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO jobs (id, type, payload, status, attempts, "
+                "max_attempts, created_at, started_at, completed_at) "
+                "VALUES ('done-check', 'staleness_check', '{}', 'completed', "
+                "1, 3, ?, ?, ?)",
+                (started, started, started),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _pair(self, engine: MemoryEngine, newer_hours_ago: float) -> None:
+        _insert_entity(
+            engine.repo, engine.project_id, "decision",
+            "auth uses JWT tokens", "RS256 keypair",
+            created_at=_hours_ago(newer_hours_ago + 5),
+        )
+        _insert_entity(
+            engine.repo, engine.project_id, "decision",
+            "auth uses session cookies", "replaced JWT tokens",
+            created_at=_hours_ago(newer_hours_ago),
+        )
+
+    def test_skips_entities_already_covered_by_last_check(
+        self, tmp_path: Path,
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        self._pair(engine, newer_hours_ago=2)
+        self._mark_check_completed(engine, hours_ago=1)
+
+        llm = _StubLLM()
+        StalenessChecker(engine.db, llm, lookback_minutes=24 * 60).run(
+            engine.project_id
+        )
+        assert llm.calls == []
+
+    def test_judges_entities_created_after_last_check(
+        self, tmp_path: Path,
+    ) -> None:
+        engine = _make_engine(tmp_path)
+        self._pair(engine, newer_hours_ago=1)
+        self._mark_check_completed(engine, hours_ago=2)
+
+        llm = _StubLLM()
+        StalenessChecker(engine.db, llm, lookback_minutes=24 * 60).run(
+            engine.project_id
+        )
+        assert len(llm.calls) == 1
+
+    def test_lookback_window_applies_across_date_formats(
+        self, tmp_path: Path,
+    ) -> None:
+        # ISO 'T' timestamps used to sort after datetime()'s ' ' form, so
+        # anything from the same UTC day slipped past a short window.
+        engine = _make_engine(tmp_path)
+        self._pair(engine, newer_hours_ago=0.5)
+        _insert_entity(
+            engine.repo, engine.project_id, "decision",
+            "auth uses API keys", "replaced JWT tokens too",
+            created_at=_hours_ago(0.1),
+        )
+
+        llm = _StubLLM(verdict="coexists")
+        StalenessChecker(engine.db, llm, lookback_minutes=15).run(
+            engine.project_id
+        )
+        # Only the 6-minute-old entity is in a 15-minute window.
+        assert len(llm.calls) >= 1
+        assert all("API keys" in c for c in llm.calls)

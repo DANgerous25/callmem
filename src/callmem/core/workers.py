@@ -281,6 +281,10 @@ class WorkerRunner:
             project_id = self._resolve_project_id(job)
             if not project_id:
                 return
+            # One queued check already covers every entity created before
+            # it runs; queueing one per extraction batch only repeats work.
+            if self.queue.get_pending_count("staleness_check"):
+                return
             self.queue.enqueue(
                 "staleness_check", {"project_id": project_id},
             )

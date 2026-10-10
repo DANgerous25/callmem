@@ -91,6 +91,13 @@ class StalenessChecker:
     # ── Internals ────────────────────────────────────────────────────
 
     def _load_new_entities(self, project_id: str) -> list[dict[str, Any]]:
+        """Entities created since the last completed check (capped at the
+        lookback window), so each run judges only what's new.
+
+        Compared via julianday(): entities store ISO-8601 ('…T…+00:00')
+        while SQLite's datetime() yields '… …', and a raw string compare
+        let every entity from the same UTC day through the window.
+        """
         conn = self.db.connect()
         try:
             rows = conn.execute(
@@ -98,7 +105,11 @@ class StalenessChecker:
                 "FROM entities "
                 "WHERE project_id = ? AND stale = 0 "
                 "AND archived_at IS NULL "
-                "AND created_at >= datetime('now', ?) "
+                "AND julianday(created_at) >= max("
+                "  julianday('now', ?), "
+                "  coalesce((SELECT julianday(max(started_at)) FROM jobs "
+                "            WHERE type = 'staleness_check' "
+                "            AND status = 'completed'), 0)) "
                 "ORDER BY created_at DESC",
                 (project_id, f"-{self.lookback_minutes} minutes"),
             ).fetchall()

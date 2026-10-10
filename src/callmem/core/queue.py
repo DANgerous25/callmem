@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 
 # dequeue() filter that keeps parallel workers from running two extraction
 # jobs for the same session (later batches rely on the earlier batch's
-# titles to avoid duplicates) or two compactions at once. Unqualified
-# ``type``/``payload`` refer to the candidate row; ``r`` is a running job.
+# titles to avoid duplicates), or two compactions / staleness checks at
+# once (they scan the whole project, so parallel runs just repeat work).
+# Unqualified ``type``/``payload`` and ``jobs.type`` refer to the candidate
+# row; ``r`` is a running job.
 # The IS NOT NULL guards stop SQL NULL semantics from silently excluding
 # every candidate.
 _NOT_SERIALIZED_BEHIND_RUNNING = (
@@ -31,9 +33,9 @@ _NOT_SERIALIZED_BEHIND_RUNNING = (
     "       SELECT json_extract(r.payload, '$.session_id') FROM jobs AS r "
     "       WHERE r.status = 'running' AND r.type = 'extract_entities' "
     "       AND json_extract(r.payload, '$.session_id') IS NOT NULL)) "
-    "AND NOT (type = 'compact' AND EXISTS ("
+    "AND NOT (type IN ('compact', 'staleness_check') AND EXISTS ("
     "       SELECT 1 FROM jobs AS r "
-    "       WHERE r.status = 'running' AND r.type = 'compact'))"
+    "       WHERE r.status = 'running' AND r.type = jobs.type))"
 )
 
 
@@ -108,8 +110,8 @@ class JobQueue:
         Sets status to 'running' and increments attempts.
         Uses a single atomic UPDATE with RETURNING so concurrent workers
         never claim the same job. Extraction jobs for a session that
-        already has one running, and compaction while another compaction
-        runs, are held back so parallel workers keep those serialized.
+        already has one running, and compaction / staleness checks while
+        another of the same type runs, are held back so parallel workers keep those serialized.
         Returns None if no jobs are available.
         """
         conn = self.db.connect()

@@ -649,3 +649,16 @@ class TestStartupReap:
             runner.start(reap_stale_after=0)
         runner.stop()
         assert queue.get_job(job.id).status == "pending"  # type: ignore[union-attr]
+
+
+class TestStalenessEnqueueCoalescing:
+    def test_skips_when_a_check_is_already_pending(
+        self, memory_db: Database
+    ) -> None:
+        engine, ollama = _make_engine(memory_db)
+        runner = WorkerRunner(memory_db, ollama, engine.config)
+        job = type("J", (), {"payload": {}})()
+        with patch.object(runner, "_resolve_project_id", return_value="p"):
+            runner._enqueue_staleness_check(job)
+            runner._enqueue_staleness_check(job)
+        assert runner.queue.get_pending_count("staleness_check") == 1
