@@ -189,6 +189,25 @@ class TestDoctorCommand:
         assert "requeue-failed" in result.output
 
 
+    def test_doctor_warns_when_daemon_not_running(
+        self, project_dir: Path,
+    ) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--project", str(project_dir)])
+        assert "not being captured" in result.output
+
+    def test_doctor_reports_running_daemon(
+        self, project_dir: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "callmem.core.daemon_lock.daemon_running", lambda _p: True
+        )
+        runner = CliRunner()
+        result = runner.invoke(main, ["doctor", "--project", str(project_dir)])
+        assert "not being captured" not in result.output
+        assert "Daemon:" in result.output
+
+
 class TestNewCommand:
     def test_creates_fresh_project_without_donor(self, tmp_path: Path) -> None:
         target = tmp_path / "fresh"

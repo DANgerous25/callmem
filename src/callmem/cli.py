@@ -376,6 +376,10 @@ def doctor(project: Path, fix: bool) -> None:
     _check_llm_backend(project)
     click.echo()
 
+    # ── Daemon ──
+    _check_daemon(project)
+    click.echo()
+
     # ── Extraction health ──
     if has_db:
         from callmem.core.database import Database as _DB
@@ -425,6 +429,30 @@ def doctor(project: Path, fix: bool) -> None:
 
     if problems_found:
         raise click.exceptions.Exit(1)
+
+
+def _check_daemon(project: Path) -> None:
+    """Report whether a callmem daemon is serving this project.
+
+    Without one, nothing tails the Claude Code / OpenCode transcripts, so
+    sessions go uncaptured even though the MCP server and extraction look
+    healthy. Warn-only: the exit code is left alone because MCP-only
+    setups are still valid for read-only or occasional use.
+    """
+    from callmem.core.daemon_lock import daemon_running
+
+    click.echo("  Daemon:")
+    if daemon_running(project):
+        click.echo("    \u2713 running")
+        return
+    click.echo(
+        "    \u26a0\ufe0f  not running \u2014 agent sessions in this project "
+        "are not being captured."
+    )
+    click.echo(
+        "    Run 'callmem setup' to install the service, or start "
+        "'callmem daemon' manually."
+    )
 
 
 def _check_llm_backend(project: Path) -> None:
