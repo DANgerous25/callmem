@@ -147,13 +147,19 @@ def project_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture(autouse=True)
 def _isolate_user_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep tests away from the real ~/.config/callmem/env and daemon pid files."""
+    """Keep tests independent of the real user env: callmem key file,
+    daemon pid files, and git identity."""
     monkeypatch.setattr(
         "callmem.core.config.GLOBAL_ENV_FILE", tmp_path / "no-such-env"
     )
     monkeypatch.setattr(
         "callmem.core.daemon_lock.STATE_DIR", tmp_path / "daemon-state"
     )
+    # CI runners have no git identity, so tests that commit would fail there.
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(var, "callmem tests")
+    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "tests@callmem.invalid")
 
 
 @pytest.fixture
