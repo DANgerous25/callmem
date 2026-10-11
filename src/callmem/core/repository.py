@@ -23,6 +23,7 @@ from callmem.models.tasks import Task
 
 if TYPE_CHECKING:
     from callmem.core.database import Database
+    from callmem.models.entities import Entity
 
 logger = logging.getLogger(__name__)
 
@@ -949,7 +950,6 @@ class Repository:
 
     def create_entity(self, entity: Entity) -> None:
         """Insert a new entity directly (no LLM extraction)."""
-        from callmem.models.entities import Entity as _Entity
 
         conn = self.db.connect()
         try:

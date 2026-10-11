@@ -485,12 +485,11 @@ class TestAutoResurrection:
         runner = WorkerRunner(memory_db, ollama, engine.config)
         with patch.object(
             ollama, "_generate", return_value="Summary of the session."
+        ), patch.object(
+            runner, "_resolve_project_id",
+            side_effect=RuntimeError("database is locked"),
         ):
-            with patch.object(
-                runner, "_resolve_project_id",
-                side_effect=RuntimeError("database is locked"),
-            ):
-                processed = runner.process_one()
+            processed = runner.process_one()
 
         assert processed is True
 
@@ -543,12 +542,11 @@ class TestAutoResurrection:
         extraction_job_id = row["id"]
 
         runner = WorkerRunner(memory_db, ollama, engine.config)
-        with patch.object(ollama, "_generate", return_value=llm_response):
-            with patch.object(
-                runner, "_resolve_project_id",
-                side_effect=RuntimeError("database is locked"),
-            ):
-                processed = runner.process_one()
+        with patch.object(ollama, "_generate", return_value=llm_response), patch.object(
+            runner, "_resolve_project_id",
+            side_effect=RuntimeError("database is locked"),
+        ):
+            processed = runner.process_one()
 
         assert processed is True
 

@@ -71,7 +71,6 @@ def _seed_with_entities(memory_db: Database) -> str:
     from datetime import datetime
 
     from callmem.compat import UTC
-
     from callmem.models.events import Event
 
     event = Event(

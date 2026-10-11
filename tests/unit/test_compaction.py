@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-
-from callmem.compat import UTC
 from typing import TYPE_CHECKING
 
+from callmem.compat import UTC
 from callmem.core.compaction import Compactor
 from callmem.models.config import Config
 

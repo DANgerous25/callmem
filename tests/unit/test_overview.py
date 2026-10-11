@@ -129,8 +129,8 @@ class TestReextractPreservesOverview:
         repo = Repository(memory_db)
         repo.set_overview(project_id, "Overview before re-extract.")
 
-        from callmem.core.reextraction import ReExtractor
         from callmem.core.ollama import OllamaClient
+        from callmem.core.reextraction import ReExtractor
         from callmem.models.config import Config
 
         config = Config()

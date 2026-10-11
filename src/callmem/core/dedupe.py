@@ -27,7 +27,10 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +195,7 @@ def find_clusters(
         cluster_members.setdefault(root, []).append(entity_index[eid])
 
     clusters: list[DuplicateCluster] = []
-    for root_id, members in cluster_members.items():
+    for members in cluster_members.values():
         if len(members) < 2:
             continue
         members.sort(key=lambda m: m["created_at"])

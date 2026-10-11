@@ -382,9 +382,9 @@ def doctor(project: Path, fix: bool) -> None:
 
     # ── Extraction health ──
     if has_db:
-        from callmem.core.database import Database as _DB
+        from callmem.core.database import Database
 
-        db = _DB(db_path)
+        db = Database(db_path)
         conn = db.connect()
         try:
             events = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
@@ -739,7 +739,7 @@ def _init_git_repo(target: Path) -> bool:
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         click.echo("  Skipped git init (git not available or failed)")
         return False
-    click.echo(f"  Initialized git repo")
+    click.echo("  Initialized git repo")
     return True
 
 

@@ -76,7 +76,8 @@ class TestCheckIntegrationDrift:
         expected_oc_plugin = _shipped("opencode", "plugins", "auto-briefing.js").read_text()
         expected_cc = _shipped("claude", "commands", "briefing.md").read_text()
         assert (tmp_path / ".opencode" / "commands" / "briefing.md").read_text() == expected_oc_cmd
-        assert (tmp_path / ".opencode" / "plugins" / "auto-briefing.js").read_text() == expected_oc_plugin
+        oc_plugin = tmp_path / ".opencode" / "plugins" / "auto-briefing.js"
+        assert oc_plugin.read_text() == expected_oc_plugin
         assert (tmp_path / ".claude" / "commands" / "briefing.md").read_text() == expected_cc
 
     def test_clean_project_reports_no_drift(self, tmp_path: Path) -> None:

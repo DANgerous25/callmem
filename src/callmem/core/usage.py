@@ -16,12 +16,13 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from callmem.compat import UTC
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from callmem.core.database import Database
 
 # Tools that read from memory (consumption signals)

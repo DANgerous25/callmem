@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from callmem import __version__ as _CALLMEM_VERSION
+from callmem import __version__ as _callmem_version
 from callmem.compat import UTC
 from callmem.core.repository import CLOSED_ENTITY_STATUSES
 from callmem.core.retrieval import _estimate_tokens
@@ -686,11 +686,11 @@ class BriefingGenerator:
 
         cache_dir = self.repo.db.db_path.parent
         latest = _check_latest_callmem_version(cache_dir)
-        current = _parse_version(_CALLMEM_VERSION)
+        current = _parse_version(_callmem_version)
         latest_parsed = _parse_version(latest or "")
         if latest and current and latest_parsed and latest_parsed > current:
             parts.append(
-                f"  📦 Update available: callmem {_CALLMEM_VERSION} → {latest} "
+                f"  📦 Update available: callmem {_callmem_version} → {latest} "
                 f"(pip install -U callmem)"
             )
         else:

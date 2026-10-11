@@ -15,8 +15,14 @@ _PATTERN_GROUPS: list[tuple[str, list[re.Pattern[str]]]] = [
     (
         "decision",
         [
-            re.compile(r"\b(let'?s go with|we'?ll use|we chose|decision:|going with|let'?s use)\b", re.I),
-            re.compile(r"\b(the approach (is|will be)|final (approach|decision)|settled on)\b", re.I),
+            re.compile(
+                r"\b(let'?s go with|we'?ll use|we chose|decision:|going with|let'?s use)\b",
+                re.I,
+            ),
+            re.compile(
+                r"\b(the approach (is|will be)|final (approach|decision)|settled on)\b",
+                re.I,
+            ),
             re.compile(r"\b(switching to|migrating to|replacing .+ with)\b", re.I),
         ],
     ),

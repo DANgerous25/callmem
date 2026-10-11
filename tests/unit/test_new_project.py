@@ -14,13 +14,15 @@ These tests verify:
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import pytest
 from click.testing import CliRunner
 
 from callmem.cli import main
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestNewGitFlag:

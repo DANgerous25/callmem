@@ -242,9 +242,11 @@ class TestReExtractorFailureHandling:
             "content": "some content",
         }]
 
-        with patch.object(re_extractor.ollama, "_generate", return_value=None):
-            with pytest.raises(Exception):
-                re_extractor._extract_batch(events)
+        with (
+            patch.object(re_extractor.ollama, "_generate", return_value=None),
+            pytest.raises(RuntimeError, match="no response"),
+        ):
+            re_extractor._extract_batch(events)
 
     def test_extract_batch_raises_on_empty_response(
         self, memory_db: Database
@@ -261,9 +263,11 @@ class TestReExtractorFailureHandling:
             "content": "some content",
         }]
 
-        with patch.object(re_extractor.ollama, "_generate", return_value=""):
-            with pytest.raises(Exception):
-                re_extractor._extract_batch(events)
+        with (
+            patch.object(re_extractor.ollama, "_generate", return_value=""),
+            pytest.raises(RuntimeError, match="no response"),
+        ):
+            re_extractor._extract_batch(events)
 
     def test_failed_batch_leaves_prior_entities_unarchived_and_is_counted(
         self, memory_db: Database
