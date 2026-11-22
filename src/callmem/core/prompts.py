@@ -248,6 +248,10 @@ Produce a concise project status covering:
 Keep it under {max_tokens} tokens."""
 
 
+# Caps the scan reply so a model that starts looping can't hold a request
+# open until timeout; ~60 findings fit comfortably.
+SCAN_MAX_TOKENS = 2048
+
 SENSITIVE_SCAN_PROMPT = (
     """Scan the following text for sensitive data \
 that should not be stored in plain text.

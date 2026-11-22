@@ -1821,7 +1821,7 @@ class Repository:
         detector: str,
         pattern_name: str | None,
         ciphertext: bytes,
-        event_id: str,
+        event_id: str | None,
     ) -> None:
         conn = self.db.connect()
         try:
@@ -1833,6 +1833,93 @@ class Repository:
                 (id, project_id, category, detector, pattern_name, ciphertext, event_id),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    # ── Re-scan of stored text ───────────────────────────────────────
+
+    # Every stored free-text column that can carry a secret. Whitelisted
+    # because table/column names can't be bound as SQL parameters.
+    TEXT_FIELDS: tuple[tuple[str, str], ...] = (
+        ("events", "content"),
+        ("entities", "title"),
+        ("entities", "content"),
+        ("entities", "key_points"),
+        ("entities", "synopsis"),
+        ("summaries", "content"),
+        ("sessions", "summary"),
+        ("tasks", "title"),
+        ("tasks", "description"),
+        ("project_overview", "content"),
+    )
+
+    def _check_text_field(self, table: str, field: str) -> None:
+        if (table, field) not in self.TEXT_FIELDS:
+            raise ValueError(f"Not a re-scannable text field: {table}.{field}")
+
+    def list_text_rows(
+        self, table: str, field: str, after_rowid: int, limit: int
+    ) -> list[tuple[int, str, str]]:
+        """Return ``(rowid, project_id, text)`` for non-empty values, by rowid."""
+        self._check_text_field(table, field)
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                f"SELECT rowid, project_id, {field} FROM {table} "  # noqa: S608 — whitelisted
+                f"WHERE rowid > ? AND {field} IS NOT NULL AND {field} != '' "
+                "ORDER BY rowid LIMIT ?",
+                (after_rowid, limit),
+            ).fetchall()
+            return [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
+        finally:
+            conn.close()
+
+    def text_row_id(self, table: str, rowid: int) -> str | None:
+        """The ``id`` column for a row (None for tables without one)."""
+        if table == "project_overview":
+            return None
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                f"SELECT id FROM {table} WHERE rowid = ?", (rowid,)  # noqa: S608 — whitelisted
+            ).fetchone()
+            return str(row[0]) if row else None
+        finally:
+            conn.close()
+
+    def update_text_if_unchanged(
+        self, table: str, field: str, rowid: int, old: str, new: str
+    ) -> bool:
+        """Replace a text value only if nobody changed it since it was read."""
+        self._check_text_field(table, field)
+        conn = self.db.connect()
+        try:
+            cur = conn.execute(
+                f"UPDATE {table} SET {field} = ? "  # noqa: S608 — whitelisted
+                f"WHERE rowid = ? AND {field} = ?",
+                (new, rowid, old),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+        finally:
+            conn.close()
+
+    def purge_freed_text(self) -> None:
+        """Drop text that redaction left behind outside the live rows.
+
+        FTS5 keeps deleted tokens in old index segments until they're merged,
+        and SQLite keeps old row versions in free pages and the WAL. Raises
+        sqlite3.OperationalError if another connection blocks the VACUUM.
+        """
+        conn = self.db.connect()
+        try:
+            for fts in ("events_fts", "entities_fts", "summaries_fts"):
+                conn.execute(
+                    f"INSERT INTO {fts}({fts}) VALUES('optimize')"  # noqa: S608 — fixed names
+                )
+            conn.commit()
+            conn.execute("VACUUM")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             conn.close()
 

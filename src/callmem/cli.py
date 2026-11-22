@@ -2509,6 +2509,96 @@ def re_extract(
         raise SystemExit(1)
 
 
+@main.command("rescan")
+@click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
+@click.option("--dry-run", is_flag=True, help="Report what would change; write nothing.")
+@click.option("--limit", type=int, default=None, help="Max rows per field (for sampling).")
+@click.option("--batch-chars", type=int, default=8000, help="Text per scanner call.")
+@click.option("--no-purge", is_flag=True, help="Skip FTS optimize + VACUUM afterwards.")
+def rescan(
+    project: Path, dry_run: bool, limit: int | None, batch_chars: int, no_purge: bool,
+) -> None:
+    """Re-scan stored events, entities and summaries for secrets and redact them.
+
+    Uses only the local pre-scanner ([sensitive_data.scanner]), never the main
+    backend. Resumable: progress is kept in .callmem/rescan_progress.json, so
+    re-running after an interruption continues where it stopped.
+    """
+    import sqlite3
+
+    from callmem.core.config import load_config
+    from callmem.core.database import Database
+    from callmem.core.embeddings import enqueue_embeddings
+    from callmem.core.engine import _create_scanner_client
+    from callmem.core.queue import JobQueue
+    from callmem.core.repository import Repository
+    from callmem.core.rescan import Rescanner, ScannerUnavailableError
+
+    project = project.resolve()
+    config = load_config(project)
+    db_path = project / ".callmem" / "memory.db"
+    if not db_path.exists():
+        click.echo(f"No callmem database found at {db_path}")
+        raise click.exceptions.Exit(1)
+    scanner = _create_scanner_client(config)
+    if scanner is None:
+        click.echo("No pre-scanner set ([sensitive_data.scanner]); refusing to send")
+        click.echo("stored text to the main backend. Run 'callmem setup' to add one.")
+        raise click.exceptions.Exit(1)
+    if not scanner.is_available():
+        click.echo(f"Pre-scanner not reachable at {config.sensitive_data.scanner.endpoint}")
+        raise click.exceptions.Exit(1)
+
+    db = Database(db_path)
+    db.initialize()
+    repo = Repository(db)
+    rescanner = Rescanner(
+        repo, scanner, config, vault_dir=db_path.parent,
+        progress_path=db_path.parent / "rescan_progress.json",
+        dry_run=dry_run, batch_chars=batch_chars, limit=limit,
+        on_progress=lambda key, n: click.echo(f"  {key}: {n} rows scanned"),
+    )
+    click.echo(f"Re-scanning {project}{' (dry run)' if dry_run else ''}...")
+    try:
+        stats = rescanner.run()
+    except ScannerUnavailableError:
+        stats = rescanner.stats
+        click.echo("Pre-scanner stopped answering — progress saved; re-run to resume.")
+        _print_rescan_stats(stats)
+        raise click.exceptions.Exit(1) from None
+    _print_rescan_stats(stats)
+    if dry_run:
+        return
+
+    by_project: dict[str, list[str]] = {}
+    for entity_id, project_id in stats.changed_entities.items():
+        by_project.setdefault(project_id, []).append(entity_id)
+    for project_id, ids in by_project.items():
+        for i in range(0, len(ids), 500):
+            enqueue_embeddings(JobQueue(db), config, ids[i:i + 500], project_id)
+    if by_project:
+        click.echo(f"  Queued re-embedding for {len(stats.changed_entities)} changed entities.")
+    if not no_purge:
+        try:
+            repo.purge_freed_text()
+            click.echo("  Purged old text from search index, free pages and WAL.")
+        except sqlite3.OperationalError as exc:
+            click.echo(f"  Purge skipped ({exc}); re-run 'callmem rescan' when the DB is idle.")
+
+
+def _print_rescan_stats(stats: Any) -> None:
+    """Summarise a rescan without printing any secret values."""
+    for key in sorted(stats.rows_scanned):
+        click.echo(
+            f"  {key:22} scanned {stats.rows_scanned[key]:7}  "
+            f"redacted {stats.rows_changed[key]:6}"
+        )
+    found = ", ".join(f"{k}={v}" for k, v in sorted(stats.detections.items())) or "none"
+    click.echo(f"  Detections: {found}   scanner calls: {stats.llm_calls}")
+    if stats.conflicts:
+        click.echo(f"  {stats.conflicts} row(s) changed mid-scan; re-run to cover them.")
+
+
 @main.command("requeue-failed")
 @click.option("--project", "-p", type=click.Path(path_type=Path), default=".")
 @click.option("--type", "job_type", default=None, help="Only requeue jobs of this type.")

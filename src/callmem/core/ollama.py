@@ -13,7 +13,7 @@ import httpx
 from ulid import ULID
 
 from callmem.core.json_utils import parse_json
-from callmem.core.prompts import SENSITIVE_SCAN_PROMPT
+from callmem.core.prompts import SCAN_MAX_TOKENS, SENSITIVE_SCAN_PROMPT
 from callmem.core.redaction import Detection
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ class OllamaClient:
         except (httpx.ConnectError, httpx.TimeoutException):
             return False
 
-    def _generate(self, prompt: str) -> str | None:
+    def _generate(self, prompt: str, max_tokens: int | None = None) -> str | None:
         """Send a generate request to Ollama and return the response text."""
         try:
             body = {
@@ -50,8 +50,13 @@ class OllamaClient:
                 "prompt": prompt,
                 "stream": False,
             }
+            options: dict[str, int] = {}
             if self.num_ctx is not None:
-                body["options"] = {"num_ctx": self.num_ctx}
+                options["num_ctx"] = self.num_ctx
+            if max_tokens:
+                options["num_predict"] = max_tokens
+            if options:
+                body["options"] = options
 
             resp = httpx.post(
                 f"{self.endpoint}/api/generate",
@@ -92,7 +97,9 @@ class OllamaClient:
         was not checked; callers that must not pass unchecked text on need
         to tell that apart from "checked, nothing found".
         """
-        response = self._generate(SENSITIVE_SCAN_PROMPT.format(text=content))
+        response = self._generate(
+            SENSITIVE_SCAN_PROMPT.format(text=content), max_tokens=SCAN_MAX_TOKENS,
+        )
         if response is None:
             return None
         try:

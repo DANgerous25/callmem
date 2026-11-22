@@ -17,7 +17,7 @@ import httpx
 from ulid import ULID
 
 from callmem.core.json_utils import parse_json
-from callmem.core.prompts import SENSITIVE_SCAN_PROMPT
+from callmem.core.prompts import SCAN_MAX_TOKENS, SENSITIVE_SCAN_PROMPT
 from callmem.core.redaction import Detection
 
 logger = logging.getLogger(__name__)
@@ -74,7 +74,9 @@ class OpenAICompatClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    def _generate(self, prompt: str, system: str | None = None) -> str | None:
+    def _generate(
+        self, prompt: str, system: str | None = None, max_tokens: int | None = None,
+    ) -> str | None:
         """Send a chat completion request and return the response text."""
         messages: list[dict[str, str]] = []
         if system:
@@ -88,6 +90,7 @@ class OpenAICompatClient:
                     "model": self.model,
                     "messages": messages,
                     "temperature": 0.1,
+                    **({"max_tokens": max_tokens} if max_tokens else {}),
                 },
                 headers=self._headers(),
                 timeout=self.timeout,
@@ -125,7 +128,9 @@ class OpenAICompatClient:
         was not checked; callers that must not pass unchecked text on need
         to tell that apart from "checked, nothing found".
         """
-        response = self._generate(SENSITIVE_SCAN_PROMPT.format(text=content))
+        response = self._generate(
+            SENSITIVE_SCAN_PROMPT.format(text=content), max_tokens=SCAN_MAX_TOKENS,
+        )
         if response is None:
             return None
         try:

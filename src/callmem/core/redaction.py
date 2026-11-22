@@ -96,6 +96,32 @@ SECRET_CONTEXT_KEYWORDS = frozenset({
 })
 
 
+# LLM scanners over-flag identifiers and paths that are never secrets; these
+# shapes are dropped from LLM findings before anything is redacted.
+MIN_LLM_VALUE_LEN = 6
+DEFAULT_DETECT_CATEGORIES = frozenset({"secret", "credential", "pii", "financial"})
+_ULID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+_CONSTANT_NAME_RE = re.compile(r"[A-Z][A-Z_]*")  # env-var names, not their values
+
+
+def plausible_llm_finding(
+    value: str,
+    category: str,
+    categories: frozenset[str] | set[str] = DEFAULT_DETECT_CATEGORIES,
+) -> bool:
+    """False for LLM findings that are identifiers, names or paths, not secrets."""
+    return not (
+        category not in categories
+        or len(value) < MIN_LLM_VALUE_LEN
+        or "[REDACTED:" in value
+        or _ULID_RE.fullmatch(value)
+        or _UUID_RE.fullmatch(value)
+        or _CONSTANT_NAME_RE.fullmatch(value)
+        or value.startswith(("/", "~/", "./"))
+    )
+
+
 # ── Data types ────────────────────────────────────────────────────────
 
 @dataclass
@@ -146,7 +172,7 @@ class PatternScanner:
         self.allowlist = allowlist or DEFAULT_ALLOWLIST
         self.entropy_threshold = entropy_threshold
         self.entropy_min_length = entropy_min_length
-        self.detect_categories = detect_categories or {"secret", "credential", "pii", "financial"}
+        self.detect_categories = detect_categories or set(DEFAULT_DETECT_CATEGORIES)
 
         # Compile patterns, filtered by enabled categories
         src = patterns or PATTERNS

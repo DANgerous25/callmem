@@ -1110,13 +1110,14 @@ class MemoryEngine:
 
     def _filter_llm_hits(self, hits: list[Detection]) -> list[Detection]:
         """Keep confident LLM hits that aren't already-redacted placeholders."""
-        from callmem.core.redaction import merge_detections
+        from callmem.core.redaction import merge_detections, plausible_llm_finding
 
         confidence = self.config.sensitive_data.llm_scan_confidence
         return merge_detections(
             [
                 d for d in hits
-                if d.confidence >= confidence and "[REDACTED:" not in d.original_value
+                if d.confidence >= confidence
+                and plausible_llm_finding(d.original_value, d.category)
             ],
             [],
         )
