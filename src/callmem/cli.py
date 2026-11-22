@@ -664,6 +664,15 @@ def _render_config_toml(
         f'skip_patterns = {_toml_list(ingestion["skip_patterns"])}',
         "",
     ]
+    # Without this, a project copied from one with a local pre-scanner would
+    # silently fall back to scanning on the (remote) main backend.
+    from callmem.setup_wizard import _render_scanner
+
+    scanner = (donor.get("sensitive_data") or {}).get("scanner") or {}
+    if scanner.get("backend", "none") != "none":
+        parts.append(_render_scanner({
+            "endpoint": "", "model": "", "api_key_env": "", "timeout": 60, **scanner,
+        }).lstrip("\n"))
     return "\n".join(parts)
 
 

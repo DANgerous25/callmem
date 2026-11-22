@@ -274,3 +274,26 @@ class TestWizardPrescanner:
         assert setup_wizard._is_local_endpoint("http://10.200.200.1:8085/v1")
         assert setup_wizard._is_local_endpoint("http://localhost:8080/v1")
         assert not setup_wizard._is_local_endpoint("https://openrouter.ai/api/v1")
+
+
+class TestNewProjectInheritsScanner:
+    def test_donor_scanner_is_copied(self) -> None:
+        import tomllib
+
+        from callmem.cli import _render_config_toml
+
+        donor = {"sensitive_data": {"llm_scan": True, "scanner": {
+            "backend": "openai_compat", "endpoint": "http://10.200.200.1:8085/v1",
+            "model": "qwen3.6-35b-a3b", "api_key_env": "", "timeout": 60,
+        }}}
+        parsed = tomllib.loads(_render_config_toml("p", 9106, donor=donor))
+        config = Config(**{k: parsed[k] for k in ("sensitive_data",)})
+        assert config.sensitive_data.scanner.endpoint == "http://10.200.200.1:8085/v1"
+
+    def test_no_donor_scanner_stays_unset(self) -> None:
+        import tomllib
+
+        from callmem.cli import _render_config_toml
+
+        parsed = tomllib.loads(_render_config_toml("p", 9106))
+        assert "scanner" not in parsed["sensitive_data"]
