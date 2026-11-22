@@ -39,5 +39,30 @@ host = "0.0.0.0"
 [sensitive_data]
 enabled = true
 pattern_scan = true
+# llm_scan: an LLM checks each event for secrets the regex misses before
+# extraction sends it to the [llm] backend. With [sensitive_data.scanner]
+# set, that check runs only on the local scanner, and events wait locally
+# when it is down. Keep it on: false leaves only the regex in front of the
+# main backend. `callmem doctor` shows where scans go.
 llm_scan = true
 vault_mode = "auto"
+
+[embeddings]
+endpoint = "http://10.200.200.1:11434"
+
+[consolidation]
+# Canary 2026-08-01. Threshold calibrated from a 70-entity shadow sweep on
+# audio-converter: the threshold cannot separate verdicts (ADD/NOOP/UPDATE
+# similarity ranges overlap heavily) -- the judge is the discriminator and
+# this is a precision/cost lever. 0.80 preserves every observed NOOP
+# (min gate 0.834) with margin while trimming the lowest-confidence UPDATEs.
+enabled = true
+threshold = 0.80
+
+[sensitive_data.scanner]
+# Local model for the secret scan (used while llm_scan = true).
+backend = "openai_compat"
+endpoint = "http://10.200.200.1:8085/v1"
+model = "qwen3.6-35b-a3b"
+api_key_env = ""
+timeout = 60
