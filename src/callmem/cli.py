@@ -513,7 +513,7 @@ def _check_llm_backend(project: Path) -> None:
     if backend == "openai_compat":
         endpoint = config.openai_compat.endpoint
         model = config.openai_compat.model
-        env_var = config.openai_compat.api_key_env or "API_KEY"
+        env_var = config.openai_compat.api_key_env or "(local — no key needed)"
     elif backend == "ollama":
         endpoint = config.ollama.endpoint
         model = config.ollama.model
@@ -569,6 +569,8 @@ def _render_config_toml(
     precedence over donor values.
     """
     import json as _json
+
+    from callmem.setup_wizard import LLM_SCAN_COMMENT
 
     donor = donor or {}
 
@@ -656,6 +658,7 @@ def _render_config_toml(
         "[sensitive_data]",
         f'enabled = {str(bool(sensitive["enabled"])).lower()}',
         f'pattern_scan = {str(bool(sensitive["pattern_scan"])).lower()}',
+        LLM_SCAN_COMMENT,
         f'llm_scan = {str(bool(sensitive["llm_scan"])).lower()}',
         f'vault_mode = "{sensitive["vault_mode"]}"',
         "",

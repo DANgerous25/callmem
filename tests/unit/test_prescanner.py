@@ -297,3 +297,17 @@ class TestNewProjectInheritsScanner:
 
         parsed = tomllib.loads(_render_config_toml("p", 9106))
         assert "scanner" not in parsed["sensitive_data"]
+
+
+class TestKeylessMainBackend:
+    def test_blank_key_env_never_borrows_openrouter_key(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from callmem.core.engine import _create_llm_client
+
+        monkeypatch.setenv("OPENROUTER_KEY", "not-for-llama")
+        config = Config(
+            llm={"backend": "openai_compat"},
+            openai_compat={"endpoint": "http://10.0.0.5:8085/v1", "api_key_env": ""},
+        )
+        assert _create_llm_client(config).api_key == ""

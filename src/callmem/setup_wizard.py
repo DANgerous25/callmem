@@ -318,12 +318,23 @@ def _ask_prescanner(sc: dict, ollama_endpoint: str) -> dict:
             "api_key_env": key_env, "timeout": timeout}
 
 
+# Written above llm_scan in every generated config: agents decide whether to
+# flip this setting by reading the file, so the file has to explain it.
+LLM_SCAN_COMMENT = """\
+# llm_scan: an LLM checks each event for secrets the regex misses before
+# extraction sends it to the [llm] backend. With [sensitive_data.scanner]
+# set, that check runs only on the local scanner, and events wait locally
+# when it is down. Keep it on: false leaves only the regex in front of the
+# main backend. `callmem doctor` shows where scans go."""
+
+
 def _render_scanner(scanner: dict) -> str:
     """TOML for ``[sensitive_data.scanner]``; empty when not set."""
     if scanner.get("backend", "none") == "none":
         return ""
     return (
         "\n[sensitive_data.scanner]\n"
+        "# Local model for the secret scan (used while llm_scan = true).\n"
         f'backend = "{scanner["backend"]}"\n'
         f'endpoint = "{scanner["endpoint"]}"\n'
         f'model = "{scanner["model"]}"\n'
@@ -1228,6 +1239,7 @@ host = "{ui_host}"
 [sensitive_data]
 enabled = {str(sensitive_enabled).lower()}
 pattern_scan = true
+{LLM_SCAN_COMMENT}
 llm_scan = {str(llm_scan).lower()}
 vault_mode = "{vault_mode}"
 {_render_scanner(scanner)}

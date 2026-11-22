@@ -63,12 +63,15 @@ def _create_llm_client(config: Config) -> Any:
         from callmem.core.config import resolve_secret
         from callmem.core.openai_compat import OpenAICompatClient
 
-        api_key = resolve_secret(config.openai_compat.api_key_env)
+        key_env = config.openai_compat.api_key_env
+        # A blank api_key_env means a keyless local server (llama.cpp): don't
+        # go looking for OPENROUTER_KEY and send it there.
         return OpenAICompatClient(
             endpoint=config.openai_compat.endpoint,
             model=config.openai_compat.model,
-            api_key=api_key,
+            api_key=resolve_secret(key_env) if key_env else "",
             timeout=config.openai_compat.timeout,
+            env_key_fallback=bool(key_env),
         )
 
     # backend == "none"
