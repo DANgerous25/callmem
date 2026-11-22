@@ -188,3 +188,73 @@ class TestIngestWithRedaction:
         assert refreshed is not None
         assert "AKIAIOSFODNN7EXAMPLE" in refreshed.content
         assert "ghp_" not in refreshed.content
+
+
+class _RecordingScanner:
+    """Stand-in LLM client that records what the remote scan would see."""
+
+    def __init__(self, flag: str | None = None) -> None:
+        self.seen: list[str] = []
+        self.flag = flag
+
+    def is_available(self) -> bool:
+        return True
+
+    def scan_sensitive(self, content: str) -> list:
+        from callmem.core.redaction import Detection
+
+        self.seen.append(content)
+        if self.flag is None or self.flag not in content:
+            return []
+        start = content.index(self.flag)
+        return [
+            Detection(
+                vault_id="01TESTLLMDETECTION000000000",
+                category="credential",
+                detector="llm",
+                pattern_name=None,
+                original_value=self.flag,
+                start=start,
+                end=start + len(self.flag),
+                confidence=0.9,
+            )
+        ]
+
+
+class TestLlmScanNeverSeesPatternSecrets:
+    def test_remote_scan_gets_pattern_redacted_text(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        scanner = _RecordingScanner()
+        engine.llm_client = scanner
+        engine.start_session()
+        engine.ingest_one("note", "AWS key is AKIAIOSFODNN7EXAMPLE for production")
+        assert scanner.seen, "LLM scan should still run"
+        assert all("AKIAIOSFODNN7EXAMPLE" not in s for s in scanner.seen)
+
+    def test_llm_hits_redacted_on_top_of_pattern_hits(self, memory_db: Database) -> None:
+        engine = _make_engine(memory_db)
+        engine.llm_client = _RecordingScanner(flag="hunter2hunter2")
+        engine.start_session()
+        event = engine.ingest_one(
+            "note", "key AKIAIOSFODNN7EXAMPLE and password hunter2hunter2 ok"
+        )
+        assert event is not None
+        assert "AKIA" not in event.content
+        assert "hunter2hunter2" not in event.content
+        assert event.content.endswith(" ok")
+        conn = memory_db.connect()
+        try:
+            detectors = {r["detector"] for r in conn.execute("SELECT detector FROM vault")}
+        finally:
+            conn.close()
+        assert "llm" in detectors
+
+    def test_llm_scan_disabled_by_config(self, memory_db: Database) -> None:
+        engine = MemoryEngine(memory_db, Config(sensitive_data={"llm_scan": False}))
+        scanner = _RecordingScanner()
+        engine.llm_client = scanner
+        engine.start_session()
+        event = engine.ingest_one("note", "AWS key AKIAIOSFODNN7EXAMPLE")
+        assert scanner.seen == []
+        assert event is not None
+        assert event.metadata["scan_status"] == "pattern_only"

@@ -988,20 +988,34 @@ class MemoryEngine:
         if self.pattern_scanner is not None:
             from callmem.core.redaction import apply_redactions, merge_detections
 
-            detections = self.pattern_scanner.scan(content)
+            detections = merge_detections(self.pattern_scanner.scan(content), [])
             scan_status = "pattern_only"
-
-            if self.llm_client is not None and self.llm_client.is_available():
-                llm_detections = self.llm_client.scan_sensitive(content)
-                confidence = self.config.sensitive_data.llm_scan_confidence
-                llm_detections = [
-                    d for d in llm_detections if d.confidence >= confidence
-                ]
-                detections = merge_detections(detections, llm_detections)
-                scan_status = "full"
-
+            # Redact pattern hits before anything leaves the machine: the LLM
+            # scan below may run on a remote API, so it only ever sees text
+            # the local scanners have already cleaned.
             if detections:
                 content = apply_redactions(content, detections)
+
+            if (
+                self.config.sensitive_data.llm_scan
+                and self.llm_client is not None
+                and self.llm_client.is_available()
+            ):
+                confidence = self.config.sensitive_data.llm_scan_confidence
+                # Offsets are relative to the already-redacted content.
+                llm_detections = merge_detections(
+                    [
+                        d
+                        for d in self.llm_client.scan_sensitive(content)
+                        if d.confidence >= confidence
+                        and "[REDACTED:" not in d.original_value
+                    ],
+                    [],
+                )
+                if llm_detections:
+                    content = apply_redactions(content, llm_detections)
+                detections = detections + llm_detections
+                scan_status = "full"
 
         metadata = dict(inp.metadata) if inp.metadata else {}
         metadata["scan_status"] = scan_status
