@@ -14,15 +14,12 @@ These tests verify:
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import patch
 
 from click.testing import CliRunner
 
 from callmem.cli import main
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestNewGitFlag:
@@ -425,3 +422,75 @@ class TestBackendModelOverrides:
         config = (target / ".callmem" / "config.toml").read_text()
         assert 'backend = "openai_compat"' in config
         assert 'model = "z-ai/glm-4-flash"' in config
+
+
+class TestNewProjectGaps:
+    def test_git_branch_is_main(self, tmp_path: Path) -> None:
+        target = tmp_path / "branchy"
+        result = CliRunner().invoke(main, [
+            "new", str(target), "--no-service", "--port", "9810", "--git",
+        ])
+        assert result.exit_code == 0, result.output
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"], cwd=target, capture_output=True, text=True,
+        )
+        assert branch.stdout.strip() == "main"
+
+    def test_push_falls_back_to_https(self, tmp_path: Path) -> None:
+        from callmem.cli import _create_github_repo
+
+        calls: list[list[str]] = []
+        pushes = iter([1, 0])  # ssh push fails, https push works
+
+        def fake_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+            calls.append(args)
+            if args[:3] == ["git", "push", "-u"]:
+                return subprocess.CompletedProcess(args, next(pushes), b"", b"")
+            if args[:3] == ["gh", "repo", "view"]:
+                return subprocess.CompletedProcess(
+                    args, 0, b"https://github.com/someone/proj\n", b"",
+                )
+            if args[:3] == ["git", "remote", "get-url"]:
+                return subprocess.CompletedProcess(
+                    args, 0, b"git@github.com:someone/proj.git\n", b"",
+                )
+            return subprocess.CompletedProcess(args, 0, b"", b"")
+
+        with patch("callmem.cli.subprocess.run", side_effect=fake_run):
+            assert _create_github_repo(tmp_path, "proj", "private")
+        assert ["git", "remote", "set-url", "origin",
+                "https://github.com/someone/proj.git"] in calls
+        assert not any("--push" in c for c in calls)
+
+    def test_copies_donor_service_dropin(self, tmp_path: Path) -> None:
+        from callmem.cli import _copy_donor_service_dropins
+
+        units = tmp_path / "units"
+        donor_dir = units / "callmem-donor.service.d"
+        donor_dir.mkdir(parents=True)
+        (donor_dir / "key.conf").write_text(
+            "[Service]\nExecStart=\nExecStart=wrap -- callmem daemon --project /x/donor\n"
+        )
+        copied = _copy_donor_service_dropins(
+            Path("/x/donor"), Path("/x/newproj"), systemd_dir=units,
+        )
+        assert copied == ["key.conf"]
+        text = (units / "callmem-newproj.service.d" / "key.conf").read_text()
+        assert "--project /x/newproj" in text
+        assert "/x/donor" not in text
+
+    def test_no_dropin_when_donor_has_none(self, tmp_path: Path) -> None:
+        from callmem.cli import _copy_donor_service_dropins
+
+        assert _copy_donor_service_dropins(
+            Path("/x/donor"), Path("/x/newproj"), systemd_dir=tmp_path,
+        ) == []
+
+    def test_preapproves_callmem_mcp(self, tmp_path: Path) -> None:
+        import json
+
+        target = tmp_path / "mcpok"
+        result = CliRunner().invoke(main, ["new", str(target), "--no-service", "--port", "9811"])
+        assert result.exit_code == 0, result.output
+        settings = json.loads((target / ".claude" / "settings.local.json").read_text())
+        assert settings["enabledMcpjsonServers"] == ["callmem"]

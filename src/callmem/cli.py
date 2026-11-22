@@ -782,10 +782,10 @@ def _create_gitignore(target: Path) -> None:
 
 def _init_git_repo(target: Path) -> bool:
     """Initialize a git repo in target. Returns True on success."""
+    # symbolic-ref rather than `init -b`, which needs git >= 2.28.
     try:
-        subprocess.run(
-            ["git", "init"], cwd=target, capture_output=True, timeout=10, check=True,
-        )
+        for args in (["git", "init"], ["git", "symbolic-ref", "HEAD", "refs/heads/main"]):
+            subprocess.run(args, cwd=target, capture_output=True, timeout=10, check=True)
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         click.echo("  Skipped git init (git not available or failed)")
         return False
@@ -802,7 +802,8 @@ def _create_github_repo(target: Path, name: str, visibility: str) -> bool:
     """
     try:
         result = subprocess.run(
-            ["gh", "repo", "create", name, f"--{visibility}", "--source=.", "--push"],
+            ["gh", "repo", "create", name, f"--{visibility}", "--source=.",
+             "--remote=origin"],
             cwd=target, capture_output=True, timeout=60,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -812,7 +813,100 @@ def _create_github_repo(target: Path, name: str, visibility: str) -> bool:
         click.echo(f"  GitHub repo creation failed (gh exit {result.returncode})")
         return False
     click.echo(f"  Created GitHub repo ({visibility}): {name}")
+    if _git_push(target) or _push_over_https(target, name):
+        click.echo("  Pushed to origin/main")
+    else:
+        click.echo("  Push failed — run 'git push -u origin main' once git can reach GitHub")
     return True
+
+
+def _git_push(target: Path) -> bool:
+    """Push the current branch to origin without ever waiting on a prompt."""
+    try:
+        result = subprocess.run(
+            ["git", "push", "-u", "origin", "HEAD"], cwd=target,
+            capture_output=True, stdin=subprocess.DEVNULL, timeout=60,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _push_over_https(target: Path, name: str) -> bool:
+    """Retry the push over HTTPS when gh set an SSH remote that can't push.
+
+    gh picks the remote protocol from its own git_protocol setting, which
+    can say ssh on machines with no working SSH key; gh's credential helper
+    covers HTTPS.
+    """
+    try:
+        current = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=target,
+            capture_output=True, timeout=10,
+        )
+        if current.returncode != 0 or current.stdout.decode().startswith("https://"):
+            return False
+        view = subprocess.run(
+            ["gh", "repo", "view", name, "--json", "url", "-q", ".url"],
+            cwd=target, capture_output=True, timeout=30,
+        )
+        url = view.stdout.decode().strip()
+        if view.returncode != 0 or not url.startswith("https://"):
+            return False
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", f"{url}.git"], cwd=target,
+            capture_output=True, timeout=10, check=True,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        return False
+    click.echo("  SSH push failed; switched origin to HTTPS")
+    return _git_push(target)
+
+
+def _copy_donor_service_dropins(
+    source: Path, target: Path, systemd_dir: Path | None = None,
+) -> list[str]:
+    """Copy the donor daemon's systemd drop-ins, re-pointed at ``target``.
+
+    Drop-ins carry machine setup the unit template can't know about — e.g.
+    wrapping the daemon in with-bws-secret so it gets its API key from
+    Bitwarden. Returns the copied file names.
+    """
+    systemd_dir = systemd_dir or Path.home() / ".config" / "systemd" / "user"
+    donor_dir = systemd_dir / f"callmem-{source.name}.service.d"
+    if not donor_dir.is_dir():
+        return []
+    new_dir = systemd_dir / f"callmem-{target.name}.service.d"
+    new_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for conf in sorted(donor_dir.glob("*.conf")):
+        dest = new_dir / conf.name
+        if dest.exists():
+            continue
+        dest.write_text(conf.read_text().replace(str(source), str(target)))
+        copied.append(conf.name)
+    return copied
+
+
+def _preapprove_callmem_mcp(target: Path) -> None:
+    """Let Claude Code use the callmem server from .mcp.json without a prompt."""
+    import json as _json
+
+    settings_path = target / ".claude" / "settings.local.json"
+    settings: dict[str, Any] = {}
+    if settings_path.exists():
+        try:
+            settings = _json.loads(settings_path.read_text())
+        except ValueError:
+            click.echo(f"  Left {settings_path} alone (not valid JSON)")
+            return
+    servers = settings.setdefault("enabledMcpjsonServers", [])
+    if "callmem" in servers:
+        return
+    servers.append("callmem")
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(_json.dumps(settings, indent=2) + "\n")
+    click.echo("  Pre-approved the callmem MCP server for Claude Code")
 
 
 def _git_initial_commit(target: Path) -> None:
@@ -955,6 +1049,7 @@ def _create_project(
     ensure_opencode_plugin(target, echo=click.echo)
     ensure_claude_code_mcp(target, echo=click.echo)
     ensure_claude_code_commands(target, echo=click.echo)
+    _preapprove_callmem_mcp(target)
 
     _create_gitignore(target)
 
@@ -964,6 +1059,9 @@ def _create_project(
 
     svc_info = None
     if service:
+        if source is not None:
+            for conf in _copy_donor_service_dropins(source, target):
+                click.echo(f"  Copied service drop-in {conf} from {source.name}")
         svc_info = _install_systemd_user_service(target, start=True)
         if svc_info:
             click.echo(f"  Installed and started {svc_info[0]}")

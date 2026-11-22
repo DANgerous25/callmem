@@ -3,6 +3,7 @@
 !.callmem/config.toml
 vault.key
 vault.salt
+.claude/settings.local.json
 
 # Python
 __pycache__/
