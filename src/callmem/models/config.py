@@ -214,12 +214,31 @@ class UIConfig(BaseModel):
     host: str = "0.0.0.0"  # noqa: S104 — bind all interfaces for Tailscale/LAN access; restrict to 127.0.0.1 in config.toml if needed
 
 
+class ScannerConfig(BaseModel):
+    """Dedicated LLM for the sensitive-data scan, separate from ``[llm]``.
+
+    Meant for a local model (llama.cpp, Ollama) so text is checked on this
+    machine before extraction sends it to the main backend. ``backend =
+    "none"`` falls back to the main backend for the scan. When set, a scan
+    that fails holds the event locally until a later scan succeeds.
+    ``api_key_env`` is the only key source: the main backend's key is never
+    sent to the scanner.
+    """
+    backend: str = "none"  # none | openai_compat | ollama
+    endpoint: str = ""
+    model: str = ""
+    api_key_env: str = ""
+    timeout: int = 60
+    retry_after: int = 30
+
+
 class SensitiveDataConfig(BaseModel):
     enabled: bool = True
     pattern_scan: bool = True
     llm_scan: bool = True
     llm_scan_confidence: float = 0.7
     vault_mode: str = "auto"
+    scanner: ScannerConfig = Field(default_factory=ScannerConfig)
 
 
 class EndlessModeConfig(BaseModel):

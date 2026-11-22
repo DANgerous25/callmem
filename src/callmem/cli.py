@@ -380,6 +380,10 @@ def doctor(project: Path, fix: bool) -> None:
     _check_daemon(project)
     click.echo()
 
+    # ── Sensitive-data pre-scanner ──
+    _check_prescanner(project, db_path if has_db else None)
+    click.echo()
+
     # ── Extraction health ──
     if has_db:
         from callmem.core.database import Database
@@ -453,6 +457,43 @@ def _check_daemon(project: Path) -> None:
         "    Run 'callmem setup' to install the service, or start "
         "'callmem daemon' manually."
     )
+
+
+def _check_prescanner(project: Path, db_path: Path | None) -> None:
+    """Report the pre-scanner and any events it is holding back.
+
+    Warn-only: held events are safe (never sent anywhere), just not yet
+    extracted.
+    """
+    from callmem.core.config import load_config
+    from callmem.core.engine import _create_scanner_client
+
+    config = load_config(project)
+    sc = config.sensitive_data.scanner
+    click.echo("  Pre-scanner:")
+    if sc.backend == "none":
+        click.echo("    not set — sensitive-data LLM scan uses the main backend")
+        return
+    click.echo(f"    {sc.backend} {sc.endpoint} ({sc.model})")
+    if not config.sensitive_data.llm_scan:
+        click.echo("    \u26a0\ufe0f  sensitive_data.llm_scan = false — pre-scanner unused")
+    client = _create_scanner_client(config)
+    ok = client is not None and client.is_available()
+    click.echo("    Reachable: \u2713" if ok else "    Reachable: \u2717 — new events will be held")
+    if db_path is None:
+        return
+    from callmem.core.database import Database
+    from callmem.core.repository import Repository
+
+    repo = Repository(Database(db_path))
+    held = repo.count_held_events()
+    if held:
+        click.echo(
+            f"    \u26a0\ufe0f  {held} event(s) held since {repo.oldest_held_at()} "
+            "— released automatically once the scanner answers"
+        )
+    else:
+        click.echo("    Held events: none")
 
 
 def _check_llm_backend(project: Path) -> None:
@@ -1778,6 +1819,28 @@ def daemon(
             )
     else:
         click.echo("  Workers:  disabled")
+
+    # Held events only drain on ingest otherwise; this covers quiet spells
+    # after a pre-scanner outage so the backlog doesn't wait for new work.
+    if engine.scanner_client is not None:
+        def _release_held() -> None:
+            import logging
+            import sqlite3
+            _log = logging.getLogger("callmem.daemon")
+            while not stop_event.wait(60):
+                try:
+                    if engine.held_event_count():
+                        engine.release_held_events()
+                except sqlite3.Error:
+                    _log.exception("Releasing held events failed")
+
+        t = threading.Thread(
+            target=_release_held, daemon=True, name="callmem-held-release",
+        )
+        t.start()
+        threads.append(t)
+        sc = config.sensitive_data.scanner
+        click.echo(f"  Prescan:  {sc.backend} {sc.endpoint} ({sc.model})")
 
     # Adapters: OpenCode SSE + OpenCode DB + Claude Code JSONL tailer.
     # Each is independently gated by --no-adapter and the [adapters] config.

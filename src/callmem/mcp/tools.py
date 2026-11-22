@@ -820,6 +820,7 @@ def handle_session_end(engine: MemoryEngine, args: dict[str, Any]) -> list[TextC
 
 def handle_ingest(engine: MemoryEngine, args: dict[str, Any]) -> list[TextContent]:
     raw_events = args.get("events", [])
+    held_before = engine.ingestion_stats()["held_for_scan"]
     events = [
         engine.ingest_one(
             type=e["type"],
@@ -832,6 +833,8 @@ def handle_ingest(engine: MemoryEngine, args: dict[str, Any]) -> list[TextConten
     return _make_result({
         "ingested": len(stored),
         "event_ids": [e.id for e in stored],
+        # Held events are saved locally and stored once the pre-scan succeeds.
+        "held": engine.ingestion_stats()["held_for_scan"] - held_before,
     })
 
 

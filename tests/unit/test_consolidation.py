@@ -149,7 +149,7 @@ class _SpyEmbedder(Embedder):
 
 class TestSchema:
     def test_consolidation_log_table_exists(self, memory_db: Database) -> None:
-        assert memory_db.get_schema_version() == 22
+        assert memory_db.get_schema_version() == 23
         conn = memory_db.connect()
         try:
             row = conn.execute(

@@ -236,6 +236,102 @@ def check_openai_compat(endpoint: str, api_key: str, model: str) -> bool:
         return False
 
 
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "10.", "192.168.", "172.")
+
+
+def _is_local_endpoint(endpoint: str) -> bool:
+    """True for loopback / private-network endpoints (best-effort)."""
+    from urllib.parse import urlparse
+
+    host = urlparse(endpoint).hostname or ""
+    return host.startswith(_LOCAL_HOSTS) or host.endswith(".local")
+
+
+def _list_openai_models(endpoint: str) -> list[str]:
+    """Model ids served at an OpenAI-compatible endpoint, or [] if unreachable."""
+    import httpx
+
+    try:
+        resp = httpx.get(f"{endpoint.rstrip('/')}/models", timeout=5.0)
+        resp.raise_for_status()
+        return [m["id"] for m in resp.json().get("data", []) if "id" in m]
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return []
+
+
+def _current_prescanner_preset(sc: dict) -> str:
+    backend = sc.get("backend", "none")
+    if backend in ("none", "ollama"):
+        return backend
+    endpoint = sc.get("endpoint", "")
+    if "openrouter.ai" in endpoint:
+        return "openrouter"
+    return "llama.cpp" if not sc.get("api_key_env") else "custom"
+
+
+def _ask_prescanner(sc: dict, ollama_endpoint: str) -> dict:
+    """Ask which LLM checks text for secrets before the main backend sees it."""
+    print()
+    print("  Pre-scanner: an LLM that checks each event for secrets the patterns")
+    print("  miss, before anything is sent to the main backend. Use a local model.")
+    print("  If it's set and unreachable, events wait locally until it answers.")
+    preset = ask_choice(
+        "Pre-scanner:",
+        [
+            ("none", "Not set — the main LLM backend does the scan"),
+            ("llama.cpp", "Local llama.cpp server (llama-server)"),
+            ("ollama", "Local Ollama"),
+            ("openrouter", "OpenRouter — text leaves this machine to be scanned"),
+            ("custom", "Other OpenAI-compatible endpoint"),
+        ],
+        default=_current_prescanner_preset(sc),
+    )
+    if preset == "none":
+        return {"backend": "none"}
+
+    timeout = int(sc.get("timeout", 60))
+    if preset == "ollama":
+        endpoint = ask("Ollama endpoint", sc.get("endpoint") or ollama_endpoint)
+        model = ask("Model", sc.get("model", ""))
+        return {"backend": "ollama", "endpoint": endpoint, "model": model,
+                "api_key_env": "", "timeout": timeout}
+
+    defaults = {
+        "llama.cpp": ("http://localhost:8080/v1", ""),
+        "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_KEY"),
+        "custom": ("", ""),
+    }[preset]
+    keep = preset == _current_prescanner_preset(sc)
+    endpoint = ask("Endpoint", sc.get("endpoint") if keep else defaults[0])
+    models = _list_openai_models(endpoint) if preset == "llama.cpp" else []
+    if preset == "llama.cpp":
+        print(f"    Served models: {', '.join(models)}" if models
+              else "    \u26a0\ufe0f  No answer from that endpoint yet.")
+    model = ask("Model", (sc.get("model") if keep else "") or (models[0] if models else ""))
+    key_env = "" if preset == "llama.cpp" else ask(
+        "API key env var (blank for none)", sc.get("api_key_env") if keep else defaults[1],
+    )
+    if not _is_local_endpoint(endpoint):
+        print("    \u26a0\ufe0f  This endpoint isn't local: event text is sent there to be")
+        print("       scanned, so it improves detection but not privacy.")
+    return {"backend": "openai_compat", "endpoint": endpoint, "model": model,
+            "api_key_env": key_env, "timeout": timeout}
+
+
+def _render_scanner(scanner: dict) -> str:
+    """TOML for ``[sensitive_data.scanner]``; empty when not set."""
+    if scanner.get("backend", "none") == "none":
+        return ""
+    return (
+        "\n[sensitive_data.scanner]\n"
+        f'backend = "{scanner["backend"]}"\n'
+        f'endpoint = "{scanner["endpoint"]}"\n'
+        f'model = "{scanner["model"]}"\n'
+        f'api_key_env = "{scanner["api_key_env"]}"\n'
+        f"timeout = {scanner['timeout']}\n"
+    )
+
+
 def load_existing_config(config_path: Path) -> dict:
     if not config_path.exists():
         return {}
@@ -1069,13 +1165,16 @@ def main() -> None:
             ],
             default=vault_mode,
         )
-        if backend != "none":
+        scanner = _ask_prescanner(sd.get("scanner", {}), ollama_endpoint)
+        if backend != "none" or scanner["backend"] != "none":
             llm_scan = ask_bool(
                 "Enable LLM-based scanning (in addition to patterns)?",
-                default=llm_scan,
+                default=llm_scan or scanner["backend"] != "none",
             )
         else:
             llm_scan = False
+    else:
+        scanner = {"backend": "none"}
 
     # ── Write config ──────────────────────────────────────────────
     print()
@@ -1131,7 +1230,7 @@ enabled = {str(sensitive_enabled).lower()}
 pattern_scan = true
 llm_scan = {str(llm_scan).lower()}
 vault_mode = "{vault_mode}"
-
+{_render_scanner(scanner)}
 [ingestion]
 skip_tools = {_toml_list(skip_tools)}
 skip_patterns = {_toml_list(skip_patterns)}

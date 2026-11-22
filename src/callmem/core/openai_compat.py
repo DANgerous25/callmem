@@ -32,21 +32,26 @@ class OpenAICompatClient:
         model: str = "z-ai/glm-4-flash",
         api_key: str | None = None,
         timeout: int = 120,
+        env_key_fallback: bool = True,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
         self.model = model
-        self.api_key = (
-            api_key
-            or os.environ.get("OPENROUTER_KEY")
-            or os.environ.get("OPENROUTER_API_KEY")
-            or os.environ.get("CALLMEM_API_KEY")
-            or os.environ.get("LLM_MEM_API_KEY", "")
-        )
+        self.env_key_fallback = env_key_fallback
+        if not env_key_fallback:
+            self.api_key = api_key or ""
+        else:
+            self.api_key = (
+                api_key
+                or os.environ.get("OPENROUTER_KEY")
+                or os.environ.get("OPENROUTER_API_KEY")
+                or os.environ.get("CALLMEM_API_KEY")
+                or os.environ.get("LLM_MEM_API_KEY", "")
+            )
         self.timeout = timeout
 
     def is_available(self) -> bool:
         """Check if the API endpoint is reachable and the key works."""
-        if not self.api_key:
+        if not self.api_key and self.env_key_fallback:
             return False
         try:
             resp = httpx.post(
@@ -111,6 +116,25 @@ class OpenAICompatClient:
         if response is None:
             return []
 
+        return self._parse_findings(content, response)
+
+    def scan_sensitive_strict(self, content: str) -> list[Detection] | None:
+        """Like ``scan_sensitive`` but returns None when the scan didn't happen.
+
+        No response, or a response that isn't a JSON array, means the text
+        was not checked; callers that must not pass unchecked text on need
+        to tell that apart from "checked, nothing found".
+        """
+        response = self._generate(SENSITIVE_SCAN_PROMPT.format(text=content))
+        if response is None:
+            return None
+        try:
+            raw = parse_json(response)
+        except json.JSONDecodeError:
+            logger.warning("Sensitive scan returned invalid JSON (%d chars)", len(response))
+            return None
+        if not isinstance(raw, list):
+            return None
         return self._parse_findings(content, response)
 
     def _parse_findings(

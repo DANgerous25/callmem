@@ -36,7 +36,7 @@ def test_schema_version_set(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     version = db.get_schema_version()
-    assert version == 22
+    assert version == 23
 
 
 def test_migration_numbers_have_no_gaps() -> None:
@@ -68,7 +68,7 @@ def test_idempotent_init(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.initialize()
     db.initialize()  # Should not raise
-    assert db.get_schema_version() == 22
+    assert db.get_schema_version() == 23
 
 
 def test_foreign_keys_enabled(tmp_path: Path) -> None:
@@ -219,7 +219,7 @@ def test_in_memory_database() -> None:
     db.initialize()
     tables = db.list_tables()
     assert "events" in tables
-    assert db.get_schema_version() == 22
+    assert db.get_schema_version() == 23
 
 
 def test_infer_project_root_for_standard_callmem_layout(tmp_path: Path) -> None:

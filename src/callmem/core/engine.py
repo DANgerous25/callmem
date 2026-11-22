@@ -5,8 +5,12 @@ All adapters (MCP, REST, direct Python) route through this class.
 
 from __future__ import annotations
 
+import base64
 import fnmatch
+import json
 import logging
+import sqlite3
+import time
 from typing import TYPE_CHECKING, Any
 
 from callmem.core.repository import Repository
@@ -71,6 +75,36 @@ def _create_llm_client(config: Config) -> Any:
     return None
 
 
+def _create_scanner_client(config: Config) -> Any:
+    """Create the dedicated sensitive-data pre-scanner, or None if not set.
+
+    The scanner only ever gets the key named by its own ``api_key_env`` —
+    never the main backend's — so a local llama.cpp/Ollama endpoint isn't
+    handed a remote provider key.
+    """
+    sc = config.sensitive_data.scanner
+    if sc.backend == "openai_compat":
+        from callmem.core.config import resolve_secret
+        from callmem.core.openai_compat import OpenAICompatClient
+
+        return OpenAICompatClient(
+            endpoint=sc.endpoint,
+            model=sc.model,
+            api_key=resolve_secret(sc.api_key_env) if sc.api_key_env else "",
+            timeout=sc.timeout,
+            env_key_fallback=False,
+        )
+    if sc.backend == "ollama":
+        from callmem.core.ollama import OllamaClient
+
+        return OllamaClient(
+            endpoint=sc.endpoint or config.ollama.endpoint,
+            model=sc.model,
+            timeout=sc.timeout,
+        )
+    return None
+
+
 class MemoryEngine:
     """Central coordinator for all memory operations.
 
@@ -105,13 +139,19 @@ class MemoryEngine:
             self.pattern_scanner = None
 
         self.llm_client = _create_llm_client(config)
+        self.scanner_client = _create_scanner_client(config)
+        # Monotonic time before which the pre-scanner is assumed down, so an
+        # outage doesn't cost a timeout on every event.
+        self._scanner_down_until = 0.0
         # Backwards compat — workers and briefing reference self.ollama
         self.ollama = self.llm_client
 
         from callmem.core.queue import JobQueue
 
         self.queue = JobQueue(db)
-        self._ingestion_stats: dict[str, int] = {"skipped_tool_calls": 0}
+        self._ingestion_stats: dict[str, int] = {
+            "skipped_tool_calls": 0, "held_for_scan": 0,
+        }
         self._file_context_stats: dict[str, int] = {
             "calls": 0,
             "hits": 0,
@@ -261,6 +301,9 @@ class MemoryEngine:
         if not events:
             return []
 
+        # Before loading the session: releasing can bump its event_count.
+        self._drain_held_events()
+
         if session_id is not None:
             session = self.get_session(session_id)
             if session is None:
@@ -277,6 +320,13 @@ class MemoryEngine:
             if event is not None:
                 stored.append(event)
 
+        if stored:
+            self._after_store(session, stored)
+
+        return stored
+
+    def _after_store(self, session: Session, stored: list[Event]) -> None:
+        """Count, entity-ify, and queue extraction for newly stored events."""
         if stored:
             self._update_session_event_count(session, len(stored))
 
@@ -298,8 +348,6 @@ class MemoryEngine:
                 },
             )
             self._maybe_queue_chunk_summary(session, stored)
-
-        return stored
 
     def ingest_one(
         self,
@@ -996,40 +1044,32 @@ class MemoryEngine:
             if detections:
                 content = apply_redactions(content, detections)
 
-            if (
+            if self.config.sensitive_data.llm_scan and self.scanner_client is not None:
+                llm_detections = self._prescan(content)
+                if llm_detections is None:
+                    self._hold_event(
+                        self._build_event(session, inp, content, "held"), detections,
+                    )
+                    return None
+                if llm_detections:
+                    content = apply_redactions(content, llm_detections)
+                detections = detections + llm_detections
+                scan_status = "full"
+            elif (
                 self.config.sensitive_data.llm_scan
                 and self.llm_client is not None
                 and self.llm_client.is_available()
             ):
-                confidence = self.config.sensitive_data.llm_scan_confidence
                 # Offsets are relative to the already-redacted content.
-                llm_detections = merge_detections(
-                    [
-                        d
-                        for d in self.llm_client.scan_sensitive(content)
-                        if d.confidence >= confidence
-                        and "[REDACTED:" not in d.original_value
-                    ],
-                    [],
+                llm_detections = self._filter_llm_hits(
+                    self.llm_client.scan_sensitive(content)
                 )
                 if llm_detections:
                     content = apply_redactions(content, llm_detections)
                 detections = detections + llm_detections
                 scan_status = "full"
 
-        metadata = dict(inp.metadata) if inp.metadata else {}
-        metadata["scan_status"] = scan_status
-
-        event_kwargs: dict[str, Any] = {
-            "session_id": session.id,
-            "project_id": session.project_id,
-            "type": inp.type,
-            "content": content,
-            "metadata": metadata,
-        }
-        if inp.timestamp is not None:
-            event_kwargs["timestamp"] = inp.timestamp
-        event = Event(**event_kwargs)
+        event = self._build_event(session, inp, content, scan_status)
         self.repo.insert_event(event)
 
         if detections:
@@ -1049,6 +1089,134 @@ class MemoryEngine:
                     event_id=event.id,
                 )
 
+        return event
+
+    def _build_event(
+        self, session: Session, inp: EventInput, content: str, scan_status: str
+    ) -> Event:
+        """Assemble an Event for ``session`` carrying ``scan_status``."""
+        metadata = dict(inp.metadata) if inp.metadata else {}
+        metadata["scan_status"] = scan_status
+        event_kwargs: dict[str, Any] = {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "type": inp.type,
+            "content": content,
+            "metadata": metadata,
+        }
+        if inp.timestamp is not None:
+            event_kwargs["timestamp"] = inp.timestamp
+        return Event(**event_kwargs)
+
+    def _filter_llm_hits(self, hits: list[Detection]) -> list[Detection]:
+        """Keep confident LLM hits that aren't already-redacted placeholders."""
+        from callmem.core.redaction import merge_detections
+
+        confidence = self.config.sensitive_data.llm_scan_confidence
+        return merge_detections(
+            [
+                d for d in hits
+                if d.confidence >= confidence and "[REDACTED:" not in d.original_value
+            ],
+            [],
+        )
+
+    # ── Pre-scanner hold queue ───────────────────────────────────────
+
+    def _prescan(self, content: str) -> list[Detection] | None:
+        """Scan with the dedicated pre-scanner; None means it didn't happen."""
+        if time.monotonic() < self._scanner_down_until:
+            return None
+        import httpx
+
+        try:
+            hits = self.scanner_client.scan_sensitive_strict(content)
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("Pre-scan failed (%d chars): %s", len(content), exc)
+            hits = None
+        if hits is None:
+            retry = self.config.sensitive_data.scanner.retry_after
+            self._scanner_down_until = time.monotonic() + retry
+            logger.warning("Pre-scanner unavailable; holding events for %ds", retry)
+            return None
+        return self._filter_llm_hits(hits)
+
+    def _encrypt_detections(self, detections: list[Detection]) -> list[dict[str, Any]]:
+        """Encrypt detections into vault rows that can wait in a held event."""
+        if not detections:
+            return []
+        from callmem.core.crypto import VaultKeyManager
+
+        crypto = VaultKeyManager(self.db.db_path.parent)
+        return [
+            {
+                "id": d.vault_id,
+                "category": d.category,
+                "detector": d.detector,
+                "pattern_name": d.pattern_name,
+                "ciphertext": base64.b64encode(crypto.encrypt(d.original_value)).decode(),
+            }
+            for d in detections
+        ]
+
+    def _hold_event(self, event: Event, detections: list[Detection]) -> None:
+        """Park an unscanned event so nothing can send it to the main backend."""
+        self.repo.insert_held_event(event, self._encrypt_detections(detections))
+        self._ingestion_stats["held_for_scan"] += 1
+
+    def held_event_count(self) -> int:
+        """Number of events waiting for a successful pre-scan."""
+        return self.repo.count_held_events()
+
+    def _drain_held_events(self) -> None:
+        """Release backlog before new events; never let it break ingest."""
+        if self.scanner_client is None:
+            return
+        try:
+            if self.repo.count_held_events():
+                self.release_held_events()
+        except sqlite3.Error as exc:
+            logger.warning("Releasing held events failed: %s", exc)
+
+    def release_held_events(self, limit: int = 20) -> int:
+        """Scan and store up to ``limit`` held events, oldest first.
+
+        Stops at the first failed scan, leaving the rest held. Returns how
+        many were released.
+        """
+        if self.scanner_client is None or time.monotonic() < self._scanner_down_until:
+            return 0
+        released: dict[str, list[Event]] = {}
+        for row in self.repo.list_held_events(limit):
+            event = self._release_one(row)
+            if event is not None:
+                released.setdefault(event.session_id, []).append(event)
+            elif time.monotonic() < self._scanner_down_until:
+                break
+        for session_id, events in released.items():
+            session = self.get_session(session_id)
+            if session is None:
+                logger.warning("Released events for missing session %s", session_id)
+                continue
+            self._after_store(session, events)
+        return sum(len(v) for v in released.values())
+
+    def _release_one(self, row: dict[str, Any]) -> Event | None:
+        """Pre-scan one held event and move it into ``events``."""
+        from callmem.core.redaction import apply_redactions
+
+        event = Event.model_validate_json(row["event_json"])
+        hits = self._prescan(event.content)
+        if hits is None:
+            self.repo.record_held_attempt(row["id"], "pre-scan unavailable")
+            return None
+        entries = json.loads(row["vault_entries"])
+        if hits:
+            event.content = apply_redactions(event.content, hits)
+            entries += self._encrypt_detections(hits)
+        event.metadata = {**(event.metadata or {}), "scan_status": "full"}
+        if not self.repo.release_held_event(event, entries):
+            return None
         return event
 
     def _truncate_content(self, content: str) -> str:

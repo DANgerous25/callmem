@@ -67,6 +67,37 @@ graph LR
 **Fallback when Ollama is unavailable:**
 If Ollama isn't running, Layer 1 (patterns) still runs. The event is stored with a `scan_status = "pattern_only"` flag. When Ollama becomes available, a background job rescans `pattern_only` events and applies any additional redactions. This is the only async path — and it's a graceful degradation, not the primary flow.
 
+### Dedicated pre-scanner and the hold queue
+
+When the main backend is remote (OpenRouter), Layer 2 shouldn't run on it:
+that sends the text off-machine to be checked. `[sensitive_data.scanner]`
+names a separate model for Layer 2 — normally a local llama.cpp or Ollama
+server — and only it does the scan. It never receives the main backend's
+API key.
+
+```toml
+[sensitive_data.scanner]
+backend = "openai_compat"          # none (default) | openai_compat | ollama
+endpoint = "http://localhost:8080/v1"   # llama-server
+model = "qwen3.6-35b-a3b"
+api_key_env = ""                   # only this env var is ever sent
+timeout = 60
+retry_after = 30                   # seconds to treat it as down after a failure
+```
+
+With a scanner set, a scan that fails (unreachable, timeout, unparseable
+reply) **holds** the event: the pattern-redacted copy goes to the
+`held_events` table instead of `events`, so extraction, summaries and the
+briefing can't see it. Pattern hits are already encrypted alongside it.
+Held events are released oldest-first — at the start of each ingest and
+every 60s from the daemon — by scanning them again and moving each one into
+`events` with its vault rows in one transaction. Releasing stops at the
+first failed scan. `callmem doctor` reports the scanner's reachability and
+any backlog.
+
+With no scanner set (`backend = "none"`), Layer 2 uses the main backend as
+before, and a failed scan falls back to `pattern_only`.
+
 ## What happens when sensitive data is detected
 
 ### Redaction

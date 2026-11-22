@@ -85,6 +85,25 @@ class OllamaClient:
         findings = self._parse_findings(content, response)
         return findings
 
+    def scan_sensitive_strict(self, content: str) -> list[Detection] | None:
+        """Like ``scan_sensitive`` but returns None when the scan didn't happen.
+
+        No response, or a response that isn't a JSON array, means the text
+        was not checked; callers that must not pass unchecked text on need
+        to tell that apart from "checked, nothing found".
+        """
+        response = self._generate(SENSITIVE_SCAN_PROMPT.format(text=content))
+        if response is None:
+            return None
+        try:
+            raw = parse_json(response)
+        except json.JSONDecodeError:
+            logger.warning("Sensitive scan returned invalid JSON (%d chars)", len(response))
+            return None
+        if not isinstance(raw, list):
+            return None
+        return self._parse_findings(content, response)
+
     def _parse_findings(
         self, content: str, response: str
     ) -> list[Detection]:

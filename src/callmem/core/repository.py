@@ -6,6 +6,7 @@ Every method takes model objects and returns model objects.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -1832,6 +1833,110 @@ class Repository:
                 (id, project_id, category, detector, pattern_name, ciphertext, event_id),
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    # ── Held events (awaiting the sensitive-data pre-scan) ─────────────
+
+    def insert_held_event(self, event: Event, vault_entries: list[dict[str, Any]]) -> None:
+        """Park a pattern-redacted event until the pre-scan succeeds."""
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "INSERT INTO held_events "
+                "(id, project_id, session_id, event_json, vault_entries) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    event.id, event.project_id, event.session_id,
+                    event.model_dump_json(), json.dumps(vault_entries),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_held_events(self, limit: int) -> list[dict[str, Any]]:
+        """Return the oldest held events first."""
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM held_events ORDER BY held_at, rowid LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def count_held_events(self) -> int:
+        conn = self.db.connect()
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM held_events").fetchone()[0])
+        finally:
+            conn.close()
+
+    def oldest_held_at(self) -> str | None:
+        conn = self.db.connect()
+        try:
+            row = conn.execute("SELECT MIN(held_at) FROM held_events").fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+
+    def record_held_attempt(self, held_id: str, error: str) -> None:
+        conn = self.db.connect()
+        try:
+            conn.execute(
+                "UPDATE held_events SET attempts = attempts + 1, last_error = ? "
+                "WHERE id = ?",
+                (error, held_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def release_held_event(
+        self, event: Event, vault_entries: list[dict[str, Any]]
+    ) -> bool:
+        """Move a held event into ``events`` with its vault rows, atomically.
+
+        Returns False when another process already released it, so each
+        held event is stored exactly once.
+        """
+        conn = self.db.connect()
+        try:
+            cur = conn.execute("DELETE FROM held_events WHERE id = ?", (event.id,))
+            if cur.rowcount == 0:
+                conn.rollback()
+                return False
+            row = event.to_row()
+            conn.execute(
+                "INSERT INTO events "
+                "(id, session_id, project_id, type, content, timestamp, "
+                "token_count, metadata, archived_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["id"], row["session_id"], row["project_id"],
+                    row["type"], row["content"], row["timestamp"],
+                    row["token_count"], row["metadata"], row["archived_at"],
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO vault "
+                "(id, project_id, category, detector, pattern_name, "
+                "ciphertext, created_at, event_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)",
+                [
+                    (
+                        v["id"], event.project_id, v["category"], v["detector"],
+                        v["pattern_name"], base64.b64decode(v["ciphertext"]), event.id,
+                    )
+                    for v in vault_entries
+                ],
+            )
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 

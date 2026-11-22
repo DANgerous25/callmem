@@ -116,6 +116,16 @@ entropy_threshold = 4.5
 entropy_min_length = 20
 allowlist = ["test@example.com", "127.0.0.1", "localhost"]
 
+# Local model for the sensitive-data scan, separate from [llm]. When set, a
+# failed scan holds the event locally. See docs/sensitive-data.md.
+[sensitive_data.scanner]
+backend = "none"                   # none | openai_compat (llama.cpp, etc.) | ollama
+endpoint = ""
+model = ""
+api_key_env = ""
+timeout = 60
+retry_after = 30
+
 [vault]
 mode = "auto"                      # "auto" or "passphrase"
 # passphrase read from CALLMEM_VAULT_PASSPHRASE env var when mode = "passphrase"
