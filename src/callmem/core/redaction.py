@@ -15,9 +15,13 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
 from ulid import ULID
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # ── Built-in pattern library ──────────────────────────────────────────
 
@@ -135,6 +139,51 @@ class Detection:
     start: int
     end: int
     confidence: float = 1.0
+
+
+class IncompleteScanError(Exception):
+    """The scanner answered, but not with a whole findings list.
+
+    Usually the reply hit the token cap because the text held many
+    findings; scanning smaller pieces gets complete answers.
+    """
+
+
+# Splitting stops here: below this a cut-off reply isn't a size problem.
+MIN_SPLIT_CHARS = 500
+SPLIT_OVERLAP = 100  # so a value on the cut line is whole in one half
+
+
+def scan_in_pieces(
+    scan: Callable[[str], list[Detection] | None],
+    text: str,
+    min_chars: int = MIN_SPLIT_CHARS,
+) -> list[Detection] | None:
+    """Run ``scan``, halving the text whenever the reply comes back cut off.
+
+    Returns None if the scanner didn't answer, or if a piece of
+    ``min_chars`` or less still gets a cut-off reply. Offsets in the
+    result are relative to ``text``.
+    """
+    try:
+        return scan(text)
+    except IncompleteScanError:
+        if len(text) <= min_chars:
+            return None
+    mid = len(text) // 2
+    space = text.rfind(" ", mid - SPLIT_OVERLAP, mid)
+    mid = space if space != -1 else mid
+    right_start = max(0, mid - SPLIT_OVERLAP)
+    left = scan_in_pieces(scan, text[:mid + SPLIT_OVERLAP], min_chars)
+    if left is None:
+        return None
+    right = scan_in_pieces(scan, text[right_start:], min_chars)
+    if right is None:
+        return None
+    shifted = [
+        replace(d, start=d.start + right_start, end=d.end + right_start) for d in right
+    ]
+    return merge_detections(left, shifted)
 
 
 @dataclass

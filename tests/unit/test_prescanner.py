@@ -311,3 +311,15 @@ class TestKeylessMainBackend:
             openai_compat={"endpoint": "http://10.0.0.5:8085/v1", "api_key_env": ""},
         )
         assert _create_llm_client(config).api_key == ""
+
+
+def test_incomplete_reply_is_raised_not_swallowed() -> None:
+    import pytest
+
+    from callmem.core.openai_compat import OpenAICompatClient
+    from callmem.core.redaction import IncompleteScanError
+
+    client = OpenAICompatClient.__new__(OpenAICompatClient)
+    client._generate = lambda *a, **k: '[{"value": "abc12345", "category": "secret"'  # type: ignore[method-assign]
+    with pytest.raises(IncompleteScanError):
+        client.scan_sensitive_strict("some text")

@@ -18,7 +18,7 @@ from ulid import ULID
 
 from callmem.core.json_utils import parse_json
 from callmem.core.prompts import SCAN_MAX_TOKENS, SENSITIVE_SCAN_PROMPT
-from callmem.core.redaction import Detection
+from callmem.core.redaction import Detection, IncompleteScanError
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +124,10 @@ class OpenAICompatClient:
     def scan_sensitive_strict(self, content: str) -> list[Detection] | None:
         """Like ``scan_sensitive`` but returns None when the scan didn't happen.
 
-        No response, or a response that isn't a JSON array, means the text
-        was not checked; callers that must not pass unchecked text on need
-        to tell that apart from "checked, nothing found".
+        No response means the text was not checked; callers that must not
+        pass unchecked text on need to tell that apart from "checked, nothing
+        found". A reply that isn't a whole JSON array (usually cut off at the
+        token cap) raises IncompleteScanError; see ``scan_in_pieces``.
         """
         response = self._generate(
             SENSITIVE_SCAN_PROMPT.format(text=content), max_tokens=SCAN_MAX_TOKENS,
@@ -136,10 +137,10 @@ class OpenAICompatClient:
         try:
             raw = parse_json(response)
         except json.JSONDecodeError:
-            logger.warning("Sensitive scan returned invalid JSON (%d chars)", len(response))
-            return None
+            raw = None
         if not isinstance(raw, list):
-            return None
+            logger.warning("Sensitive scan reply incomplete (%d chars)", len(response))
+            raise IncompleteScanError(f"scan reply of {len(response)} chars")
         return self._parse_findings(content, response)
 
     def _parse_findings(

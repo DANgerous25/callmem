@@ -23,6 +23,7 @@ from callmem.core.redaction import (
     apply_redactions,
     merge_detections,
     plausible_llm_finding,
+    scan_in_pieces,
 )
 
 if TYPE_CHECKING:
@@ -145,8 +146,7 @@ class Rescanner:
         for piece in pieces:
             hits = None
             for _ in range(SCAN_ATTEMPTS):
-                hits = self.scanner.scan_sensitive_strict(piece)
-                self.stats.llm_calls += 1
+                hits = scan_in_pieces(self._counted_scan, piece)
                 if hits is not None:
                     break
             if hits is None:
@@ -159,6 +159,10 @@ class Rescanner:
                     values.append(v)
                     self.known_values.setdefault(v, h.category)
         return values
+
+    def _counted_scan(self, text: str) -> list[Detection] | None:
+        self.stats.llm_calls += 1
+        return self.scanner.scan_sensitive_strict(text)
 
     # ── Redacting ────────────────────────────────────────────────────
 

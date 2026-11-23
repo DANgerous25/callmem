@@ -1133,8 +1133,10 @@ class MemoryEngine:
             return None
         import httpx
 
+        from callmem.core.redaction import scan_in_pieces
+
         try:
-            hits = self.scanner_client.scan_sensitive_strict(content)
+            hits = scan_in_pieces(self.scanner_client.scan_sensitive_strict, content)
         except (httpx.HTTPError, ValueError) as exc:
             logger.warning("Pre-scan failed (%d chars): %s", len(content), exc)
             hits = None

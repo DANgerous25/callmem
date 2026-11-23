@@ -222,3 +222,50 @@ class TestPlausibleFinding:
         assert not plausible_llm_finding("admin", "credential")
         assert plausible_llm_finding("dolphin42staging", "credential")
         assert plausible_llm_finding("x9Kq2mP4vL8nR3tW6yB1cD5f", "secret")
+
+
+class TruncatingScanner(FakeScanner):
+    """Cuts its reply off (IncompleteScanError) for texts over ``max_len``."""
+
+    def __init__(self, max_len: int, **kw: object) -> None:
+        super().__init__(**kw)
+        self.max_len = max_len
+
+    def scan_sensitive_strict(self, content: str) -> list[Detection] | None:
+        from callmem.core.redaction import IncompleteScanError
+
+        if len(content) > self.max_len:
+            self.calls.append(content)
+            raise IncompleteScanError("reply cut off")
+        return super().scan_sensitive_strict(content)
+
+
+class TestScanInPieces:
+    def test_splits_until_replies_fit(self) -> None:
+        from callmem.core.redaction import scan_in_pieces
+
+        text = "filler " * 300 + f"password {PROSE} " + "tail " * 300
+        scanner = TruncatingScanner(max_len=800)
+        hits = scan_in_pieces(scanner.scan_sensitive_strict, text, min_chars=200)
+        assert hits is not None and len(hits) == 1
+        h = hits[0]
+        assert text[h.start:h.end] == PROSE
+
+    def test_gives_up_below_min_chars(self) -> None:
+        from callmem.core.redaction import scan_in_pieces
+
+        scanner = TruncatingScanner(max_len=10)
+        assert scan_in_pieces(scanner.scan_sensitive_strict, "x" * 500, min_chars=200) is None
+
+    def test_no_answer_does_not_split(self) -> None:
+        from callmem.core.redaction import scan_in_pieces
+
+        scanner = FakeScanner(up=False)
+        assert scan_in_pieces(scanner.scan_sensitive_strict, "x" * 5000) is None
+        assert len(scanner.calls) == 1
+
+    def test_rescan_survives_dense_batch(self, memory_db: Database, tmp_path: Path) -> None:
+        engine = _engine(memory_db)
+        ev = _raw_event(memory_db, engine, "note " * 200 + f"password {PROSE}")
+        _rescanner(memory_db, tmp_path, TruncatingScanner(max_len=700)).run()
+        assert PROSE not in _one(memory_db, "SELECT content FROM events WHERE id = ?", ev)
