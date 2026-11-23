@@ -2625,14 +2625,26 @@ def re_extract(
 @click.option("--limit", type=int, default=None, help="Max rows per field (for sampling).")
 @click.option("--batch-chars", type=int, default=8000, help="Text per scanner call.")
 @click.option("--no-purge", is_flag=True, help="Skip FTS optimize + VACUUM afterwards.")
+@click.option(
+    "--restore", is_flag=True,
+    help="Put back LLM redactions that don't look like secrets in context.",
+)
+@click.option(
+    "--since", default="2026-11-22",
+    help="With --restore: only LLM redactions made on or after this date.",
+)
 def rescan(
     project: Path, dry_run: bool, limit: int | None, batch_chars: int, no_purge: bool,
+    restore: bool, since: str,
 ) -> None:
     """Re-scan stored events, entities and summaries for secrets and redact them.
 
     Uses only the local pre-scanner ([sensitive_data.scanner]), never the main
     backend. Resumable: progress is kept in .callmem/rescan_progress.json, so
     re-running after an interruption continues where it stopped.
+
+    With --restore, nothing is scanned: earlier LLM redactions are checked
+    again with the context filter, and the ones it rejects are put back.
     """
     import sqlite3
 
@@ -2650,6 +2662,9 @@ def rescan(
     if not db_path.exists():
         click.echo(f"No callmem database found at {db_path}")
         raise click.exceptions.Exit(1)
+    if restore:
+        _restore_redactions(project, config, db_path, since, dry_run)
+        return
     scanner = _create_scanner_client(config)
     if scanner is None:
         click.echo("No pre-scanner set ([sensitive_data.scanner]); refusing to send")
@@ -2694,6 +2709,40 @@ def rescan(
             click.echo("  Purged old text from search index, free pages and WAL.")
         except sqlite3.OperationalError as exc:
             click.echo(f"  Purge skipped ({exc}); re-run 'callmem rescan' when the DB is idle.")
+
+
+def _restore_redactions(
+    project: Path, config: Any, db_path: Path, since: str, dry_run: bool,
+) -> None:
+    """Run the Restorer and report counts (never values)."""
+    from callmem.core.database import Database
+    from callmem.core.embeddings import enqueue_embeddings
+    from callmem.core.queue import JobQueue
+    from callmem.core.repository import Repository
+    from callmem.core.rescan import Restorer
+
+    db = Database(db_path)
+    db.initialize()
+    click.echo(f"Checking LLM redactions since {since} in {project}"
+               f"{' (dry run)' if dry_run else ''}...")
+    stats = Restorer(Repository(db), db_path.parent, since, dry_run=dry_run).run()
+    for key in sorted(stats.rows_changed):
+        click.echo(f"  {key:22} rows {stats.rows_changed[key]:6}  "
+                   f"redactions put back {stats.tokens_restored[key]:6}")
+    for label, counts in (("still hidden", stats.values_kept),
+                          ("put back", stats.values_restored)):
+        detail = ", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"
+        click.echo(f"  Distinct values {label}: {sum(counts.values())} ({detail})")
+    if stats.conflicts:
+        click.echo(f"  {stats.conflicts} row(s) changed mid-run; re-run to cover them.")
+    by_project: dict[str, list[str]] = {}
+    for entity_id, project_id in stats.changed_entities.items():
+        by_project.setdefault(project_id, []).append(entity_id)
+    for project_id, ids in by_project.items():
+        for i in range(0, len(ids), 500):
+            enqueue_embeddings(JobQueue(db), config, ids[i:i + 500], project_id)
+    if by_project:
+        click.echo(f"  Queued re-embedding for {len(stats.changed_entities)} changed entities.")
 
 
 def _print_rescan_stats(stats: Any) -> None:

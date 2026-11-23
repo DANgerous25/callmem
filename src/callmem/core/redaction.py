@@ -126,6 +126,105 @@ def plausible_llm_finding(
     )
 
 
+_VAR_REF_RE = re.compile(r"\$\{?\w+\}?|<[^<>]+>|\{\{.*\}\}")
+_KNOWN_PREFIX_RE = re.compile(
+    r"(sk-|sk_|pk_|rk_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abpr]-|AKIA|AIza|eyJ|-----BEGIN)"
+)
+# A credential word, then at most a short gap ("password is ", "auth with
+# admin + ") before the value. Whole words only: not NOPASSWD, authentic.
+_CREDENTIAL_CONTEXT_RE = re.compile(
+    r"(?i)\b(pass(word|wd|phrase)?|pw|pwd|secret|token|api[_ -]?key|apikey|auth"
+    r"|authorization|bearer|credentials?|private[_ -]?key|access[_ -]?key)\b"
+    r"[^\n]{0,15}$"
+)
+_CREDENTIAL_WORD_RE = re.compile(
+    r"(?i)(pass(word|wd|phrase)?|secret|token|api[_ -]?key|credential)s?"
+)
+_PLACEHOLDER_RE = re.compile(r"\[REDACTED:[^\]]*\]")
+_IDENTIFIER_RE = re.compile(r"[a-z][a-z0-9]*(?:[_-][a-z0-9]+)+|[\w-]+\.[A-Za-z]{2,5}")
+_AT_RE = re.compile(r"[\w.+-]+@[\w.-]+")
+_IPV4_RE = re.compile(r"(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?")
+_TOKEN_STOP = " \t\n\r\"'`(),;<>"
+CONTEXT_WINDOW = 60  # chars before a value searched for a credential word
+
+
+def secret_shaped(value: str) -> bool:
+    """True for values that look like a key or token on their own."""
+    if _KNOWN_PREFIX_RE.match(value):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{24,}", value):
+        return True
+    if " " in value or len(value) < 10 or _IDENTIFIER_RE.fullmatch(value):
+        return False
+    has_alpha = any(c.isalpha() for c in value)
+    has_digit = any(c.isdigit() for c in value)
+    return has_alpha and has_digit and shannon_entropy(value) >= 3.3
+
+
+def _enclosing_token(text: str, start: int, end: int) -> str:
+    """The whitespace/quote-delimited token that holds ``text[start:end]``."""
+    left = start
+    while left > 0 and text[left - 1] not in _TOKEN_STOP:
+        left -= 1
+    right = end
+    while right < len(text) and text[right] not in _TOKEN_STOP:
+        right += 1
+    return text[left:right]
+
+
+def keep_llm_finding(
+    text: str,
+    start: int,
+    end: int,
+    category: str,
+    categories: frozenset[str] | set[str] = DEFAULT_DETECT_CATEGORIES,
+) -> bool:
+    """Whether an LLM finding at ``text[start:end]`` should be redacted.
+
+    The local model flags plenty that isn't secret: words inside paths and
+    filenames, SSH key names, usernames, container names, list options.
+    Key-shaped values are always kept; anything else needs context, such
+    as a credential word just before it.
+    """
+    value = text[start:end]
+    if not plausible_llm_finding(value, category, categories):
+        return False
+    if _VAR_REF_RE.fullmatch(value) or _CREDENTIAL_WORD_RE.fullmatch(value):
+        return False  # "$TOKEN", or the word "password" itself
+    if category != "pii" and _AT_RE.fullmatch(value):
+        return False  # user@host; real emails are pii and the regex catches them
+    if _IPV4_RE.fullmatch(value):
+        return False  # addresses are infra, not secrets
+    if secret_shaped(value) and shannon_entropy(value) >= 3.5:
+        return True
+    token = _enclosing_token(text, start, end)
+    if "/" in token or "\\" in token:
+        return False
+    if text[end:end + 1] == "@" and text[end + 1:end + 2].isalnum():
+        return False  # user@host
+    digits = sum(c.isdigit() for c in value)
+    if category == "pii":
+        return (
+            digits >= 7
+            or bool(re.fullmatch(r"[\w.+-]+@[\w-]+\.[\w.]+", value))
+            or bool(re.fullmatch(r"[A-Z][a-z]+(?: [A-Z][a-z'-]+)+", value))
+        )
+    if category == "financial":
+        return digits >= 6
+    if secret_shaped(value):
+        return True
+    if (
+        _CREDENTIAL_WORD_RE.search(value)
+        and any(c.isdigit() for c in value)
+        and not _IDENTIFIER_RE.fullmatch(value)
+    ):
+        return True  # "secret123", "Password1": a weak password, not a name
+    line_start = text.rfind("\n", 0, start) + 1
+    before = text[max(line_start, start - CONTEXT_WINDOW):start]
+    # Neighbouring placeholders say "credential" too; that isn't context.
+    return bool(_CREDENTIAL_CONTEXT_RE.search(_PLACEHOLDER_RE.sub("", before)))
+
+
 # ── Data types ────────────────────────────────────────────────────────
 
 @dataclass

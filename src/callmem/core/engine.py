@@ -1065,7 +1065,7 @@ class MemoryEngine:
             ):
                 # Offsets are relative to the already-redacted content.
                 llm_detections = self._filter_llm_hits(
-                    self.llm_client.scan_sensitive(content)
+                    content, self.llm_client.scan_sensitive(content)
                 )
                 if llm_detections:
                     content = apply_redactions(content, llm_detections)
@@ -1111,16 +1111,17 @@ class MemoryEngine:
             event_kwargs["timestamp"] = inp.timestamp
         return Event(**event_kwargs)
 
-    def _filter_llm_hits(self, hits: list[Detection]) -> list[Detection]:
-        """Keep confident LLM hits that aren't already-redacted placeholders."""
-        from callmem.core.redaction import merge_detections, plausible_llm_finding
+    def _filter_llm_hits(self, content: str, hits: list[Detection]) -> list[Detection]:
+        """Keep confident LLM hits that look like secrets where they appear."""
+        from callmem.core.redaction import keep_llm_finding, merge_detections
 
         confidence = self.config.sensitive_data.llm_scan_confidence
         return merge_detections(
             [
                 d for d in hits
                 if d.confidence >= confidence
-                and plausible_llm_finding(d.original_value, d.category)
+                and content[d.start:d.end] == d.original_value
+                and keep_llm_finding(content, d.start, d.end, d.category)
             ],
             [],
         )
@@ -1145,7 +1146,7 @@ class MemoryEngine:
             self._scanner_down_until = time.monotonic() + retry
             logger.warning("Pre-scanner unavailable; holding events for %ds", retry)
             return None
-        return self._filter_llm_hits(hits)
+        return self._filter_llm_hits(content, hits)
 
     def _encrypt_detections(self, detections: list[Detection]) -> list[dict[str, Any]]:
         """Encrypt detections into vault rows that can wait in a held event."""

@@ -2039,6 +2039,33 @@ class Repository:
         finally:
             conn.close()
 
+    def list_llm_vault_since(self, since: str) -> list[tuple[str, str, bytes]]:
+        """``(id, category, ciphertext)`` for LLM redactions made since ``since``."""
+        conn = self.db.connect()
+        try:
+            return [
+                (str(r[0]), str(r[1]), bytes(r[2]))
+                for r in conn.execute(
+                    "SELECT id, category, ciphertext FROM vault "
+                    "WHERE detector = 'llm' AND created_at >= ? AND false_positive = 0",
+                    (since,),
+                )
+            ]
+        finally:
+            conn.close()
+
+    def mark_vault_false_positives(self, vault_ids: list[str]) -> None:
+        """Flag many vault entries as false positives in one transaction."""
+        conn = self.db.connect()
+        try:
+            conn.executemany(
+                "UPDATE vault SET false_positive = 1 WHERE id = ?",
+                [(v,) for v in vault_ids],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def mark_vault_false_positive(self, vault_id: str) -> None:
         conn = self.db.connect()
         try:

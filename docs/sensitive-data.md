@@ -98,6 +98,20 @@ any backlog.
 With no scanner set (`backend = "none"`), Layer 2 uses the main backend as
 before, and a failed scan falls back to `pattern_only`.
 
+**Cut-off replies.** A text with many findings can make the scanner's reply
+run past its token cap. That reply isn't treated as "scanner down": the text
+is halved and each half scanned again (`scan_in_pieces`), down to 500
+characters. Only no answer at all holds the event.
+
+**Context filter.** The local model flags plenty that isn't secret: words
+inside paths and filenames, SSH key names, `user@host`, container names,
+dropdown options, `$TOKEN` references, the word "password" itself, IPs.
+`keep_llm_finding` keeps key-shaped values (known prefixes, long hex,
+high-entropy mixed tokens) wherever they are. Anything else is kept only
+when a credential word (password, token, api key, bearer, auth, ...) comes
+right before it. PII needs a phone/account-length number, an email or a
+person-name shape. This applies at ingest and in `callmem rescan`.
+
 ## What happens when sensitive data is detected
 
 ### Redaction
@@ -331,6 +345,7 @@ mode = "auto"                      # "auto" or "passphrase"
 2. **Allowlist** in config for known-safe values
 3. **Per-category toggles** to disable noisy detection types
 4. **Confidence threshold** for LLM detections — only act on high-confidence findings
+5. **Bulk restore** — `callmem rescan --restore [--dry-run] [--since DATE]` re-checks every LLM redaction made since `DATE` with the context filter, across events, entities, summaries, sessions and tasks, and puts back the ones it rejects. A value stays hidden if it looks like a secret in at least one place, unless it appears 20+ times and fewer than 10% of those are in a credential context (then it's a project term). Restored entries are flagged `false_positive`; changed entities are re-embedded. No model calls.
 
 ## What this does NOT include
 

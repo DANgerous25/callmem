@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from callmem.core.redaction import Detection
 from callmem.core.rescan import Rescanner, ScannerUnavailableError
@@ -12,8 +12,11 @@ from callmem.models.entities import Entity
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
     from callmem.core.database import Database
     from callmem.core.engine import MemoryEngine
+    from callmem.core.rescan import Restorer
 
 AWS = "AKIAIOSFODNN7EXAMPLE"
 PROSE = "dolphin42staging"
@@ -269,3 +272,136 @@ class TestScanInPieces:
         ev = _raw_event(memory_db, engine, "note " * 200 + f"password {PROSE}")
         _rescanner(memory_db, tmp_path, TruncatingScanner(max_len=700)).run()
         assert PROSE not in _one(memory_db, "SELECT content FROM events WHERE id = ?", ev)
+
+
+def _keep(text: str, value: str, category: str = "credential") -> bool:
+    from callmem.core.redaction import keep_llm_finding
+
+    start = text.index(value)
+    return keep_llm_finding(text, start, start + len(value), category)
+
+
+class TestKeepInContext:
+    def test_non_secrets_seen_in_the_wild_are_dropped(self) -> None:
+        assert not _keep("chmod 750 scripts/nightly-backup.sh", "nightly")
+        assert not _keep("cd /tmp/x/-home-dan-boatproj/abc", "home-dan-boatproj", "pii")
+        assert not _keep("ssh -i ~/.ssh/id_ed25519_ha root@host", "id_ed25519_ha")
+        assert not _keep("ssh -p 22224 hassio@192.168.1.132 'ls'", "hassio")
+        assert not _keep("docker exec -i homeassistant python3", "homeassistant")
+        assert not _keep("Available options: ['assistant pipeline', 'other']",
+                         "assistant pipeline")
+        assert not _keep('curl -H "Authorization: Bearer $TOKEN" x', "$TOKEN")
+        assert not _keep("the endpoint is called using a access token.", "access token")
+        assert not _keep("getent hosts boatbox.local", "boatbox.local", "pii")
+
+    def test_real_secrets_are_kept(self) -> None:
+        assert _keep("basic-auth with admin + harbourlights", "harbourlights")
+        assert _keep("export DB_PASSWORD=dolphin42staging", "dolphin42staging")
+        assert _keep("key x9Kq2mP4vL8nR3tW6yB1cD5f in a note", "x9Kq2mP4vL8nR3tW6yB1cD5f")
+        assert _keep("recipients: - '+852 9123 4567'", "+852 9123 4567", "pii")
+        assert _keep("contact Jane Doakes about it", "Jane Doakes", "pii")
+
+
+class MultiScanner(FakeScanner):
+    """Flags every value in ``flags`` that appears."""
+
+    def __init__(self, flags: list[str]) -> None:
+        super().__init__()
+        self.flags = flags
+
+    def scan_sensitive_strict(self, content: str) -> list[Detection] | None:
+        hits = []
+        for f in self.flags:
+            if f in content:
+                s = content.index(f)
+                hits.append(Detection(
+                    vault_id="x", category="credential", detector="llm",
+                    pattern_name=None, original_value=f, start=s, end=s + len(f),
+                    confidence=0.9,
+                ))
+        return hits
+
+
+class TestRestore:
+    def _over_redact(
+        self, memory_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[str, Entity]:
+        import callmem.core.rescan as rescan_mod
+
+        engine = _engine(memory_db)
+        ev = _raw_event(
+            memory_db, engine,
+            f"ran scripts/nightly-backup.sh then export DB_PASSWORD={PROSE}",
+        )
+        ent = _entity(engine, "backup", "the nightly job, see scripts/nightly-backup.sh")
+        # Reproduce the old filter, which redacted anything plausible.
+        monkeypatch.setattr(rescan_mod, "keep_llm_finding", lambda *a, **k: True)
+        _rescanner(memory_db, tmp_path, MultiScanner(["nightly", PROSE])).run()
+        monkeypatch.undo()
+        assert "nightly" not in _one(memory_db, "SELECT content FROM events WHERE id = ?", ev)
+        return ev, ent
+
+    def _restorer(self, memory_db: Database, tmp_path: Path, **kw: Any) -> Restorer:
+        from callmem.core.repository import Repository
+        from callmem.core.rescan import Restorer
+
+        return Restorer(Repository(memory_db), tmp_path, since="2000-01-01", **kw)
+
+    def test_restores_false_positives_keeps_secrets(
+        self, memory_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ev, ent = self._over_redact(memory_db, tmp_path, monkeypatch)
+        stats = self._restorer(memory_db, tmp_path).run()
+
+        content = _one(memory_db, "SELECT content FROM events WHERE id = ?", ev)
+        assert "scripts/nightly-backup.sh" in content and PROSE not in content
+        body = _one(memory_db, "SELECT content FROM entities WHERE id = ?", ent.id)
+        assert body == "the nightly job, see scripts/nightly-backup.sh"
+        assert stats.values_restored["credential"] == 1
+        assert stats.values_kept["credential"] == 1
+        assert set(stats.changed_entities) == {ent.id}
+        flagged = _one(memory_db, "SELECT COUNT(*) FROM vault WHERE false_positive = 1")
+        assert flagged == 3  # one per restored occurrence
+
+    def test_dry_run_changes_nothing(
+        self, memory_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        ev, _ = self._over_redact(memory_db, tmp_path, monkeypatch)
+        before = _one(memory_db, "SELECT content FROM events WHERE id = ?", ev)
+        stats = self._restorer(memory_db, tmp_path, dry_run=True).run()
+        assert _one(memory_db, "SELECT content FROM events WHERE id = ?", ev) == before
+        assert stats.tokens_restored["events.content"] == 1
+        assert _one(memory_db, "SELECT COUNT(*) FROM vault WHERE false_positive = 1") == 0
+
+    def test_second_run_is_a_no_op(
+        self, memory_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._over_redact(memory_db, tmp_path, monkeypatch)
+        self._restorer(memory_db, tmp_path).run()
+        stats = self._restorer(memory_db, tmp_path).run()
+        assert not stats.tokens_restored
+
+
+class TestRestoreRatio:
+    def test_common_term_with_one_stray_context_is_restored(
+        self, memory_db: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import callmem.core.rescan as rescan_mod
+        from callmem.core.repository import Repository
+        from callmem.core.rescan import Restorer
+
+        engine = _engine(memory_db)
+        term = "kioskboard"
+        _raw_event(memory_db, engine, f"set the token to {term} by mistake")
+        for i in range(25):
+            _raw_event(memory_db, engine, f"open the {term} view {i}")
+        monkeypatch.setattr(rescan_mod, "keep_llm_finding", lambda *a, **k: True)
+        _rescanner(memory_db, tmp_path, MultiScanner([term])).run()
+        monkeypatch.undo()
+
+        Restorer(Repository(memory_db), tmp_path, since="2000-01-01").run()
+        n = _one(memory_db, "SELECT COUNT(*) FROM events WHERE content LIKE ?", f"%{term}%")
+        assert n == 26
+
+    def test_credential_word_itself_is_not_a_secret(self) -> None:
+        assert not _keep("basic-auth with admin + password", "password")
